@@ -1,5 +1,4 @@
-# Delivery harness runtime and session state
-.pi/harness/
+# The vendored Pi harness is tracked; `.pi/.gitignore` excludes local runtime/state.
 
 # Application dependencies and build artifacts
 node_modules/
