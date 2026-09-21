@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Mockup — Tela 1 · Visão geral</title>
+  <title>Mockup — Tela 1 · Visão geral vazia</title>
   <style>
     :root {
       --background: #f8fafc;
@@ -49,9 +49,22 @@
     .btn { min-height: 36px; padding: 0 13px; border: 1px solid var(--border); border-radius: 7px; background: white; color: #1e293b; font-size: 12px; font-weight: 700; box-shadow: 0 1px 2px rgba(15,23,42,.03); }
     .btn.primary { border-color: var(--primary); background: var(--primary); color: var(--primary-foreground); }
     .btn.ghost { border-color: transparent; box-shadow: none; color: var(--muted-foreground); }
-    .tabs { display: inline-flex; gap: 3px; margin-bottom: 16px; padding: 3px; border: 1px solid var(--border); border-radius: 8px; background: var(--muted); }
+    .tabs { display: inline-flex; gap: 3px; margin-bottom: 12px; padding: 3px; border: 1px solid var(--border); border-radius: 8px; background: var(--muted); }
     .tab { padding: 6px 10px; border-radius: 6px; color: #64748b; font-size: 11px; font-weight: 700; }
     .tab.active { background: white; color: var(--foreground); box-shadow: 0 1px 2px rgba(15,23,42,.08); }
+    .empty-state { min-height: 500px; display: grid; place-items: center; padding: 42px 22px; border: 1px dashed #cbd5e1; border-radius: 12px; background: white; text-align: center; }
+    .empty-inner { width: min(520px, 100%); }
+    .empty-icon { width: 52px; height: 52px; display: grid; place-items: center; margin: 0 auto 15px; border-radius: 12px; background: var(--accent); color: var(--primary); }
+    .empty-icon svg { width: 24px; height: 24px; }
+    .empty-state h2 { margin: 0; font-size: 20px; letter-spacing: -.025em; }
+    .empty-state > .empty-inner > p { margin: 8px auto 18px; color: var(--muted-foreground); font-size: 12px; line-height: 1.55; }
+    .empty-actions { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; }
+    .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 30px; text-align: left; }
+    .step { padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: #f8fafc; }
+    .step-num { width: 30px; height: 30px; display: grid; place-items: center; margin-bottom: 10px; border-radius: 9px; background: #e2e8f0; color: #475569; }
+    .step-num svg { width: 16px; height: 16px; }
+    .step strong { display: block; font-size: 10px; }
+    .step > span:not(.step-num) { display: block; margin-top: 3px; color: var(--muted-foreground); font-size: 9px; line-height: 1.45; }
     .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
     .card { min-width: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); box-shadow: 0 1px 2px rgba(15,23,42,.025); }
     .metric { padding: 16px; }
@@ -88,6 +101,8 @@
     .badge::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
     .badge.ok { color: var(--success); background: var(--success-bg); }
     .badge.pending { color: var(--warning); background: var(--warning-bg); }
+    .source { display: inline-flex; padding: 4px 7px; border-radius: 999px; background: #f1f5f9; color: #475569; font-size: 9px; font-weight: 700; }
+    .source.new { background: #eff6ff; color: #1d4ed8; }
     .disclaimer { margin-top: 12px; color: #64748b; font-size: 10px; }
     @media (max-width: 900px) {
       .layout { grid-template-columns: 70px minmax(0, 1fr); }
@@ -113,7 +128,7 @@
   </style>
 </head>
 <body>
-  <header class="review-note"><div><strong>Tela 1 de 4 — Visão geral</strong><br>Revise somente esta tela. As próximas serão mostradas após sua aprovação.</div><span class="tag">SHADCN/UI · MOCKUP</span></header>
+  <header class="review-note"><div><strong>Tela 1 — Estado inicial vazio</strong><br>A solução ainda não tem dados. O primeiro fluxo é importar e processar um CSV.</div><span class="tag">SHADCN/UI · MOCKUP</span></header>
   <main class="frame">
     <header class="appbar">
       <div class="logo"><span class="logo-mark">V</span>Conferência de guias</div>
@@ -131,40 +146,21 @@
       </aside>
       <section class="content">
         <div class="page-header">
-          <div><h1>Visão geral</h1><p>Acompanhe os indicadores e priorize as correções antes do envio.</p></div>
-          <div class="actions"><button class="btn">＋ Nova guia</button><button class="btn primary">⇧ Importar CSV</button></div>
+          <div><h1>Visão geral</h1><p>Importe o primeiro lote para iniciar a conferência preventiva.</p></div>
         </div>
-        <div class="tabs"><span class="tab active">Lote original</span><span class="tab">Conjunto ampliado</span></div>
-        <section class="metrics">
-          <article class="card metric"><div class="metric-label">Guias verificadas</div><div class="metric-value">00</div><div class="metric-caption">revisões vigentes</div></article>
-          <article class="card metric"><div class="metric-label">Sem pendências</div><div class="metric-value green">00</div><div class="metric-caption">no escopo verificado</div></article>
-          <article class="card metric"><div class="metric-label">Com pendências</div><div class="metric-value amber">00</div><div class="metric-caption">precisam de ação</div></article>
-          <article class="card metric"><div class="metric-label">Exposição associada</div><div class="metric-value amber">R$ —</div><div class="metric-caption">não é glosa realizada</div></article>
-        </section>
-        <section class="grid">
-          <article class="card">
-            <div class="card-head"><div><h2>Pendências por tipo</h2><p>Ocorrências; categorias podem se sobrepor.</p></div><button class="btn ghost">Ver todas</button></div>
-            <div class="card-body bars">
-              <div class="bar-row"><span>Autorização</span><div class="bar"><span style="width:78%"></span></div><strong>—</strong></div>
-              <div class="bar-row"><span>Validade</span><div class="bar"><span style="width:61%"></span></div><strong>—</strong></div>
-              <div class="bar-row"><span>Cobertura</span><div class="bar"><span style="width:42%"></span></div><strong>—</strong></div>
-              <div class="bar-row"><span>Dados obrigatórios</span><div class="bar"><span style="width:31%"></span></div><strong>—</strong></div>
+        <section class="empty-state">
+          <div class="empty-inner">
+            <div class="empty-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4"></path><path d="m7 9 5-5 5 5"></path><path d="M20 15v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-4"></path></svg></div>
+            <h2>Nenhuma guia processada</h2>
+            <p>Comece enviando um arquivo CSV no formato esperado. O sistema valida as linhas, registra o lote, confere cada guia e prepara os indicadores automaticamente.</p>
+            <div class="empty-actions"><button class="btn primary">Importar primeiro CSV</button><button class="btn">Ver formato esperado</button></div>
+            <div class="steps">
+              <div class="step"><span class="step-num"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4"></path><path d="m7 9 5-5 5 5"></path><path d="M20 15v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-4"></path></svg></span><strong>Envie o arquivo</strong><span>Selecione o CSV recebido da operação.</span></div>
+              <div class="step"><span class="step-num"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"></path><path d="M21 3v6h-6"></path></svg></span><strong>Acompanhe o processamento</strong><span>Linhas válidas e falhas ficam visíveis.</span></div>
+              <div class="step"><span class="step-num"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19V9"></path><path d="M10 19V5"></path><path d="M16 19v-7"></path><path d="M22 19V3"></path></svg></span><strong>Revise o relatório</strong><span>Veja pendências, prioridades e exposição.</span></div>
             </div>
-          </article>
-          <article class="card">
-            <div class="card-head"><div><h2>Prioridades</h2><p>Guias que exigem ação primeiro.</p></div></div>
-            <div class="card-body priorities">
-              <div class="priority"><div><strong>Autorização vencida</strong><span>Conferir documento e validade</span></div><span class="count">—</span></div>
-              <div class="priority"><div><strong>Procedimento sem cobertura</strong><span>Revisar lançamento</span></div><span class="count">—</span></div>
-              <div class="priority"><div><strong>Informação incompleta</strong><span>Completar antes do envio</span></div><span class="count">—</span></div>
-            </div>
-          </article>
-          <article class="card recent">
-            <div class="card-head"><div><h2>Guias que precisam de atenção</h2><p>Amostra das revisões vigentes com maior prioridade.</p></div><button class="btn ghost">Abrir todas as guias</button></div>
-            <div class="table-wrap"><table><thead><tr><th>Guia</th><th>Convênio</th><th>Procedimento</th><th>Valor</th><th>Decisão</th><th>Pendência principal</th><th></th></tr></thead><tbody><tr><td class="link">GUIA-B205</td><td>Convênio Beta</td><td>Procedimento exemplo</td><td>R$ —</td><td><span class="badge pending">PENDENTE</span></td><td>Autorização</td><td class="link">Ver detalhe</td></tr><tr><td class="link">GUIA-C310</td><td>Convênio Gama</td><td>Procedimento exemplo</td><td>R$ —</td><td><span class="badge pending">PENDENTE</span></td><td>Dado obrigatório</td><td class="link">Ver detalhe</td></tr><tr><td class="link">GUIA-A102</td><td>Convênio Alfa</td><td>Procedimento exemplo</td><td>R$ —</td><td><span class="badge ok">OK</span></td><td>—</td><td class="link">Ver detalhe</td></tr></tbody></table></div>
-          </article>
+          </div>
         </section>
-        <p class="disclaimer">Dados ilustrativos. Valores associados a pendências representam exposição preventiva, não glosa confirmada.</p>
       </section>
     </div>
   </main>
