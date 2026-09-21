@@ -1,0 +1,15 @@
+# Delivery harness runtime and session state
+.pi/harness/
+
+# Application dependencies and build artifacts
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+
+# Local environment and secrets
+.dev.vars
+.env*
+!.env.example
+*.local.*
