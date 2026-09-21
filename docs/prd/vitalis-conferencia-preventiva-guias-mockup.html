@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Mockup — Tela 2 · Importação em processamento</title>
+  <title>Mockup — Tela 3 · Visão geral processada</title>
   <style>
-    :root { --bg:#f8fafc; --fg:#0f172a; --card:#fff; --muted:#f1f5f9; --muted-fg:#64748b; --border:#e2e8f0; --primary:#0f766e; --accent:#f0fdfa; --success:#047857; --success-bg:#ecfdf5; --warning:#b45309; --warning-bg:#fffbeb; --danger:#b91c1c; --danger-bg:#fef2f2; --blue:#2563eb; --blue-bg:#eff6ff; }
-    * { box-sizing: border-box; }
+    :root { --bg:#f8fafc; --fg:#0f172a; --card:#fff; --muted:#f1f5f9; --muted-fg:#64748b; --border:#e2e8f0; --primary:#0f766e; --accent:#f0fdfa; --success:#047857; --success-bg:#ecfdf5; --warning:#b45309; --warning-bg:#fffbeb; --danger:#b91c1c; --danger-bg:#fef2f2; --purple:#7c3aed; }
+    * { box-sizing:border-box; }
     body { margin:0; min-width:320px; background:#e8edf1; color:var(--fg); font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
-    button,input,select { font:inherit; }
+    button,select { font:inherit; }
     .review-note { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:10px 20px; border-bottom:1px solid #cbd5e1; background:#fff; color:#475569; font-size:12px; }
     .review-note strong { color:var(--fg); }
     .tag { padding:4px 8px; border-radius:999px; background:#0f172a; color:#fff; font-size:10px; font-weight:800; letter-spacing:.04em; }
@@ -25,89 +25,79 @@
     .nav-item { display:flex; align-items:center; gap:9px; margin-bottom:3px; padding:9px 10px; border-radius:7px; color:#475569; font-size:12px; font-weight:620; }
     .nav-item.active { background:var(--accent); color:var(--primary); }
     .nav-icon { width:18px; text-align:center; }
+    .side-foot { margin:30px 8px 0; padding:12px; border:1px solid var(--border); border-radius:8px; background:#f8fafc; color:#64748b; font-size:10px; line-height:1.5; }
     .content { min-width:0; padding:27px 28px 36px; }
-    .page-header { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; margin-bottom:20px; }
+    .page-header { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; margin-bottom:18px; }
     h1 { margin:0; font-size:27px; letter-spacing:-.035em; }
     .page-header p { margin:5px 0 0; color:var(--muted-fg); font-size:12px; }
+    .actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
     .btn { min-height:36px; padding:0 13px; border:1px solid var(--border); border-radius:7px; background:#fff; color:#1e293b; font-size:12px; font-weight:700; box-shadow:0 1px 2px rgba(15,23,42,.03); }
     .btn.primary { border-color:var(--primary); background:var(--primary); color:#fff; }
-    .btn:disabled { opacity:.52; }
+    .btn.ghost { border-color:transparent; box-shadow:none; color:var(--muted-fg); }
+    .context { display:flex; align-items:center; justify-content:space-between; gap:14px; margin-bottom:14px; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:#fff; color:#475569; font-size:10px; }
+    .context strong { color:var(--fg); }
+    .context select { height:30px; padding:0 28px 0 9px; border:1px solid var(--border); border-radius:6px; background:#fff; color:#475569; font-size:10px; }
+    .metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:11px; margin-bottom:14px; }
     .card { min-width:0; border:1px solid var(--border); border-radius:10px; background:var(--card); box-shadow:0 1px 2px rgba(15,23,42,.025); }
-    .import-head { display:flex; align-items:center; justify-content:space-between; gap:18px; padding:16px 18px; border-bottom:1px solid var(--border); }
-    .file { display:flex; align-items:center; gap:11px; min-width:0; }
-    .file-icon { width:38px; height:38px; display:grid; place-items:center; flex:none; border-radius:8px; background:var(--accent); color:var(--primary); }
-    .file-icon svg { width:19px; height:19px; }
-    .file strong { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }
-    .file span { display:block; margin-top:3px; color:var(--muted-fg); font-size:10px; }
-    .badge { display:inline-flex; align-items:center; gap:5px; padding:4px 7px; border-radius:999px; font-size:9px; font-weight:800; }
-    .badge::before { content:""; width:5px; height:5px; border-radius:50%; background:currentColor; }
-    .badge.running { color:var(--blue); background:var(--blue-bg); }
-    .badge.ok { color:var(--success); background:var(--success-bg); }
-    .badge.warning { color:var(--warning); background:var(--warning-bg); }
-    .badge.error { color:var(--danger); background:var(--danger-bg); }
-    .progress-area { padding:18px; }
-    .progress-top { display:flex; justify-content:space-between; gap:18px; margin-bottom:8px; font-size:11px; }
-    .progress-top span { color:var(--muted-fg); }
-    .progress { height:8px; overflow:hidden; border-radius:999px; background:var(--muted); }
-    .progress span { display:block; width:68%; height:100%; border-radius:inherit; background:var(--primary); }
-    .progress-foot { display:flex; justify-content:space-between; gap:18px; margin-top:7px; color:#94a3b8; font-size:9px; }
-    .metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin:14px 0; }
-    .metric { padding:14px; }
+    .metric { padding:15px; }
     .metric-label { color:var(--muted-fg); font-size:10px; font-weight:650; }
-    .metric-value { margin-top:6px; font-size:21px; font-weight:800; letter-spacing:-.03em; }
-    .green { color:var(--success); } .amber { color:var(--warning); } .red { color:var(--danger); }
-    .table-card { overflow:hidden; }
-    .table-head { display:flex; align-items:center; justify-content:space-between; gap:14px; padding:14px 16px; border-bottom:1px solid var(--border); }
-    .table-head h2 { margin:0; font-size:13px; }
-    .table-head p { margin:3px 0 0; color:var(--muted-fg); font-size:10px; }
-    .filters { display:flex; gap:7px; }
-    .control { height:32px; padding:0 9px; border:1px solid var(--border); border-radius:7px; background:#fff; color:#475569; font-size:10px; }
+    .metric-value { margin:7px 0 2px; font-size:23px; font-weight:800; letter-spacing:-.03em; }
+    .metric-caption { color:#94a3b8; font-size:9px; }
+    .green { color:var(--success); } .amber { color:var(--warning); }
+    .grid { display:grid; grid-template-columns:minmax(0,1.25fr) minmax(270px,.75fr); gap:14px; }
+    .card-head { display:flex; align-items:center; justify-content:space-between; gap:14px; padding:14px 16px; border-bottom:1px solid var(--border); }
+    .card-head h2 { margin:0; font-size:13px; }
+    .card-head p { margin:3px 0 0; color:var(--muted-fg); font-size:10px; }
+    .card-body { padding:15px 16px; }
+    .bars { display:grid; gap:12px; }
+    .bar-row { display:grid; grid-template-columns:145px 1fr 28px; align-items:center; gap:10px; color:#475569; font-size:10px; }
+    .bar { height:7px; overflow:hidden; border-radius:999px; background:var(--muted); }
+    .bar span { display:block; height:100%; border-radius:inherit; background:var(--primary); }
+    .bar-row:nth-child(2) .bar span { background:#d97706; }
+    .bar-row:nth-child(3) .bar span { background:#2563eb; }
+    .bar-row:nth-child(4) .bar span { background:var(--purple); }
+    .priorities { display:grid; gap:10px; }
+    .priority { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; padding-bottom:10px; border-bottom:1px solid #f1f5f9; }
+    .priority:last-child { padding-bottom:0; border-bottom:0; }
+    .priority strong { display:block; font-size:10px; }
+    .priority span { color:var(--muted-fg); font-size:9px; }
+    .count { min-width:26px; padding:3px 6px; border-radius:999px; background:var(--warning-bg); color:var(--warning)!important; font-size:9px!important; font-weight:800; text-align:center; }
+    .recent { grid-column:1 / -1; }
     .table-wrap { overflow-x:auto; }
     table { width:100%; border-collapse:collapse; font-size:10px; }
     th,td { padding:10px 13px; border-bottom:1px solid #f1f5f9; text-align:left; white-space:nowrap; }
     th { background:#f8fafc; color:#64748b; font-size:9px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; }
     .link { color:var(--primary); font-weight:750; }
-    .issue { max-width:280px; overflow:hidden; text-overflow:ellipsis; color:#475569; }
-    .line-no { color:#94a3b8; }
-    .table-foot { display:flex; align-items:center; justify-content:space-between; gap:14px; padding:11px 14px; color:var(--muted-fg); font-size:10px; }
-    .callout { display:flex; align-items:flex-start; gap:9px; margin-top:12px; padding:11px 12px; border:1px solid #bae6fd; border-radius:8px; background:#f0f9ff; color:#075985; font-size:10px; line-height:1.5; }
-    .callout svg { width:15px; height:15px; flex:none; margin-top:1px; }
-    @media (max-width:900px) { .layout{grid-template-columns:70px minmax(0,1fr)} .sidebar{padding-inline:8px} .nav-label,.nav-item span:not(.nav-icon){display:none} .nav-item{justify-content:center} .metrics{grid-template-columns:repeat(2,minmax(0,1fr))} }
-    @media (max-width:620px) { .review-note{align-items:flex-start;flex-direction:column} .frame{width:calc(100% - 12px);margin-top:6px} .appbar{padding-inline:14px}.env{display:none}.layout{display:block}.sidebar{display:none}.content{padding:20px 14px 28px}.page-header{display:block}.page-header .btn{margin-top:12px}.metrics{grid-template-columns:1fr 1fr}.import-head,.table-head{align-items:flex-start;flex-direction:column}.filters{width:100%;overflow-x:auto} }
+    .badge { display:inline-flex; align-items:center; gap:5px; padding:4px 7px; border-radius:999px; font-size:9px; font-weight:800; }
+    .badge::before { content:""; width:5px; height:5px; border-radius:50%; background:currentColor; }
+    .badge.ok { color:var(--success); background:var(--success-bg); }
+    .badge.pending { color:var(--warning); background:var(--warning-bg); }
+    .note { margin-top:11px; color:#64748b; font-size:9px; }
+    @media(max-width:900px){.layout{grid-template-columns:70px minmax(0,1fr)}.sidebar{padding-inline:8px}.nav-label,.nav-item span:not(.nav-icon),.side-foot{display:none}.nav-item{justify-content:center}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.grid{grid-template-columns:1fr}.recent{grid-column:auto}}
+    @media(max-width:620px){.review-note{align-items:flex-start;flex-direction:column}.frame{width:calc(100% - 12px);margin-top:6px}.appbar{padding-inline:14px}.env{display:none}.layout{display:block}.sidebar{display:none}.content{padding:20px 14px 28px}.page-header{display:block}.actions{justify-content:flex-start;margin-top:12px}.metrics{grid-template-columns:1fr 1fr}.context{align-items:flex-start;flex-direction:column}}
   </style>
 </head>
 <body>
-  <header class="review-note"><div><strong>Tela 2 — Importação em processamento</strong><br>Revise somente o estado após selecionar o CSV e enquanto as guias são analisadas.</div><span class="tag">SHADCN/UI · MOCKUP</span></header>
+  <header class="review-note"><div><strong>Tela 3 — Visão geral após processamento</strong><br>Revise o dashboard preenchido depois que o primeiro CSV terminar.</div><span class="tag">SHADCN/UI · MOCKUP</span></header>
   <main class="frame">
     <header class="appbar"><div class="logo"><span class="logo-mark">V</span>Conferência de guias</div><div class="appbar-actions"><span class="env">Ambiente demonstrativo</span><span class="user">OP</span></div></header>
     <div class="layout">
-      <aside class="sidebar"><div class="nav-label">Operação</div><div class="nav-item"><span class="nav-icon">▦</span><span>Visão geral</span></div><div class="nav-item"><span class="nav-icon">▤</span><span>Guias</span></div><div class="nav-item"><span class="nav-icon">＋</span><span>Nova guia</span></div><div class="nav-item active"><span class="nav-icon">⇧</span><span>Importações</span></div><div class="nav-item"><span class="nav-icon">◉</span><span>Regras</span></div></aside>
+      <aside class="sidebar"><div class="nav-label">Operação</div><div class="nav-item active"><span class="nav-icon">▦</span><span>Visão geral</span></div><div class="nav-item"><span class="nav-icon">▤</span><span>Guias</span></div><div class="nav-item"><span class="nav-icon">＋</span><span>Nova guia</span></div><div class="nav-item"><span class="nav-icon">⇧</span><span>Importações</span></div><div class="nav-item"><span class="nav-icon">◉</span><span>Regras</span></div><div class="side-foot">A conferência preventiva não garante pagamento pelo convênio.</div></aside>
       <section class="content">
-        <div class="page-header"><div><h1>Importando guias</h1><p>O lote é registrado e cada linha recebe um resultado de processamento.</p></div><button class="btn" disabled>Selecionar outro arquivo</button></div>
-        <article class="card">
-          <div class="import-head">
-            <div class="file"><div class="file-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"></path><path d="M14 2v6h6"></path><path d="M8 13h8"></path><path d="M8 17h5"></path></svg></div><div><strong>guias-exemplo.csv</strong><span>Lote LOTE-EXEMPLO · upload manual</span></div></div>
-            <span class="badge running">Processando</span>
-          </div>
-          <div class="progress-area"><div class="progress-top"><strong>Conferindo guias</strong><span>68%</span></div><div class="progress"><span></span></div><div class="progress-foot"><span>Linhas concluídas ficam disponíveis imediatamente</span><span>Tempo restante estimado: —</span></div></div>
-        </article>
+        <div class="page-header"><div><h1>Visão geral</h1><p>Acompanhe os indicadores e priorize as correções antes do envio.</p></div><div class="actions"><button class="btn">＋ Nova guia</button><button class="btn primary">⇧ Importar CSV</button></div></div>
+        <div class="context"><div><strong>Dados atuais</strong> · atualizado após o processamento de guias-exemplo.csv</div><select><option>Todos os registros</option><option>Última importação</option></select></div>
         <section class="metrics">
-          <article class="card metric"><div class="metric-label">Linhas encontradas</div><div class="metric-value">—</div></article>
-          <article class="card metric"><div class="metric-label">Processadas</div><div class="metric-value green">—</div></article>
-          <article class="card metric"><div class="metric-label">Em andamento</div><div class="metric-value">—</div></article>
-          <article class="card metric"><div class="metric-label">Falhas de entrada</div><div class="metric-value red">—</div></article>
+          <article class="card metric"><div class="metric-label">Guias verificadas</div><div class="metric-value">00</div><div class="metric-caption">uma vez por revisão vigente</div></article>
+          <article class="card metric"><div class="metric-label">Sem pendências</div><div class="metric-value green">00</div><div class="metric-caption">no escopo verificado</div></article>
+          <article class="card metric"><div class="metric-label">Com pendências</div><div class="metric-value amber">00</div><div class="metric-caption">precisam de ação</div></article>
+          <article class="card metric"><div class="metric-label">Exposição associada</div><div class="metric-value amber">R$ —</div><div class="metric-caption">não é glosa realizada</div></article>
         </section>
-        <article class="card table-card">
-          <div class="table-head"><div><h2>Linhas do arquivo</h2><p>Acompanhe o resultado sem esconder falhas parciais.</p></div><div class="filters"><select class="control"><option>Status: todos</option></select><input class="control" placeholder="Buscar guia"></div></div>
-          <div class="table-wrap"><table><thead><tr><th>Linha</th><th>Guia</th><th>Convênio</th><th>Procedimento</th><th>Processamento</th><th>Decisão</th><th>Detalhe</th></tr></thead><tbody>
-            <tr><td class="line-no">02</td><td class="link">GUIA-A102</td><td>Convênio Alfa</td><td>Procedimento exemplo</td><td><span class="badge ok">Concluída</span></td><td><span class="badge ok">OK</span></td><td class="link">Ver resultado</td></tr>
-            <tr><td class="line-no">03</td><td class="link">GUIA-B205</td><td>Convênio Beta</td><td>Procedimento exemplo</td><td><span class="badge ok">Concluída</span></td><td><span class="badge warning">PENDENTE</span></td><td class="link">Ver resultado</td></tr>
-            <tr><td class="line-no">04</td><td>—</td><td>—</td><td>—</td><td><span class="badge error">Falha</span></td><td>—</td><td class="issue">Data em formato não reconhecido; corrija a linha e reenvie.</td></tr>
-            <tr><td class="line-no">05</td><td class="link">GUIA-C310</td><td>Convênio Gama</td><td>Procedimento exemplo</td><td><span class="badge running">Analisando</span></td><td>—</td><td class="issue">Aplicando regras e verificando observação.</td></tr>
-          </tbody></table></div>
-          <div class="table-foot"><span>Atualização durante o processamento</span><span>Itens concluídos: — de —</span></div>
-        </article>
-        <div class="callout"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg><span>Uma linha inválida não apaga as guias válidas nem transforma a importação inteira em sucesso. Ao final, o lote mostra separadamente itens registrados e falhas que precisam de correção.</span></div>
+        <section class="grid">
+          <article class="card"><div class="card-head"><div><h2>Pendências por tipo</h2><p>Ocorrências; categorias podem se sobrepor.</p></div><button class="btn ghost">Ver todas</button></div><div class="card-body bars"><div class="bar-row"><span>Autorização</span><div class="bar"><span style="width:78%"></span></div><strong>—</strong></div><div class="bar-row"><span>Validade</span><div class="bar"><span style="width:61%"></span></div><strong>—</strong></div><div class="bar-row"><span>Cobertura</span><div class="bar"><span style="width:42%"></span></div><strong>—</strong></div><div class="bar-row"><span>Dados obrigatórios</span><div class="bar"><span style="width:31%"></span></div><strong>—</strong></div></div></article>
+          <article class="card"><div class="card-head"><div><h2>Prioridades</h2><p>Guias que exigem ação primeiro.</p></div></div><div class="card-body priorities"><div class="priority"><div><strong>Autorização vencida</strong><span>Conferir documento e validade</span></div><span class="count">—</span></div><div class="priority"><div><strong>Procedimento sem cobertura</strong><span>Revisar lançamento</span></div><span class="count">—</span></div><div class="priority"><div><strong>Informação incompleta</strong><span>Completar antes do envio</span></div><span class="count">—</span></div></div></article>
+          <article class="card recent"><div class="card-head"><div><h2>Guias que precisam de atenção</h2><p>Amostra das revisões vigentes com maior prioridade.</p></div><button class="btn ghost">Abrir todas as guias</button></div><div class="table-wrap"><table><thead><tr><th>Guia</th><th>Convênio</th><th>Procedimento</th><th>Valor</th><th>Decisão</th><th>Pendência principal</th><th></th></tr></thead><tbody><tr><td class="link">GUIA-B205</td><td>Convênio Beta</td><td>Procedimento exemplo</td><td>R$ —</td><td><span class="badge pending">PENDENTE</span></td><td>Autorização</td><td class="link">Ver resultado</td></tr><tr><td class="link">GUIA-C310</td><td>Convênio Gama</td><td>Procedimento exemplo</td><td>R$ —</td><td><span class="badge pending">PENDENTE</span></td><td>Dado obrigatório</td><td class="link">Ver resultado</td></tr><tr><td class="link">GUIA-A102</td><td>Convênio Alfa</td><td>Procedimento exemplo</td><td>R$ —</td><td><span class="badge ok">OK</span></td><td>—</td><td class="link">Ver resultado</td></tr></tbody></table></div></article>
+        </section>
+        <p class="note">Dados ilustrativos. “Ver resultado” abre o pop-up aprovado. Valores associados a pendências representam exposição preventiva, não glosa confirmada.</p>
       </section>
     </div>
   </main>
