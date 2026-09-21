@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Mockup — Tela 5 · Lista de guias</title>
+  <title>Mockup — Tela 6 · Consulta direta de regra</title>
   <style>
-    :root { --bg:#f8fafc; --fg:#0f172a; --card:#fff; --muted:#f1f5f9; --muted-fg:#64748b; --border:#e2e8f0; --primary:#0f766e; --accent:#f0fdfa; --success:#047857; --success-bg:#ecfdf5; --warning:#b45309; --warning-bg:#fffbeb; --blue:#2563eb; --blue-bg:#eff6ff; }
+    :root { --bg:#f8fafc; --fg:#0f172a; --card:#fff; --muted:#f1f5f9; --muted-fg:#64748b; --border:#e2e8f0; --primary:#0f766e; --accent:#f0fdfa; --blue:#2563eb; --blue-bg:#eff6ff; --warning:#b45309; --warning-bg:#fffbeb; }
     * { box-sizing:border-box; }
     body { margin:0; min-width:320px; background:#e8edf1; color:var(--fg); font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
-    button,input,select { font:inherit; }
+    button,select { font:inherit; }
     .review-note { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:10px 20px; border-bottom:1px solid #cbd5e1; background:#fff; color:#475569; font-size:12px; }
     .review-note strong { color:var(--fg); }
     .tag { padding:4px 8px; border-radius:999px; background:#0f172a; color:#fff; font-size:10px; font-weight:800; letter-spacing:.04em; }
@@ -29,64 +29,61 @@
     .page-header { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; margin-bottom:18px; }
     h1 { margin:0; font-size:27px; letter-spacing:-.035em; }
     .page-header p { margin:5px 0 0; color:var(--muted-fg); font-size:12px; }
-    .actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
-    .btn { min-height:36px; padding:0 13px; border:1px solid var(--border); border-radius:7px; background:#fff; color:#1e293b; font-size:12px; font-weight:700; box-shadow:0 1px 2px rgba(15,23,42,.03); }
-    .btn.primary { border-color:var(--primary); background:var(--primary); color:#fff; }
-    .card { min-width:0; border:1px solid var(--border); border-radius:10px; background:var(--card); box-shadow:0 1px 2px rgba(15,23,42,.025); }
-    .summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-bottom:13px; }
-    .summary-card { padding:12px 14px; }
-    .summary-card span { display:block; color:var(--muted-fg); font-size:9px; }
-    .summary-card strong { display:block; margin-top:4px; font-size:17px; }
-    .toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:13px 14px; border-bottom:1px solid var(--border); }
-    .filters { display:flex; gap:7px; flex-wrap:wrap; }
-    .control { height:34px; padding:0 9px; border:1px solid var(--border); border-radius:7px; background:#fff; color:#475569; font-size:10px; outline:none; }
-    .control:focus { border-color:var(--primary); box-shadow:0 0 0 3px rgba(15,118,110,.15); }
-    .search { min-width:210px; }
-    .view-note { padding:10px 14px; border-bottom:1px solid var(--border); background:#f8fafc; color:var(--muted-fg); font-size:9px; }
-    .view-note strong { color:#334155; }
-    .table-wrap { overflow-x:auto; }
-    table { width:100%; border-collapse:collapse; font-size:10px; }
-    th,td { padding:11px 12px; border-bottom:1px solid #f1f5f9; text-align:left; white-space:nowrap; }
-    th { background:#fff; color:#64748b; font-size:9px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; }
-    tr:hover { background:#fafcfc; }
-    .link { color:var(--primary); font-weight:750; }
-    .badge { display:inline-flex; align-items:center; gap:5px; padding:4px 7px; border-radius:999px; font-size:9px; font-weight:800; }
-    .badge::before { content:""; width:5px; height:5px; border-radius:50%; background:currentColor; }
-    .badge.ok { color:var(--success); background:var(--success-bg); }
-    .badge.pending { color:var(--warning); background:var(--warning-bg); }
-    .revision { display:inline-flex; padding:4px 7px; border-radius:999px; background:var(--blue-bg); color:var(--blue); font-size:9px; font-weight:700; }
-    .reason { max-width:190px; overflow:hidden; text-overflow:ellipsis; }
-    .pagination { display:flex; align-items:center; justify-content:space-between; gap:14px; padding:11px 14px; color:var(--muted-fg); font-size:10px; }
-    .pages { display:flex; gap:4px; }
-    .page { width:28px; height:28px; display:grid; place-items:center; border:1px solid var(--border); border-radius:6px; background:#fff; color:#475569; }
-    .page.active { border-color:var(--primary); background:var(--primary); color:#fff; }
-    .footnote { margin-top:11px; color:#64748b; font-size:9px; }
-    @media(max-width:900px){.layout{grid-template-columns:70px minmax(0,1fr)}.sidebar{padding-inline:8px}.nav-label,.nav-item span:not(.nav-icon){display:none}.nav-item{justify-content:center}.summary{grid-template-columns:1fr 1fr 1fr}.toolbar{align-items:flex-start;flex-direction:column}.filters{width:100%}}
-    @media(max-width:620px){.review-note{align-items:flex-start;flex-direction:column}.frame{width:calc(100% - 12px);margin-top:6px}.appbar{padding-inline:14px}.env{display:none}.layout{display:block}.sidebar{display:none}.content{padding:20px 14px 28px}.page-header{display:block}.actions{justify-content:flex-start;margin-top:12px}.summary{grid-template-columns:1fr}.filters{overflow-x:auto;flex-wrap:nowrap}.pagination{align-items:flex-start;flex-direction:column}}
+    .version { display:flex; align-items:center; gap:7px; padding:7px 10px; border:1px solid var(--border); border-radius:8px; background:#fff; color:#475569; font-size:10px; white-space:nowrap; }
+    .version span { padding:3px 6px; border-radius:999px; background:var(--muted); font-weight:750; }
+    .card { min-width:0; border:1px solid var(--border); border-radius:10px; background:#fff; box-shadow:0 1px 2px rgba(15,23,42,.025); }
+    .query { display:grid; grid-template-columns:1fr 1fr auto; align-items:end; gap:10px; padding:17px; }
+    .field label { display:block; margin-bottom:5px; color:#334155; font-size:10px; font-weight:700; }
+    .select { width:100%; height:38px; padding:0 10px; border:1px solid var(--border); border-radius:7px; background:#fff; color:#475569; font-size:11px; outline:none; }
+    .select:focus { border-color:var(--primary); box-shadow:0 0 0 3px rgba(15,118,110,.15); }
+    .btn { min-height:38px; padding:0 14px; border:1px solid var(--primary); border-radius:7px; background:var(--primary); color:#fff; font-size:11px; font-weight:750; }
+    .query-note { display:flex; gap:8px; padding:10px 17px; border-top:1px solid var(--border); background:#f8fafc; color:var(--muted-fg); font-size:9px; line-height:1.45; }
+    .query-note svg { width:14px; height:14px; flex:none; }
+    .result { margin-top:14px; overflow:hidden; }
+    .result-head { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; padding:16px 18px; border-bottom:1px solid var(--border); }
+    .result-head h2 { margin:0; font-size:16px; }
+    .result-head p { margin:4px 0 0; color:var(--muted-fg); font-size:10px; }
+    .covered { display:inline-flex; align-items:center; gap:5px; padding:5px 8px; border-radius:999px; background:var(--accent); color:var(--primary); font-size:9px; font-weight:800; white-space:nowrap; }
+    .result-body { display:grid; grid-template-columns:minmax(0,1.25fr) minmax(280px,.75fr); }
+    .main { padding:17px 18px; border-right:1px solid var(--border); }
+    .side { padding:17px 18px; }
+    .facts { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin-bottom:17px; }
+    .fact { padding:11px; border:1px solid var(--border); border-radius:8px; background:#f8fafc; }
+    .fact span { display:block; color:var(--muted-fg); font-size:8px; text-transform:uppercase; }
+    .fact strong { display:block; margin-top:4px; font-size:11px; }
+    .section-title { margin:0 0 9px; font-size:11px; }
+    .chips { display:flex; flex-wrap:wrap; gap:6px; }
+    .chip { padding:5px 8px; border:1px solid var(--border); border-radius:999px; color:#475569; font-size:9px; font-weight:650; }
+    .literal { margin-top:17px; padding:11px 12px; border-left:3px solid var(--primary); border-radius:0 7px 7px 0; background:#f8fafc; }
+    .literal strong { display:block; margin-bottom:4px; font-size:10px; }
+    .literal p { margin:0; color:#475569; font-size:9px; line-height:1.5; }
+    .side-block { padding-bottom:14px; margin-bottom:14px; border-bottom:1px solid var(--border); }
+    .side-block:last-child { padding-bottom:0; margin-bottom:0; border-bottom:0; }
+    .side-block span { display:block; color:var(--muted-fg); font-size:8px; text-transform:uppercase; }
+    .side-block strong { display:block; margin-top:4px; font-size:10px; }
+    .side-block p { margin:5px 0 0; color:#475569; font-size:9px; line-height:1.5; }
+    .mcp-note { display:flex; gap:9px; margin-top:14px; padding:11px 12px; border:1px solid #bfdbfe; border-radius:8px; background:var(--blue-bg); color:#1e40af; }
+    .mcp-note svg { width:16px; height:16px; flex:none; }
+    .mcp-note strong { display:block; font-size:10px; }
+    .mcp-note span { display:block; margin-top:2px; font-size:9px; line-height:1.45; }
+    @media(max-width:900px){.layout{grid-template-columns:70px minmax(0,1fr)}.sidebar{padding-inline:8px}.nav-label,.nav-item span:not(.nav-icon){display:none}.nav-item{justify-content:center}.query{grid-template-columns:1fr 1fr}.query .btn{grid-column:1/-1}.result-body{grid-template-columns:1fr}.main{border-right:0;border-bottom:1px solid var(--border)}.facts{grid-template-columns:1fr 1fr}}
+    @media(max-width:620px){.review-note{align-items:flex-start;flex-direction:column}.frame{width:calc(100% - 12px);margin-top:6px}.appbar{padding-inline:14px}.env{display:none}.layout{display:block}.sidebar{display:none}.content{padding:20px 14px 28px}.page-header{display:block}.version{display:inline-flex;margin-top:12px}.query{grid-template-columns:1fr}.facts{grid-template-columns:1fr 1fr}}
   </style>
 </head>
 <body>
-  <header class="review-note"><div><strong>Tela 5 — Lista de guias</strong><br>Revise a busca, os filtros e a tabela operacional das revisões vigentes.</div><span class="tag">SHADCN/UI · MOCKUP</span></header>
+  <header class="review-note"><div><strong>Tela 6 — Consulta direta de regra</strong><br>Versão final baseada na alternativa A.</div><span class="tag">SHADCN/UI · MOCKUP</span></header>
   <main class="frame">
     <header class="appbar"><div class="logo"><span class="logo-mark">V</span>Conferência de guias</div><div class="appbar-actions"><span class="env">Ambiente demonstrativo</span><span class="user">OP</span></div></header>
     <div class="layout">
-      <aside class="sidebar"><div class="nav-label">Operação</div><div class="nav-item"><span class="nav-icon">▦</span><span>Visão geral</span></div><div class="nav-item active"><span class="nav-icon">▤</span><span>Guias</span></div><div class="nav-item"><span class="nav-icon">＋</span><span>Nova guia</span></div><div class="nav-item"><span class="nav-icon">⇧</span><span>Importações</span></div><div class="nav-item"><span class="nav-icon">◉</span><span>Regras</span></div></aside>
+      <aside class="sidebar"><div class="nav-label">Operação</div><div class="nav-item"><span class="nav-icon">▦</span><span>Visão geral</span></div><div class="nav-item"><span class="nav-icon">▤</span><span>Guias</span></div><div class="nav-item"><span class="nav-icon">＋</span><span>Nova guia</span></div><div class="nav-item"><span class="nav-icon">⇧</span><span>Importações</span></div><div class="nav-item active"><span class="nav-icon">◉</span><span>Regras</span></div></aside>
       <section class="content">
-        <div class="page-header"><div><h1>Guias</h1><p>Consulte a revisão vigente, entenda a decisão e encontre o que precisa de correção.</p></div><div class="actions"><button class="btn">⇧ Importar CSV</button><button class="btn primary">＋ Nova guia</button></div></div>
-        <section class="summary"><article class="card summary-card"><span>Guias encontradas</span><strong>00</strong></article><article class="card summary-card"><span>Com pendências</span><strong>00</strong></article><article class="card summary-card"><span>Valor associado ao filtro</span><strong>R$ —</strong></article></section>
-        <article class="card">
-          <div class="toolbar"><div class="filters"><input class="control search" placeholder="Buscar por ID ou paciente"><select class="control"><option>Decisão: todas</option></select><select class="control"><option>Convênio: todos</option></select><select class="control"><option>Lote: todos</option></select><select class="control"><option>Motivo: todos</option></select></div><button class="btn">Limpar filtros</button></div>
-          <div class="view-note"><strong>Visão atual:</strong> cada guia aparece uma vez, usando somente sua revisão vigente. O histórico permanece no detalhe.</div>
-          <div class="table-wrap"><table><thead><tr><th>Guia</th><th>Paciente</th><th>Atendimento</th><th>Convênio</th><th>Procedimento</th><th>Valor</th><th>Decisão</th><th>Revisão</th><th>Pendência principal</th><th></th></tr></thead><tbody>
-            <tr><td class="link">GUIA-B205</td><td>P-EXEMPLO-2</td><td>00/00/0000</td><td>Convênio Beta</td><td>Procedimento exemplo</td><td>R$ —</td><td><span class="badge pending">PENDENTE</span></td><td><span class="revision">v1</span></td><td class="reason">Autorização precisa ser conferida</td><td class="link">Ver resultado</td></tr>
-            <tr><td class="link">GUIA-C310</td><td>P-EXEMPLO-3</td><td>00/00/0000</td><td>Convênio Gama</td><td>Procedimento exemplo</td><td>R$ —</td><td><span class="badge pending">PENDENTE</span></td><td><span class="revision">v2</span></td><td class="reason">Dado obrigatório ausente</td><td class="link">Ver resultado</td></tr>
-            <tr><td class="link">GUIA-A102</td><td>P-EXEMPLO-1</td><td>00/00/0000</td><td>Convênio Alfa</td><td>Procedimento exemplo</td><td>R$ —</td><td><span class="badge ok">OK</span></td><td><span class="revision">v1</span></td><td>—</td><td class="link">Ver resultado</td></tr>
-            <tr><td class="link">GUIA-D415</td><td>P-EXEMPLO-4</td><td>00/00/0000</td><td>Convênio Beta</td><td>Procedimento exemplo</td><td>R$ —</td><td><span class="badge pending">PENDENTE</span></td><td><span class="revision">v1</span></td><td class="reason">Procedimento sem cobertura</td><td class="link">Ver resultado</td></tr>
-            <tr><td class="link">GUIA-E520</td><td>P-EXEMPLO-5</td><td>00/00/0000</td><td>Convênio Alfa</td><td>Procedimento exemplo</td><td>R$ —</td><td><span class="badge ok">OK</span></td><td><span class="revision">v1</span></td><td>—</td><td class="link">Ver resultado</td></tr>
-          </tbody></table></div>
-          <div class="pagination"><span>Mostrando itens — a — de —</span><div class="pages"><span class="page">‹</span><span class="page active">1</span><span class="page">2</span><span class="page">›</span></div></div>
+        <div class="page-header"><div><h1>Consultar regra</h1><p>Escolha um convênio e um procedimento para ver somente a regra aplicável.</p></div><div class="version">Versão ativa <span>mês/ano</span></div></div>
+        <article class="card"><div class="query"><div class="field"><label>Convênio</label><select class="select"><option>Convênio Alfa</option></select></div><div class="field"><label>Procedimento</label><select class="select"><option>COD-001 · Procedimento ilustrativo</option></select></div><button class="btn">Consultar regra</button></div><div class="query-note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg><span>Esta consulta é somente leitura e não cadastra guia, não altera regras e não modifica indicadores.</span></div></article>
+        <article class="card result">
+          <header class="result-head"><div><h2>Convênio Alfa · COD-001</h2><p>Procedimento ilustrativo · resultado na versão ativa.</p></div><span class="covered">✓ Procedimento coberto</span></header>
+          <div class="result-body"><section class="main"><div class="facts"><div class="fact"><span>Valor de referência</span><strong>R$ —</strong></div><div class="fact"><span>Limite</span><strong>— sessões</strong></div><div class="fact"><span>Prazo de envio</span><strong>— dias</strong></div><div class="fact"><span>Validade máxima</span><strong>— dias</strong></div></div><h3 class="section-title">Campos obrigatórios</h3><div class="chips"><span class="chip">Número da autorização</span><span class="chip">Validade</span><span class="chip">Registro profissional</span><span class="chip">Carteirinha</span><span class="chip">CID</span></div><div class="literal"><strong>Observação literal do convênio</strong><p>O texto integral fornecido pela fonte oficial aparece aqui, sem resumo que possa mudar o sentido.</p></div></section><aside class="side"><div class="side-block"><span>Fonte</span><strong>Arquivo de regras versionado</strong><p>O resultado informa qual versão fundamentou a consulta.</p></div><div class="side-block"><span>Interpretação</span><strong>Consulta, não decisão de uma guia</strong><p>Para obter OK ou PENDENTE, é necessário verificar os dados completos da guia.</p></div><div class="side-block"><span>Limitação</span><strong>Sem validação externa</strong><p>A consulta não autentica autorização, registro profissional ou pagamento.</p></div></aside></div>
         </article>
-        <p class="footnote">“Ver resultado” abre o pop-up aprovado. “Salvar correção” conduz ao mesmo wizard preenchido e cria uma nova revisão.</p>
+        <div class="mcp-note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 9h8"></path><path d="M8 15h8"></path><rect width="18" height="14" x="3" y="5" rx="2"></rect></svg><div><strong>Mesmo contrato do MCP</strong><span>A ferramenta obrigatória recebe convênio + procedimento e devolve este mesmo recorte estruturado, com versão e limitações.</span></div></div>
       </section>
     </div>
   </main>
