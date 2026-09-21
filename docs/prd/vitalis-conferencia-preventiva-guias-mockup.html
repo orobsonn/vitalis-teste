@@ -3,164 +3,111 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Mockup — Tela 1 · Visão geral vazia</title>
+  <title>Mockup — Tela 2 · Importação em processamento</title>
   <style>
-    :root {
-      --background: #f8fafc;
-      --foreground: #0f172a;
-      --card: #ffffff;
-      --muted: #f1f5f9;
-      --muted-foreground: #64748b;
-      --border: #e2e8f0;
-      --primary: #0f766e;
-      --primary-foreground: #ffffff;
-      --accent: #f0fdfa;
-      --success: #047857;
-      --success-bg: #ecfdf5;
-      --warning: #b45309;
-      --warning-bg: #fffbeb;
-      --radius: 10px;
-    }
+    :root { --bg:#f8fafc; --fg:#0f172a; --card:#fff; --muted:#f1f5f9; --muted-fg:#64748b; --border:#e2e8f0; --primary:#0f766e; --accent:#f0fdfa; --success:#047857; --success-bg:#ecfdf5; --warning:#b45309; --warning-bg:#fffbeb; --danger:#b91c1c; --danger-bg:#fef2f2; --blue:#2563eb; --blue-bg:#eff6ff; }
     * { box-sizing: border-box; }
-    body { margin: 0; min-width: 320px; background: #e8edf1; color: var(--foreground); font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    button { font: inherit; }
-    .review-note { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 20px; border-bottom: 1px solid #cbd5e1; background: white; color: #475569; font-size: 12px; }
-    .review-note strong { color: var(--foreground); }
-    .tag { padding: 4px 8px; border-radius: 999px; background: #0f172a; color: white; font-size: 10px; font-weight: 800; letter-spacing: .04em; }
-    .frame { width: min(1440px, calc(100% - 28px)); min-height: 780px; margin: 14px auto 32px; overflow: hidden; border: 1px solid #cbd5e1; border-radius: 14px; background: var(--background); box-shadow: 0 20px 55px rgba(15,23,42,.12); }
-    .appbar { height: 64px; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; border-bottom: 1px solid var(--border); background: white; }
-    .logo { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 780; }
-    .logo-mark { width: 31px; height: 31px; display: grid; place-items: center; border-radius: 8px; background: var(--primary); color: white; font-weight: 900; }
-    .appbar-actions { display: flex; align-items: center; gap: 8px; }
-    .env { padding: 5px 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted-foreground); font-size: 10px; }
-    .user { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; background: var(--muted); color: #475569; font-size: 10px; font-weight: 800; }
-    .layout { display: grid; grid-template-columns: 214px minmax(0, 1fr); min-height: 716px; }
-    .sidebar { padding: 18px 12px; border-right: 1px solid var(--border); background: white; }
-    .nav-label { margin: 2px 10px 8px; color: #94a3b8; font-size: 10px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
-    .nav-item { display: flex; align-items: center; gap: 9px; margin-bottom: 3px; padding: 9px 10px; border-radius: 7px; color: #475569; font-size: 12px; font-weight: 620; }
-    .nav-item.active { background: var(--accent); color: var(--primary); }
-    .nav-icon { width: 18px; text-align: center; }
-    .side-foot { margin: 30px 8px 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: #f8fafc; color: #64748b; font-size: 10px; line-height: 1.5; }
-    .content { min-width: 0; padding: 27px 28px 36px; }
-    .page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 20px; }
-    h1 { margin: 0; font-size: 27px; letter-spacing: -.035em; }
-    .page-header p { margin: 5px 0 0; color: var(--muted-foreground); font-size: 12px; }
-    .actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-    .btn { min-height: 36px; padding: 0 13px; border: 1px solid var(--border); border-radius: 7px; background: white; color: #1e293b; font-size: 12px; font-weight: 700; box-shadow: 0 1px 2px rgba(15,23,42,.03); }
-    .btn.primary { border-color: var(--primary); background: var(--primary); color: var(--primary-foreground); }
-    .btn.ghost { border-color: transparent; box-shadow: none; color: var(--muted-foreground); }
-    .tabs { display: inline-flex; gap: 3px; margin-bottom: 12px; padding: 3px; border: 1px solid var(--border); border-radius: 8px; background: var(--muted); }
-    .tab { padding: 6px 10px; border-radius: 6px; color: #64748b; font-size: 11px; font-weight: 700; }
-    .tab.active { background: white; color: var(--foreground); box-shadow: 0 1px 2px rgba(15,23,42,.08); }
-    .empty-state { min-height: 500px; display: grid; place-items: center; padding: 42px 22px; border: 1px dashed #cbd5e1; border-radius: 12px; background: white; text-align: center; }
-    .empty-inner { width: min(520px, 100%); }
-    .empty-icon { width: 52px; height: 52px; display: grid; place-items: center; margin: 0 auto 15px; border-radius: 12px; background: var(--accent); color: var(--primary); }
-    .empty-icon svg { width: 24px; height: 24px; }
-    .empty-state h2 { margin: 0; font-size: 20px; letter-spacing: -.025em; }
-    .empty-state > .empty-inner > p { margin: 8px auto 18px; color: var(--muted-foreground); font-size: 12px; line-height: 1.55; }
-    .empty-actions { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; }
-    .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 30px; text-align: left; }
-    .step { padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: #f8fafc; }
-    .step-num { width: 30px; height: 30px; display: grid; place-items: center; margin-bottom: 10px; border-radius: 9px; background: #e2e8f0; color: #475569; }
-    .step-num svg { width: 16px; height: 16px; }
-    .step strong { display: block; font-size: 10px; }
-    .step > span:not(.step-num) { display: block; margin-top: 3px; color: var(--muted-foreground); font-size: 9px; line-height: 1.45; }
-    .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
-    .card { min-width: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); box-shadow: 0 1px 2px rgba(15,23,42,.025); }
-    .metric { padding: 16px; }
-    .metric-label { color: var(--muted-foreground); font-size: 11px; font-weight: 650; }
-    .metric-value { margin: 7px 0 2px; font-size: 24px; font-weight: 800; letter-spacing: -.03em; }
-    .metric-caption { color: #94a3b8; font-size: 10px; }
-    .green { color: var(--success); }
-    .amber { color: var(--warning); }
-    .grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(270px, .75fr); gap: 14px; }
-    .card-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 15px 16px; border-bottom: 1px solid var(--border); }
-    .card-head h2 { margin: 0; font-size: 13px; }
-    .card-head p { margin: 3px 0 0; color: var(--muted-foreground); font-size: 10px; }
-    .card-body { padding: 16px; }
-    .bars { display: grid; gap: 14px; }
-    .bar-row { display: grid; grid-template-columns: 145px 1fr 28px; align-items: center; gap: 10px; color: #475569; font-size: 11px; }
-    .bar { height: 7px; overflow: hidden; border-radius: 999px; background: var(--muted); }
-    .bar span { display: block; height: 100%; border-radius: inherit; background: var(--primary); }
-    .bar-row:nth-child(2) .bar span { background: #d97706; }
-    .bar-row:nth-child(3) .bar span { background: #2563eb; }
-    .bar-row:nth-child(4) .bar span { background: #7c3aed; }
-    .priorities { display: grid; gap: 10px; }
-    .priority { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding-bottom: 10px; border-bottom: 1px solid #f1f5f9; }
-    .priority:last-child { padding-bottom: 0; border-bottom: 0; }
-    .priority strong { display: block; font-size: 11px; }
-    .priority span { color: var(--muted-foreground); font-size: 10px; }
-    .count { min-width: 26px; padding: 3px 6px; border-radius: 999px; background: var(--warning-bg); color: var(--warning) !important; font-size: 10px !important; font-weight: 800; text-align: center; }
-    .recent { grid-column: 1 / -1; }
-    .table-wrap { overflow-x: auto; }
-    table { width: 100%; border-collapse: collapse; font-size: 11px; }
-    th, td { padding: 11px 13px; border-bottom: 1px solid #f1f5f9; text-align: left; white-space: nowrap; }
-    th { background: #f8fafc; color: #64748b; font-size: 9px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
-    .link { color: var(--primary); font-weight: 750; }
-    .badge { display: inline-flex; align-items: center; gap: 5px; padding: 4px 7px; border-radius: 999px; font-size: 9px; font-weight: 800; }
-    .badge::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
-    .badge.ok { color: var(--success); background: var(--success-bg); }
-    .badge.pending { color: var(--warning); background: var(--warning-bg); }
-    .source { display: inline-flex; padding: 4px 7px; border-radius: 999px; background: #f1f5f9; color: #475569; font-size: 9px; font-weight: 700; }
-    .source.new { background: #eff6ff; color: #1d4ed8; }
-    .disclaimer { margin-top: 12px; color: #64748b; font-size: 10px; }
-    @media (max-width: 900px) {
-      .layout { grid-template-columns: 70px minmax(0, 1fr); }
-      .sidebar { padding-inline: 8px; }
-      .nav-label, .nav-item span:not(.nav-icon), .side-foot { display: none; }
-      .nav-item { justify-content: center; }
-      .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .grid { grid-template-columns: 1fr; }
-      .recent { grid-column: auto; }
-    }
-    @media (max-width: 620px) {
-      .review-note { align-items: flex-start; flex-direction: column; }
-      .frame { width: calc(100% - 12px); margin-top: 6px; }
-      .appbar { padding-inline: 14px; }
-      .env { display: none; }
-      .layout { display: block; }
-      .sidebar { display: none; }
-      .content { padding: 20px 14px 28px; }
-      .page-header { display: block; }
-      .actions { justify-content: flex-start; margin-top: 13px; }
-      .metrics { grid-template-columns: 1fr 1fr; }
-    }
+    body { margin:0; min-width:320px; background:#e8edf1; color:var(--fg); font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    button,input,select { font:inherit; }
+    .review-note { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:10px 20px; border-bottom:1px solid #cbd5e1; background:#fff; color:#475569; font-size:12px; }
+    .review-note strong { color:var(--fg); }
+    .tag { padding:4px 8px; border-radius:999px; background:#0f172a; color:#fff; font-size:10px; font-weight:800; letter-spacing:.04em; }
+    .frame { width:min(1440px,calc(100% - 28px)); min-height:800px; margin:14px auto 32px; overflow:hidden; border:1px solid #cbd5e1; border-radius:14px; background:var(--bg); box-shadow:0 20px 55px rgba(15,23,42,.12); }
+    .appbar { height:64px; display:flex; align-items:center; justify-content:space-between; padding:0 24px; border-bottom:1px solid var(--border); background:#fff; }
+    .logo { display:flex; align-items:center; gap:10px; font-size:14px; font-weight:780; }
+    .logo-mark { width:31px; height:31px; display:grid; place-items:center; border-radius:8px; background:var(--primary); color:#fff; font-weight:900; }
+    .appbar-actions { display:flex; align-items:center; gap:8px; }
+    .env { padding:5px 8px; border:1px solid var(--border); border-radius:999px; color:var(--muted-fg); font-size:10px; }
+    .user { width:30px; height:30px; display:grid; place-items:center; border-radius:50%; background:var(--muted); color:#475569; font-size:10px; font-weight:800; }
+    .layout { display:grid; grid-template-columns:214px minmax(0,1fr); min-height:736px; }
+    .sidebar { padding:18px 12px; border-right:1px solid var(--border); background:#fff; }
+    .nav-label { margin:2px 10px 8px; color:#94a3b8; font-size:10px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+    .nav-item { display:flex; align-items:center; gap:9px; margin-bottom:3px; padding:9px 10px; border-radius:7px; color:#475569; font-size:12px; font-weight:620; }
+    .nav-item.active { background:var(--accent); color:var(--primary); }
+    .nav-icon { width:18px; text-align:center; }
+    .content { min-width:0; padding:27px 28px 36px; }
+    .page-header { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; margin-bottom:20px; }
+    h1 { margin:0; font-size:27px; letter-spacing:-.035em; }
+    .page-header p { margin:5px 0 0; color:var(--muted-fg); font-size:12px; }
+    .btn { min-height:36px; padding:0 13px; border:1px solid var(--border); border-radius:7px; background:#fff; color:#1e293b; font-size:12px; font-weight:700; box-shadow:0 1px 2px rgba(15,23,42,.03); }
+    .btn.primary { border-color:var(--primary); background:var(--primary); color:#fff; }
+    .btn:disabled { opacity:.52; }
+    .card { min-width:0; border:1px solid var(--border); border-radius:10px; background:var(--card); box-shadow:0 1px 2px rgba(15,23,42,.025); }
+    .import-head { display:flex; align-items:center; justify-content:space-between; gap:18px; padding:16px 18px; border-bottom:1px solid var(--border); }
+    .file { display:flex; align-items:center; gap:11px; min-width:0; }
+    .file-icon { width:38px; height:38px; display:grid; place-items:center; flex:none; border-radius:8px; background:var(--accent); color:var(--primary); }
+    .file-icon svg { width:19px; height:19px; }
+    .file strong { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }
+    .file span { display:block; margin-top:3px; color:var(--muted-fg); font-size:10px; }
+    .badge { display:inline-flex; align-items:center; gap:5px; padding:4px 7px; border-radius:999px; font-size:9px; font-weight:800; }
+    .badge::before { content:""; width:5px; height:5px; border-radius:50%; background:currentColor; }
+    .badge.running { color:var(--blue); background:var(--blue-bg); }
+    .badge.ok { color:var(--success); background:var(--success-bg); }
+    .badge.warning { color:var(--warning); background:var(--warning-bg); }
+    .badge.error { color:var(--danger); background:var(--danger-bg); }
+    .progress-area { padding:18px; }
+    .progress-top { display:flex; justify-content:space-between; gap:18px; margin-bottom:8px; font-size:11px; }
+    .progress-top span { color:var(--muted-fg); }
+    .progress { height:8px; overflow:hidden; border-radius:999px; background:var(--muted); }
+    .progress span { display:block; width:68%; height:100%; border-radius:inherit; background:var(--primary); }
+    .progress-foot { display:flex; justify-content:space-between; gap:18px; margin-top:7px; color:#94a3b8; font-size:9px; }
+    .metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin:14px 0; }
+    .metric { padding:14px; }
+    .metric-label { color:var(--muted-fg); font-size:10px; font-weight:650; }
+    .metric-value { margin-top:6px; font-size:21px; font-weight:800; letter-spacing:-.03em; }
+    .green { color:var(--success); } .amber { color:var(--warning); } .red { color:var(--danger); }
+    .table-card { overflow:hidden; }
+    .table-head { display:flex; align-items:center; justify-content:space-between; gap:14px; padding:14px 16px; border-bottom:1px solid var(--border); }
+    .table-head h2 { margin:0; font-size:13px; }
+    .table-head p { margin:3px 0 0; color:var(--muted-fg); font-size:10px; }
+    .filters { display:flex; gap:7px; }
+    .control { height:32px; padding:0 9px; border:1px solid var(--border); border-radius:7px; background:#fff; color:#475569; font-size:10px; }
+    .table-wrap { overflow-x:auto; }
+    table { width:100%; border-collapse:collapse; font-size:10px; }
+    th,td { padding:10px 13px; border-bottom:1px solid #f1f5f9; text-align:left; white-space:nowrap; }
+    th { background:#f8fafc; color:#64748b; font-size:9px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; }
+    .link { color:var(--primary); font-weight:750; }
+    .issue { max-width:280px; overflow:hidden; text-overflow:ellipsis; color:#475569; }
+    .line-no { color:#94a3b8; }
+    .table-foot { display:flex; align-items:center; justify-content:space-between; gap:14px; padding:11px 14px; color:var(--muted-fg); font-size:10px; }
+    .callout { display:flex; align-items:flex-start; gap:9px; margin-top:12px; padding:11px 12px; border:1px solid #bae6fd; border-radius:8px; background:#f0f9ff; color:#075985; font-size:10px; line-height:1.5; }
+    .callout svg { width:15px; height:15px; flex:none; margin-top:1px; }
+    @media (max-width:900px) { .layout{grid-template-columns:70px minmax(0,1fr)} .sidebar{padding-inline:8px} .nav-label,.nav-item span:not(.nav-icon){display:none} .nav-item{justify-content:center} .metrics{grid-template-columns:repeat(2,minmax(0,1fr))} }
+    @media (max-width:620px) { .review-note{align-items:flex-start;flex-direction:column} .frame{width:calc(100% - 12px);margin-top:6px} .appbar{padding-inline:14px}.env{display:none}.layout{display:block}.sidebar{display:none}.content{padding:20px 14px 28px}.page-header{display:block}.page-header .btn{margin-top:12px}.metrics{grid-template-columns:1fr 1fr}.import-head,.table-head{align-items:flex-start;flex-direction:column}.filters{width:100%;overflow-x:auto} }
   </style>
 </head>
 <body>
-  <header class="review-note"><div><strong>Tela 1 — Estado inicial vazio</strong><br>A solução ainda não tem dados. O primeiro fluxo é importar e processar um CSV.</div><span class="tag">SHADCN/UI · MOCKUP</span></header>
+  <header class="review-note"><div><strong>Tela 2 — Importação em processamento</strong><br>Revise somente o estado após selecionar o CSV e enquanto as guias são analisadas.</div><span class="tag">SHADCN/UI · MOCKUP</span></header>
   <main class="frame">
-    <header class="appbar">
-      <div class="logo"><span class="logo-mark">V</span>Conferência de guias</div>
-      <div class="appbar-actions"><span class="env">Ambiente demonstrativo</span><span class="user">OP</span></div>
-    </header>
+    <header class="appbar"><div class="logo"><span class="logo-mark">V</span>Conferência de guias</div><div class="appbar-actions"><span class="env">Ambiente demonstrativo</span><span class="user">OP</span></div></header>
     <div class="layout">
-      <aside class="sidebar">
-        <div class="nav-label">Operação</div>
-        <div class="nav-item active"><span class="nav-icon">▦</span><span>Visão geral</span></div>
-        <div class="nav-item"><span class="nav-icon">▤</span><span>Guias</span></div>
-        <div class="nav-item"><span class="nav-icon">＋</span><span>Nova guia</span></div>
-        <div class="nav-item"><span class="nav-icon">⇧</span><span>Importações</span></div>
-        <div class="nav-item"><span class="nav-icon">◉</span><span>Regras</span></div>
-        <div class="side-foot">A conferência preventiva não garante pagamento pelo convênio.</div>
-      </aside>
+      <aside class="sidebar"><div class="nav-label">Operação</div><div class="nav-item"><span class="nav-icon">▦</span><span>Visão geral</span></div><div class="nav-item"><span class="nav-icon">▤</span><span>Guias</span></div><div class="nav-item"><span class="nav-icon">＋</span><span>Nova guia</span></div><div class="nav-item active"><span class="nav-icon">⇧</span><span>Importações</span></div><div class="nav-item"><span class="nav-icon">◉</span><span>Regras</span></div></aside>
       <section class="content">
-        <div class="page-header">
-          <div><h1>Visão geral</h1><p>Importe o primeiro lote para iniciar a conferência preventiva.</p></div>
-        </div>
-        <section class="empty-state">
-          <div class="empty-inner">
-            <div class="empty-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4"></path><path d="m7 9 5-5 5 5"></path><path d="M20 15v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-4"></path></svg></div>
-            <h2>Nenhuma guia processada</h2>
-            <p>Comece enviando um arquivo CSV no formato esperado. O sistema valida as linhas, registra o lote, confere cada guia e prepara os indicadores automaticamente.</p>
-            <div class="empty-actions"><button class="btn primary">Importar primeiro CSV</button><button class="btn">Ver formato esperado</button></div>
-            <div class="steps">
-              <div class="step"><span class="step-num"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4"></path><path d="m7 9 5-5 5 5"></path><path d="M20 15v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-4"></path></svg></span><strong>Envie o arquivo</strong><span>Selecione o CSV recebido da operação.</span></div>
-              <div class="step"><span class="step-num"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"></path><path d="M21 3v6h-6"></path></svg></span><strong>Acompanhe o processamento</strong><span>Linhas válidas e falhas ficam visíveis.</span></div>
-              <div class="step"><span class="step-num"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19V9"></path><path d="M10 19V5"></path><path d="M16 19v-7"></path><path d="M22 19V3"></path></svg></span><strong>Revise o relatório</strong><span>Veja pendências, prioridades e exposição.</span></div>
-            </div>
+        <div class="page-header"><div><h1>Importando guias</h1><p>O lote é registrado e cada linha recebe um resultado de processamento.</p></div><button class="btn" disabled>Selecionar outro arquivo</button></div>
+        <article class="card">
+          <div class="import-head">
+            <div class="file"><div class="file-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"></path><path d="M14 2v6h6"></path><path d="M8 13h8"></path><path d="M8 17h5"></path></svg></div><div><strong>guias-exemplo.csv</strong><span>Lote LOTE-EXEMPLO · upload manual</span></div></div>
+            <span class="badge running">Processando</span>
           </div>
+          <div class="progress-area"><div class="progress-top"><strong>Conferindo guias</strong><span>68%</span></div><div class="progress"><span></span></div><div class="progress-foot"><span>Linhas concluídas ficam disponíveis imediatamente</span><span>Tempo restante estimado: —</span></div></div>
+        </article>
+        <section class="metrics">
+          <article class="card metric"><div class="metric-label">Linhas encontradas</div><div class="metric-value">—</div></article>
+          <article class="card metric"><div class="metric-label">Processadas</div><div class="metric-value green">—</div></article>
+          <article class="card metric"><div class="metric-label">Em andamento</div><div class="metric-value">—</div></article>
+          <article class="card metric"><div class="metric-label">Falhas de entrada</div><div class="metric-value red">—</div></article>
         </section>
+        <article class="card table-card">
+          <div class="table-head"><div><h2>Linhas do arquivo</h2><p>Acompanhe o resultado sem esconder falhas parciais.</p></div><div class="filters"><select class="control"><option>Status: todos</option></select><input class="control" placeholder="Buscar guia"></div></div>
+          <div class="table-wrap"><table><thead><tr><th>Linha</th><th>Guia</th><th>Convênio</th><th>Procedimento</th><th>Processamento</th><th>Decisão</th><th>Detalhe</th></tr></thead><tbody>
+            <tr><td class="line-no">02</td><td class="link">GUIA-A102</td><td>Convênio Alfa</td><td>Procedimento exemplo</td><td><span class="badge ok">Concluída</span></td><td><span class="badge ok">OK</span></td><td class="link">Ver resultado</td></tr>
+            <tr><td class="line-no">03</td><td class="link">GUIA-B205</td><td>Convênio Beta</td><td>Procedimento exemplo</td><td><span class="badge ok">Concluída</span></td><td><span class="badge warning">PENDENTE</span></td><td class="link">Ver resultado</td></tr>
+            <tr><td class="line-no">04</td><td>—</td><td>—</td><td>—</td><td><span class="badge error">Falha</span></td><td>—</td><td class="issue">Data em formato não reconhecido; corrija a linha e reenvie.</td></tr>
+            <tr><td class="line-no">05</td><td class="link">GUIA-C310</td><td>Convênio Gama</td><td>Procedimento exemplo</td><td><span class="badge running">Analisando</span></td><td>—</td><td class="issue">Aplicando regras e verificando observação.</td></tr>
+          </tbody></table></div>
+          <div class="table-foot"><span>Atualização durante o processamento</span><span>Itens concluídos: — de —</span></div>
+        </article>
+        <div class="callout"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg><span>Uma linha inválida não apaga as guias válidas nem transforma a importação inteira em sucesso. Ao final, o lote mostra separadamente itens registrados e falhas que precisam de correção.</span></div>
       </section>
     </div>
   </main>
