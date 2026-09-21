@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<meta name="color-scheme" content="dark">
+<link rel="stylesheet" href="/style.css">
+<title>Etapa técnica · Consultor de Negócios com IA e Analista de Implementação · Expert Integrado</title>
+</head>
+<body>
+<div class="topbar"><div class="in"><b>Expert Integrado</b><span>Processo seletivo · etapa técnica</span></div></div>
+<div class="wrap">
+<div class="eyebrow">Consultor de Negócios com IA · Analista de Implementação</div>
+<h1>Etapa técnica: as guias de convênio da Clínica Vitalis</h1>
+<p class="lede">Na primeira prova você leu a Vitalis e decidiu o que atacaria. Agora a gente quer ver você construir. Um problema real da clínica, os dados que a Carla tem em mãos, e 72 horas para colocar uma solução de pé.</p>
+<nav class="sec"><a href="#vitalis">A Vitalis</a><a href="#problema">O problema</a><a href="#materiais">Materiais</a><a href="#entrega">O que você entrega</a><a href="#regras">Regras</a><a href="#avaliacao">Como avaliamos</a><a href="#form">Enviar entrega</a></nav>
+
+<h2 id="vitalis">Lembrando a Vitalis</h2>
+<p>Rede de fisioterapia e ortopedia com três unidades numa cidade de 400 mil habitantes no interior. 41 pessoas: 14 fisioterapeutas, 4 ortopedistas parceiros, 6 recepcionistas, 2 no financeiro, a Carla (gerente geral, 11 anos de casa, começou na recepção) e o dono, Dr. Renato, ortopedista que ainda atende três manhãs por semana.</p>
+<div class="numeros">
+  <div class="num"><b>R$ 780 mil</b><span>faturamento por mês</span></div>
+  <div class="num"><b>58%</b><span>vem de convênio</span></div>
+  <div class="num"><b>R$ 62</b><span>sessão por convênio, recebida em 45 a 90 dias</span></div>
+  <div class="num"><b>8%</b><span>do faturado em convênio volta glosado</span></div>
+  <div class="num"><b>~900</b><span>guias por mês</span></div>
+</div>
+<p><strong>Como as guias funcionam hoje.</strong> A recepção preenche a guia no sistema de gestão enquanto atende WhatsApp, telefone e balcão. O financeiro confere no fim do mês, em planilha. O erro só aparece quando o convênio glosa, uns 60 dias depois. A Carla estima que 40% da glosa é guia preenchida errada ou autorização vencida.</p>
+<blockquote>“O que mais me tira o sono é a glosa. Mas eu não consigo conferir 900 guias por mês.”<cite>Carla, na reunião de kick-off</cite></blockquote>
+<p>O sistema de gestão não vai ser trocado (acabaram de renovar por dois anos), mas tem API e exporta relatórios. O Dr. Renato acompanha o projeto numa reunião semanal, às terças, 7h30.</p>
+
+<h2 id="problema">O problema desta etapa</h2>
+<p>A Carla mandou o que ela tem: as guias lançadas pela recepção em agosto e as regras que os três convênios exigem. O que a clínica precisa é que a conferência aconteça <strong>antes</strong> de a guia ser enviada ao convênio, sem depender de alguém lembrar, e que o Dr. Renato consiga ver toda terça: quantas guias foram verificadas, quantas têm problema, de que tipo, e quanto dinheiro está em risco.</p>
+<div class="callout"><p>Como resolver é decisão sua: arquitetura, ferramentas, linguagem, onde entra IA e onde não entra.</p></div>
+
+<h2 id="materiais">Materiais</h2>
+<div class="files">
+  <a class="file" href="/dados/guias.csv" download><b>guias.csv</b><span>80 guias de agosto, dados fictícios. Algumas estão certas, outras têm problemas de tipos diferentes, e algumas só se entendem lendo o que a recepção escreveu.</span></a>
+  <a class="file" href="/dados/regras_convenio.json" download><b>regras_convenio.json</b><span>O que cada convênio exige e cobre.</span></a>
+  <a class="file" href="/dicionario.html"><b>dicionário de dados</b><span>O que significa cada coluna.</span></a>
+</div>
+
+<h2 id="entrega">O que você entrega, em até 72 horas</h2>
+<ol>
+  <li><strong>A solução funcionando e publicada</strong>, que a gente consiga abrir e usar com essas guias.</li>
+  <li><strong>Um jeito de a gente mandar uma guia nova e receber a decisão sobre ela</strong>: uma URL que aceite uma guia no mesmo formato do CSV e responda em JSON com a decisão e o motivo. Você define o contrato; descreva no README como chamar. A gente vai chamar de verdade.</li>
+  <li><strong>O relatório de terça do Dr. Renato</strong>, gerado a partir da sua solução.</li>
+  <li><strong>Uma Skill</strong> (Claude Code ou Codex) que faça parte do dia a dia de quem opera a solução. Qual, é você quem escolhe.</li>
+  <li><strong>README “Como fiz”</strong>: stack e por quê; o que a IA gerou e o que você mudou na mão (pelo menos três decisões suas); o que ficou de fora e por quê; como testou; quanto tempo levou.</li>
+  <li><strong>Um vídeo de até 5 minutos</strong> mostrando funcionando e explicando uma decisão técnica.</li>
+  <li><strong>O repositório público</strong> (GitHub, GitLab, o que preferir), com o histórico de commits. Público mesmo: a gente não vai pedir acesso.</li>
+</ol>
+
+<h2 id="regras">Regras</h2>
+<ul>
+  <li>Tudo na sua conta e na sua infraestrutura. Custo zero para a Expert.</li>
+  <li>Lovable, Claude Code, Codex, Cursor, n8n, o que você usa: não faz diferença. O que a gente avalia é o que fica no ar e o que você sabe explicar sobre ele.</li>
+  <li>Tem que nascer para esta prova. Projeto pronto reaproveitado não vale.</li>
+  <li>Nenhuma chave ou senha no repositório. Como ele é público, confira isso antes de subir.</li>
+  <li>Não precisa ser bonito. Precisa funcionar, aguentar uma guia nova e ser explicável.</li>
+  <li>Teto sugerido: 6 horas de trabalho. Se estiver passando muito disso, entregue o que tem e diga o que faltou.</li>
+</ul>
+
+<h2 id="avaliacao">Como a gente avalia</h2>
+<ul>
+  <li><strong>Funciona com os dados</strong>: as decisões batem com o que está errado de verdade nas guias.</li>
+  <li><strong>Aguenta uma guia nova</strong> pela URL que você indicar.</li>
+  <li><strong>Você sabe o que construiu</strong>: na conversa com o Eric, vamos pedir uma mudança pequena ao vivo, com a tela compartilhada, e perguntar por que algumas guias caíram onde caíram.</li>
+  <li><strong>Cuidado básico</strong>: repositório, variáveis de ambiente, erro tratado.</li>
+</ul>
+<p>Usar IA é esperado. O que conta contra é não saber explicar o que está no seu próprio código.</p>
+<p>Dúvida sobre os dados ou as regras: pergunte pelo WhatsApp em que você recebeu este link, faz parte. Dúvida sobre como fazer: é sua.</p>
+
+<h2 id="form">Enviar entrega</h2>
+<p>Preencha quando estiver no ar. O envio registra data e hora.</p>
+<form name="entrega" method="POST" action="/api/entrega" data-netlify="true" netlify-honeypot="bot-field">
+  <input type="hidden" name="form-name" value="entrega">
+  <p class="hidden"><label>Não preencha: <input name="bot-field"></label></p>
+  <div class="row">
+    <label>Nome completo <input type="text" name="nome" id="nome" required autocomplete="name"></label>
+    <label>E-mail <input type="email" name="email" id="email" required autocomplete="email"></label>
+  </div>
+  <label>WhatsApp <small>o mesmo em que você recebeu o link</small><input type="tel" name="whatsapp" id="whatsapp" required></label>
+  <label>URL da solução publicada <input type="url" name="app_url" id="app_url" required placeholder="https://"></label>
+  <label>Como a gente manda uma guia nova <small>URL, método e um exemplo de chamada. Se estiver no README, diga onde.</small><textarea name="api_como_chamar" id="api_como_chamar" required></textarea></label>
+  <label>URL do repositório <small>público, sem precisar de acesso</small><input type="url" name="repo_url" id="repo_url" required placeholder="https://github.com/"></label>
+  <label>URL do vídeo <small>até 5 minutos; Loom, Drive aberto ou YouTube não listado</small><input type="url" name="video_url" id="video_url" required placeholder="https://"></label>
+  <label>Onde está a Skill <small>caminho no repositório ou link</small><input type="text" name="skill_onde" id="skill_onde" required></label>
+  <div class="row">
+    <label>Horas de trabalho, aproximadas <input type="number" name="horas" id="horas" min="0" step="0.5"></label>
+    <label>Ferramentas que usou <input type="text" name="ferramentas" id="ferramentas" placeholder="ex.: Claude Code, Supabase, Vercel"></label>
+  </div>
+  <label>O que ficou de fora e por quê <textarea name="faltou" id="faltou"></textarea></label>
+  <button type="submit">Enviar entrega</button>
+</form>
+
+<footer>Dados fictícios. Nomes de convênio, profissionais e pacientes não correspondem a pessoas ou empresas reais. <a href="https://expertintegrado.com.br">Expert Integrado</a>, 2026.</footer>
+</div>
+</body>
+</html>
