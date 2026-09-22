@@ -5,14 +5,23 @@
 // rejeitada pelo tsc com TS5097). O módulo é tratado como `ApiAprovada`,
 // interface local. RED por asserção de superfície/comportamento.
 //
-// Semântica exercitada de hashCatalogo: o texto canônico em UTF-8 é a entrada
-// direta do SHA-256. Para um valor primitivo string, o texto canônico é a
-// própria string — por isso os vetores conhecidos (vazio, "abc", fronteiras de
-// bloco, multibloco e UTF-8 acentuado) o exercitam diretamente.
+// Semântica exercitada de hashCatalogo: o digest é o SHA-256 do JSON
+// canônico — chaves ordenadas recursivamente, sem espaços insignificantes e
+// strings citadas/escapadas como no JSON padrão, inclusive para um primitivo
+// string de topo. O primitivo SHA-256 cru (vazio, "abc", fronteiras de bloco,
+// multibloco e UTF-8 acentuado) é exercitado diretamente pelo módulo
+// ../../src/shared/sha256.ts.
 import { describe, expect, it } from "vitest";
 
 const modulosBarrel = import.meta.glob("../../src/domain/index.ts", { eager: true });
 const api = Object.values(modulosBarrel)[0] as unknown as ApiAprovada;
+
+interface ApiSha {
+  sha256Hex(texto: string): string;
+}
+
+const modulosSha = import.meta.glob("../../src/shared/sha256.ts", { eager: true });
+const sha = Object.values(modulosSha)[0] as unknown as ApiSha;
 
 interface Catalogo {
   versao: string;
@@ -134,6 +143,12 @@ function reordenar(valor: unknown): unknown {
   return valor;
 }
 
+// Cópia profunda do catálogo sintético válido para introduzir um único defeito
+// por variação, sem mutar o original.
+function clonarCatalogo(): typeof CATALOGO_JSON {
+  return JSON.parse(JSON.stringify(CATALOGO_JSON)) as typeof CATALOGO_JSON;
+}
+
 const CINQUENTA_E_CINCO = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012"; // 55 bytes
 const QUARENTA_E_OITO_BITS =
   "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"; // 56 bytes — fronteira 448 bits
@@ -157,13 +172,34 @@ const VETORES_SHA256: Array<[string, string]> = [
 ];
 
 describe("hashCatalogo — SHA-256 e JSON canônico", () => {
-  it("confere os vetores SHA-256 conhecidos", () => {
-    expect(typeof api.hashCatalogo).toBe("function");
+  it("confere os vetores SHA-256 crus conhecidos", () => {
+    expect(typeof sha.sha256Hex).toBe("function");
 
     for (const [texto, esperado] of VETORES_SHA256) {
-      expect(api.hashCatalogo(texto)).toBe(esperado);
+      expect(sha.sha256Hex(texto)).toBe(esperado);
     }
-    expect(api.hashCatalogo("abc")).toMatch(/^[0-9a-f]{64}$/);
+    expect(sha.sha256Hex("abc")).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("hasheia o JSON canônico, citando strings em qualquer posição", () => {
+    expect(typeof api.hashCatalogo).toBe("function");
+
+    // Um primitivo string de topo é a string JSON citada/escapada, não os
+    // bytes crus: o vetor clássico de "abc" não é o digest de hashCatalogo.
+    expect(api.hashCatalogo("abc")).toBe(sha.sha256Hex(JSON.stringify("abc")));
+    expect(api.hashCatalogo("abc")).toBe(sha.sha256Hex('"abc"'));
+    expect(api.hashCatalogo("abc")).not.toBe(sha.sha256Hex("abc"));
+    expect(api.hashCatalogo("")).toBe(sha.sha256Hex('""'));
+
+    // Objetos: chaves ordenadas, sem espaços e strings citadas.
+    expect(api.hashCatalogo({ b: [1, "x"], a: "abc" })).toBe(
+      sha.sha256Hex('{"a":"abc","b":[1,"x"]}'),
+    );
+    expect(api.hashCatalogo({ b: [1, "x"], a: "abc" })).toMatch(/^[0-9a-f]{64}$/);
+
+    // Sem colisões entre null/"null" nem entre ["a","b"]/["a,b"].
+    expect(api.hashCatalogo({ x: null })).not.toBe(api.hashCatalogo({ x: "null" }));
+    expect(api.hashCatalogo({ x: ["a", "b"] })).not.toBe(api.hashCatalogo({ x: ["a,b"] }));
   });
 
   it("canonicaliza chaves recursivamente, sem depender da ordem", () => {
@@ -241,5 +277,204 @@ describe("carregarCatalogo e consultarRegra", () => {
       expect(resultado.erros.length).toBeGreaterThan(0);
       expect("catalogo" in resultado).toBe(false);
     }
+  });
+
+  it("rejeita catálogos ambíguos ou inconsistentes sem catálogo parcial", () => {
+    expect(typeof api.carregarCatalogo).toBe("function");
+
+    // O catálogo sintético intacto continua válido.
+    expect(api.carregarCatalogo(CATALOGO_JSON).ok).toBe(true);
+
+    const codigoDuplicado = clonarCatalogo();
+    codigoDuplicado.procedimentos.push({
+      ...codigoDuplicado.procedimentos[0]!,
+      descricao: "Procedimento duplicado",
+    });
+
+    const nomeDuplicado = clonarCatalogo();
+    nomeDuplicado.convenios[1]!.nome = "  vitalcard ";
+
+    const campoDesconhecido = clonarCatalogo();
+    campoDesconhecido.convenios[0]!.campos_obrigatorios.push("campo_inexistente");
+
+    const coberturaOrfa = clonarCatalogo();
+    coberturaOrfa.convenios[0]!.procedimentos_cobertos.push("99999999");
+
+    const prazoFracionario = clonarCatalogo();
+    prazoFracionario.convenios[0]!.prazo_envio_dias = 30.5;
+
+    const limiteFracionario = clonarCatalogo();
+    limiteFracionario.convenios[0]!.limite_sessoes_por_autorizacao = 10.5;
+
+    const validadeFracionaria = clonarCatalogo();
+    validadeFracionaria.convenios[0]!.validade_maxima_autorizacao_dias = 30.5;
+
+    const valorInseguro = clonarCatalogo();
+    valorInseguro.procedimentos[0]!.valor_referencia = Number.MAX_SAFE_INTEGER;
+
+    const invalidos: Array<[string, unknown]> = [
+      ["código de procedimento duplicado", codigoDuplicado],
+      ["nome de convênio normalizado duplicado", nomeDuplicado],
+      ["campo obrigatório fora das 18 colunas", campoDesconhecido],
+      ["procedimento coberto ausente", coberturaOrfa],
+      ["prazo de envio fracionário", prazoFracionario],
+      ["limite de sessões fracionário", limiteFracionario],
+      ["validade máxima fracionária", validadeFracionaria],
+      ["valor de referência inseguro", valorInseguro],
+    ];
+
+    for (const [rotulo, entrada] of invalidos) {
+      const resultado = api.carregarCatalogo(entrada);
+      expect(resultado.ok, rotulo).toBe(false);
+      if (resultado.ok) {
+        throw new Error(`catálogo inválido foi aceito: ${rotulo}`);
+      }
+      expect(Array.isArray(resultado.erros)).toBe(true);
+      expect(resultado.erros.length).toBeGreaterThan(0);
+      expect("catalogo" in resultado).toBe(false);
+    }
+  });
+
+  it("resolve o procedimento pelo código exato, sem ambiguidade de ordem", () => {
+    expect(typeof api.carregarCatalogo).toBe("function");
+    expect(typeof api.consultarRegra).toBe("function");
+
+    // O catálogo sintético intacto continua válido.
+    expect(api.carregarCatalogo(CATALOGO_JSON).ok).toBe(true);
+
+    // §4.5 exige a consulta pelo código exato: um código que difere do outro
+    // apenas por espaço periférico é uma entrada própria e precisa continuar
+    // alcançável, sem que uma consulta resolva para o procedimento do outro.
+    const codigoComEspaco = clonarCatalogo();
+    codigoComEspaco.procedimentos.push({
+      codigo: "50000470 ",
+      descricao: "Sessão com espaço periférico no código",
+      valor_referencia: 62.0,
+    });
+
+    const resultado = api.carregarCatalogo(codigoComEspaco);
+    expect(resultado.ok).toBe(true);
+    if (!resultado.ok) {
+      throw new Error(`catálogo deveria ser válido: ${resultado.erros.join("; ")}`);
+    }
+    const catalogo = resultado.catalogo;
+
+    const semEspaco = api.consultarRegra(
+      { convenio: "Vitalcard", procedimento_codigo: "50000470" },
+      catalogo,
+    );
+    expect(semEspaco.procedimento?.codigo).toBe("50000470");
+
+    const comEspaco = api.consultarRegra(
+      { convenio: "Vitalcard", procedimento_codigo: "50000470 " },
+      catalogo,
+    );
+    expect(comEspaco.procedimento?.codigo).toBe("50000470 ");
+  });
+
+  it("rejeita dados que não são JSON canônico em vez de colidir no hash", () => {
+    expect(typeof api.carregarCatalogo).toBe("function");
+
+    // O catálogo sintético intacto continua válido.
+    expect(api.carregarCatalogo(CATALOGO_JSON).ok).toBe(true);
+
+    // `undefined` e números não finitos seriam serializados como `null`,
+    // fazendo entradas estruturalmente distintas colidirem no mesmo hash.
+    const comPropriedadeIndefinida: unknown = { ...clonarCatalogo(), extra: undefined };
+    const comNumeroNaoFinito: unknown = { ...clonarCatalogo(), extra: Number.NaN };
+
+    // Herdar os campos do protótipo não os torna propriedades próprias: o hash
+    // canônico veria apenas `{}` e colidiria com qualquer outro objeto.
+    const camposHerdados: unknown = Object.create(clonarCatalogo());
+
+    const invalidos: Array<[string, unknown]> = [
+      ["propriedade com valor undefined", comPropriedadeIndefinida],
+      ["propriedade com número não finito", comNumeroNaoFinito],
+      ["campos herdados por protótipo", camposHerdados],
+    ];
+
+    for (const [rotulo, entrada] of invalidos) {
+      const resultado = api.carregarCatalogo(entrada);
+      expect(resultado.ok, rotulo).toBe(false);
+      if (resultado.ok) {
+        throw new Error(`entrada não canônica foi aceita como catálogo: ${rotulo}`);
+      }
+      expect(Array.isArray(resultado.erros), rotulo).toBe(true);
+      expect(resultado.erros.length, rotulo).toBeGreaterThan(0);
+      expect("catalogo" in resultado, rotulo).toBe(false);
+    }
+  });
+
+  it("rejeita valores aninhados não canônicos e acessores sem deixar a exceção escapar", () => {
+    expect(typeof api.carregarCatalogo).toBe("function");
+
+    // O catálogo sintético intacto continua válido.
+    expect(api.carregarCatalogo(CATALOGO_JSON).ok).toBe(true);
+
+    // `Date` não é um objeto JSON puro: sem chaves próprias enumeráveis seria
+    // canonicalizado como `{}` e colidiria com qualquer outro objeto vazio.
+    const comData: unknown = { ...clonarCatalogo(), extra: new Date(0) };
+
+    // Um array esparso de comprimento 1 tem um buraco: `map`/`join` o renderizam
+    // como `[]`, exatamente como um array vazio.
+    const esparso: unknown[] = [];
+    esparso.length = 1;
+    const comArrayEsparso: unknown = { ...clonarCatalogo(), extra: esparso };
+
+    // Um acessor não é um valor JSON: a regra validada não pode divergir do
+    // dado efetivamente hasheado.
+    const comAcessor: unknown = clonarCatalogo();
+    Object.defineProperty(comAcessor, "extra", { get: () => 1, enumerable: true });
+
+    // Getter hostil: o valor lançado não é um `Error` e o `String()` dele
+    // também lança, então a exceção não pode escapar de `carregarCatalogo`.
+    const hostil = {
+      [Symbol.toPrimitive](): never {
+        throw hostil;
+      },
+    };
+    const comAcessorHostil: unknown = clonarCatalogo();
+    Object.defineProperty(comAcessorHostil, "extra", {
+      get: () => {
+        throw hostil;
+      },
+      enumerable: true,
+    });
+
+    const invalidos: Array<[string, unknown]> = [
+      ["propriedade com Date", comData],
+      ["propriedade com array esparso", comArrayEsparso],
+      ["propriedade como acessor", comAcessor],
+      ["acessor com getter hostil", comAcessorHostil],
+    ];
+
+    // Cada caso é avaliado independentemente para que a falha liste todos os
+    // dados não canônicos ainda aceitos, não apenas o primeiro.
+    const problemas: string[] = [];
+    for (const [rotulo, entrada] of invalidos) {
+      let resultado: ResultadoCatalogo | undefined;
+      let lancou = false;
+      try {
+        resultado = api.carregarCatalogo(entrada);
+      } catch {
+        lancou = true;
+      }
+      if (lancou) {
+        problemas.push(`${rotulo}: a excecao escapou de carregarCatalogo`);
+        continue;
+      }
+      if (resultado === undefined || resultado.ok) {
+        problemas.push(`${rotulo}: aceito como catalogo valido`);
+        continue;
+      }
+      if (!Array.isArray(resultado.erros) || resultado.erros.length === 0) {
+        problemas.push(`${rotulo}: erros vazios`);
+        continue;
+      }
+      if ("catalogo" in resultado) {
+        problemas.push(`${rotulo}: catalogo parcial presente`);
+      }
+    }
+    expect(problemas).toEqual([]);
   });
 });

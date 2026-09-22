@@ -87,6 +87,23 @@ describe("dinheiro em centavos", () => {
     expect(api.valorParaCentavos("R$ 62,00")).toBe(6200);
   });
 
+  it("rejeita valores cujo total em centavos não é um inteiro seguro", () => {
+    expect(typeof api.valorParaCentavos).toBe("function");
+
+    // Último valor seguro: exatamente Number.MAX_SAFE_INTEGER centavos.
+    expect(api.valorParaCentavos("90071992547409,91")).toBe(9007199254740991);
+    expect(Number.isSafeInteger(api.valorParaCentavos("90071992547409,91") as number)).toBe(true);
+
+    // Primeiro valor inseguro (2^53 centavos, representável mas não seguro).
+    expect(api.valorParaCentavos("90071992547409,92")).toBeNull();
+
+    // Ramo inteiro: ×100 já estoura o inteiro seguro.
+    expect(api.valorParaCentavos("9007199254740991")).toBeNull();
+
+    // Sequência gigante de dígitos.
+    expect(api.valorParaCentavos("9".repeat(25))).toBeNull();
+  });
+
   it("formata centavos como reais", () => {
     expect(typeof api.formatarCentavos).toBe("function");
 
