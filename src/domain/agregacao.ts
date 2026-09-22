@@ -30,6 +30,7 @@ export interface AgregacaoCorpus {
 
 export function agregarVerificacoes(
   entradas: ReadonlyArray<{ guia: GuiaNormalizada; resultado: ResultadoVerificacao }>,
+  limitacoesGlobaisDoCatalogo?: readonly string[],
 ): AgregacaoCorpus {
   let ocorrencias = 0;
   let guiasComPendencia = 0;
@@ -70,9 +71,21 @@ export function agregarVerificacoes(
     }
   }
 
-  const limitacoesGlobais = [LIMITACAO_GLOBAL_DURACAO_MAXIMA];
+  // §4.5/#ac-18 e §4.9: as limitações globais validadas do catálogo chegam ao
+  // agregado na ordem declarada, sem duplicatas, e a obrigatória entra apenas se
+  // ausente. `soma_de_valores_nao_verificavel` só é declarada no estouro real.
+  const limitacoesGlobais: string[] = [];
+  const acrescentarLimitacao = (limitacao: string): void => {
+    if (!limitacoesGlobais.includes(limitacao)) {
+      limitacoesGlobais.push(limitacao);
+    }
+  };
+  for (const limitacao of limitacoesGlobaisDoCatalogo ?? []) {
+    acrescentarLimitacao(limitacao);
+  }
+  acrescentarLimitacao(LIMITACAO_GLOBAL_DURACAO_MAXIMA);
   if (somaNaoVerificavel) {
-    limitacoesGlobais.push(LIMITACAO_SOMA_NAO_VERIFICAVEL);
+    acrescentarLimitacao(LIMITACAO_SOMA_NAO_VERIFICAVEL);
   }
 
   return {

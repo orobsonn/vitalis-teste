@@ -35,11 +35,7 @@ interface RegistroCsv {
   malformado: boolean;
 }
 
-function dividirRegistros(
-  entrada: string,
-  linhaBase = 1,
-  preservarLinhasEmBranco = false,
-): RegistroCsv[] {
+function dividirRegistros(entrada: string, linhaBase = 1): RegistroCsv[] {
   const texto = entrada.charCodeAt(0) === 0xfeff ? entrada.slice(1) : entrada;
   const registros: RegistroCsv[] = [];
   let campos: string[] = [];
@@ -61,13 +57,17 @@ function dividirRegistros(
   const concluirRegistro = (): void => {
     concluirCampo();
     const linhaEmBranco = campos.length === 1 && campos[0] === "" && textoCru === "";
-    if (!linhaEmBranco) {
-      registros.push({ campos, textoCru, numeroLinha: linhaInicial, aspasAbertas: emAspas, malformado });
-    } else if (preservarLinhasEmBranco) {
-      // Na recuperação toda linha física precisa de um desfecho: a linha em
-      // branco vira falha de cardinalidade com 0 campos.
-      registros.push({ campos: [], textoCru, numeroLinha: linhaInicial, aspasAbertas: emAspas, malformado });
-    }
+    // §4.2/#ac-5 e PRD #23/#28: nenhuma linha física é descartada em silêncio.
+    // Uma linha em branco entre dados vira falha de cardinalidade com 0 campos,
+    // tanto na leitura normal quanto na recuperação pós-malformação.
+    const camposDoRegistro = linhaEmBranco ? [] : campos;
+    registros.push({
+      campos: camposDoRegistro,
+      textoCru,
+      numeroLinha: linhaInicial,
+      aspasAbertas: emAspas,
+      malformado,
+    });
     campos = [];
     textoCru = "";
     emAspas = false;
@@ -159,8 +159,8 @@ function dividirRegistros(
 
   // Um terminador final não cria uma linha física: o último segmento vazio é
   // apenas o resíduo do `\n`/`\r` que fecha o texto. Só conclui se houver
-  // conteúdo pendente, de modo que a recuperação (`preservarLinhasEmBranco`)
-  // não duplique uma linha em branco real já emitida dentro do laço.
+  // conteúdo pendente, de modo que o terminador final não duplique uma linha em
+  // branco real já emitida dentro do laço.
   if (textoCru !== "" || campos.length > 0 || campo !== "") {
     concluirRegistro();
   }
@@ -250,7 +250,7 @@ function processarRegistros(
         linhaOriginal: registro.textoCru.slice(0, quebra.indice),
       });
       const resto = registro.textoCru.slice(quebra.indice + quebra.comprimento);
-      const recuperados = dividirRegistros(resto, registro.numeroLinha + 1, true);
+      const recuperados = dividirRegistros(resto, registro.numeroLinha + 1);
       for (let indice = recuperados.length - 1; indice >= 0; indice -= 1) {
         trabalho.push(recuperados[indice]!);
       }
