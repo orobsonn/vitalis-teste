@@ -314,15 +314,199 @@ test("contrato 6: wrangler.jsonc contém main, nodejs_compat, bloco assets exato
 // Contrato 7: tipos Env geráveis por cf-typegen para os cinco bindings
 // ---------------------------------------------------------------------------
 
+// `wrangler types` não escreve os bindings dentro de um `interface Env { ... }`
+// inline: ele emite `interface __BaseEnv_Env { ... }` e depois
+// `interface Env extends __BaseEnv_Env {}`. Um regex que exija `{`/`=` logo após
+// `Env` cai no `interface Env {}` vazio das runtime types do workerd, milhares
+// de linhas abaixo. Para não fixar a forma de um gerador específico, o contrato
+// resolve a declaração `Env` junto de toda a sua cadeia `extends` (funcionando
+// igualmente para um `interface Env { ... }` inline).
+
+// Substitui comentários de bloco/linha por espaço sem tocar em strings — as
+// runtime types do workerd contêm exemplos de declarações dentro de comentários.
+function removerComentarios(texto) {
+  let saida = "";
+  let emString = false;
+  let quote = "";
+  let escapado = false;
+  for (let i = 0; i < texto.length; i += 1) {
+    const c = texto[i];
+    if (emString) {
+      saida += c;
+      if (escapado) escapado = false;
+      else if (c === "\\") escapado = true;
+      else if (c === quote) emString = false;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") {
+      emString = true;
+      quote = c;
+      saida += c;
+      continue;
+    }
+    if (c === "/" && texto[i + 1] === "/") {
+      while (i < texto.length && texto[i] !== "\n") i += 1;
+      saida += "\n";
+      continue;
+    }
+    if (c === "/" && texto[i + 1] === "*") {
+      i += 2;
+      while (i < texto.length && !(texto[i] === "*" && texto[i + 1] === "/")) i += 1;
+      i += 1;
+      saida += " ";
+      continue;
+    }
+    saida += c;
+  }
+  return saida;
+}
+
+// Índice da aspa de fechamento (ou fim do texto), ignorando escapes.
+function pularString(texto, inicio) {
+  const quote = texto[inicio];
+  for (let i = inicio + 1; i < texto.length; i += 1) {
+    if (texto[i] === "\\") {
+      i += 1;
+      continue;
+    }
+    if (texto[i] === quote) return i;
+  }
+  return texto.length;
+}
+
+// Índice do `}` que fecha o bloco aberto em `abreChave`, ou -1.
+function fimDoBloco(texto, abreChave) {
+  let nivel = 0;
+  for (let i = abreChave; i < texto.length; i += 1) {
+    const c = texto[i];
+    if (c === '"' || c === "'" || c === "`") {
+      i = pularString(texto, i);
+      continue;
+    }
+    if (c === "{") nivel += 1;
+    else if (c === "}") {
+      nivel -= 1;
+      if (nivel === 0) return i;
+    }
+  }
+  return -1;
+}
+
+// Nomes-base de uma lista `extends A, B<C>` (genéricos descartados).
+function nomesBase(extende) {
+  let semGenericos = "";
+  let nivel = 0;
+  for (const c of extende) {
+    if (c === "<") {
+      nivel += 1;
+      continue;
+    }
+    if (c === ">") {
+      nivel = Math.max(0, nivel - 1);
+      continue;
+    }
+    if (nivel === 0) semGenericos += c;
+  }
+  return semGenericos
+    .split(",")
+    .map((parte) => parte.trim().match(/^([A-Za-z_$][\w$]*)/))
+    .filter(Boolean)
+    .map((m) => m[1]);
+}
+
+// Declarações `interface Nome [extends ...] { ... }` e `type Nome = ...;`
+// coletadas do texto, com o corpo de cada uma e suas bases declaradas.
+function declaracoesDeTipos(texto) {
+  const limpo = removerComentarios(texto);
+  const declaracoes = [];
+  let m;
+
+  const regexInterface = /\binterface\s+([A-Za-z_$][\w$]*)\s*(?:<[^{};]*?>)?\s*([^{};]*?)\{/g;
+  while ((m = regexInterface.exec(limpo)) !== null) {
+    const abreChave = m.index + m[0].length - 1;
+    const fechaChave = fimDoBloco(limpo, abreChave);
+    if (fechaChave === -1) continue;
+    const extende = m[2].match(/extends\s+([\s\S]+)$/);
+    declaracoes.push({
+      nome: m[1],
+      tipo: "interface",
+      corpo: limpo.slice(abreChave + 1, fechaChave),
+      bases: extende ? nomesBase(extende[1]) : [],
+    });
+  }
+
+  const regexAlias = /\btype\s+([A-Za-z_$][\w$]*)\s*(?:<[^;{}]*?>)?\s*=/g;
+  while ((m = regexAlias.exec(limpo)) !== null) {
+    const inicio = m.index + m[0].length;
+    let nivel = 0;
+    let fim = -1;
+    for (let i = inicio; i < limpo.length; i += 1) {
+      const c = limpo[i];
+      if (c === '"' || c === "'" || c === "`") {
+        i = pularString(limpo, i);
+        continue;
+      }
+      if (c === "{") nivel += 1;
+      else if (c === "}") nivel -= 1;
+      else if (c === ";" && nivel === 0) {
+        fim = i;
+        break;
+      }
+    }
+    if (fim === -1) continue;
+    declaracoes.push({ nome: m[1], tipo: "alias", corpo: limpo.slice(inicio, fim), bases: [] });
+  }
+
+  // Um alias pode compor interfaces já declaradas (`type Env = A & B`).
+  const nomes = new Set(declaracoes.map((d) => d.nome));
+  for (const declaracao of declaracoes) {
+    if (declaracao.tipo !== "alias") continue;
+    declaracao.bases = [...declaracao.corpo.matchAll(/\b([A-Za-z_$][\w$]*)\b/g)]
+      .map((x) => x[1])
+      .filter((nome) => nome !== declaracao.nome && nomes.has(nome));
+  }
+
+  return declaracoes;
+}
+
+// Corpo da declaração + corpo de cada base alcançada pela cadeia `extends`.
+function escopoDeDeclaracao(indice, declaracoes, visitados) {
+  if (visitados.has(indice)) return "";
+  visitados.add(indice);
+  const declaracao = declaracoes[indice];
+  let escopo = `\n${declaracao.corpo}`;
+  for (const base of declaracao.bases) {
+    for (let i = 0; i < declaracoes.length; i += 1) {
+      if (declaracoes[i].nome === base) {
+        escopo += escopoDeDeclaracao(i, declaracoes, visitados);
+      }
+    }
+  }
+  return escopo;
+}
+
 test("contrato 7: worker-configuration.d.ts expõe Env com ASSETS/DB/OAUTH_KV/LOADER/AI", () => {
   const texto = readText("worker-configuration.d.ts");
   assert.notEqual(texto, null, "worker-configuration.d.ts ausente ou ilegível");
 
-  const bloco = texto.match(/(?:interface|type)\s+Env\s*[={]([\s\S]*?)\n\}/);
-  assert.notEqual(bloco, null, "declaração Env ausente");
+  const declaracoes = declaracoesDeTipos(texto);
+  assert.ok(
+    declaracoes.some((d) => d.nome === "Env"),
+    "declaração Env ausente em worker-configuration.d.ts",
+  );
+
+  // `interface Env` pode aparecer mais de uma vez (merge de declarações, como no
+  // `Cloudflare.Env` do gerador); o escopo exposto é a união de todas as
+  // declarações `Env` com as respectivas cadeias `extends`.
+  const visitados = new Set();
+  const escopo = declaracoes
+    .map((declaracao, indice) =>
+      declaracao.nome === "Env" ? escopoDeDeclaracao(indice, declaracoes, visitados) : "",
+    )
+    .join("\n");
 
   for (const nome of ["ASSETS", "DB", "OAUTH_KV", "LOADER", "AI"]) {
-    assert.match(bloco[1], new RegExp(`\\b${nome}\\b\\s*:`), `binding ${nome} ausente em Env`);
+    assert.match(escopo, new RegExp(`\\b${nome}\\b\\s*[?:]`), `binding ${nome} ausente em Env`);
   }
 });
 
