@@ -10,13 +10,17 @@
 import type { Ambiguidade, SinaisObservacao, TipoAmbiguidade } from "./contratos";
 import type { Motivo } from "../motor";
 
-/** Extração textual validada, já após schema, evidência e coerência. */
-export interface TextualValidado {
-  estado: "completa" | "incompleta";
-  sinais: SinaisObservacao | null;
-  modelo: string | null;
-  prompt_versao: string | null;
-}
+/**
+ * Extração textual validada, já após schema, evidência e coerência.
+ *
+ * União discriminada: só admite os três estados coerentes com §3.6, de modo que
+ * `estado: "completa"` sempre carregue `sinais` e metadados de inferência, e
+ * `inferencia_textual` só seja nula quando não houve tentativa de extração.
+ */
+export type TextualValidado =
+  | { estado: "completa"; sinais: SinaisObservacao; modelo: string; prompt_versao: string }
+  | { estado: "incompleta"; sinais: SinaisObservacao | null; modelo: string; prompt_versao: string }
+  | { estado: "incompleta"; sinais: null; modelo: null; prompt_versao: null };
 
 /** Efeito determinístico da política, antes da ordenação do motor. */
 export interface PoliticasTextuais {
@@ -86,6 +90,17 @@ const ORDEM_SINAIS_MATERIAIS: readonly string[] = [
   "procedimento_realizado_divergente",
 ];
 
+/**
+ * Ordem canônica dos tipos de ambiguidade: garante que a saída não dependa da
+ * ordem em que o modelo devolveu `sinais.ambiguidades` (§3.5).
+ */
+const ORDEM_AMBIGUIDADES: Record<TipoAmbiguidade, number> = {
+  autorizacao_indefinida: 0,
+  modalidade_indefinida: 1,
+  procedimento_indefinido: 2,
+  outro_material: 3,
+};
+
 /** Textos canônicos da conferência humana específica, fixos por tipo de ambiguidade. */
 const TEXTOS_CONFERENCIA: Record<TipoAmbiguidade, { regra: string; orientacao: string }> = {
   autorizacao_indefinida: {
@@ -149,8 +164,9 @@ function conferencia(ambiguidade: Ambiguidade): Motivo {
  * Aplica as políticas textuais de §3.5/§3.6 sem decidir `OK`/`PENDENTE`.
  *
  * Ordem fixa dos motivos: sinais materiais na ordem de `ORDEM_SINAIS_MATERIAIS`,
- * depois uma `conferencia_humana_especifica` por ambiguidade na ordem recebida e,
- * por último, `checagem_textual_incompleta` quando `estado === "incompleta"`.
+ * depois uma `conferencia_humana_especifica` por ambiguidade em ordem canônica
+ * (tipo, depois evidência) e, por último, `checagem_textual_incompleta` quando
+ * `estado === "incompleta"`.
  */
 export function aplicarPoliticasTextuais(textual: TextualValidado): PoliticasTextuais {
   const motivos: Motivo[] = [];
@@ -179,7 +195,18 @@ export function aplicarPoliticasTextuais(textual: TextualValidado): PoliticasTex
       }
     }
 
-    for (const ambiguidade of sinais.ambiguidades) {
+    const ambiguidadesOrdenadas = [...sinais.ambiguidades].sort((primeira, segunda) => {
+      const ordemPrimeira = ORDEM_AMBIGUIDADES[primeira.tipo];
+      const ordemSegunda = ORDEM_AMBIGUIDADES[segunda.tipo];
+      if (ordemPrimeira !== ordemSegunda) {
+        return ordemPrimeira - ordemSegunda;
+      }
+      if (primeira.evidencia !== segunda.evidencia) {
+        return primeira.evidencia < segunda.evidencia ? -1 : 1;
+      }
+      return 0;
+    });
+    for (const ambiguidade of ambiguidadesOrdenadas) {
       motivos.push(conferencia(ambiguidade));
     }
   }
