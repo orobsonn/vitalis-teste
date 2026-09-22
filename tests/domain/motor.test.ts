@@ -242,6 +242,13 @@ describe("verificarGuia — fronteiras inclusivas", () => {
     const prazoIgual = verificar({ data_lancamento: "2026-09-09" });
     expect(semPendencia(prazoIgual.resultado)).toEqual([]);
     expect(prazoIgual.resultado.decisao).toBe("OK");
+    // A convenção de dias corridos é política do exercício: em todo cálculo de
+    // prazo verificável a limitação aparece exatamente uma vez, nunca duplicada.
+    expect(
+      prazoIgual.resultado.limitacoes.filter(
+        (item) => item === "prazo_como_politica_do_exercicio",
+      ),
+    ).toHaveLength(1);
 
     // Guia inédita segue exatamente as regras, sem consulta por ID.
     expect(validadeIgual.guia.id).toBe("SYN-MOTOR-0001");
@@ -296,6 +303,17 @@ describe("verificarGuia — fronteiras inclusivas", () => {
     expect(pendencia!.regra.length).toBeGreaterThan(0);
     expect(pendencia!.evidencia.length).toBeGreaterThan(0);
     expect(resultado.decisao).toBe("PENDENTE");
+    expect(
+      resultado.limitacoes.filter((item) => item === "prazo_como_politica_do_exercicio"),
+    ).toHaveLength(1);
+    // A regra atribui a convenção de dias corridos à política do exercício,
+    // não a uma regra adicional fornecida pelo convênio.
+    const regraNormalizada = pendencia!.regra
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase();
+    expect(regraNormalizada).toContain("politica do exercicio");
+    expect(regraNormalizada).toContain("dias corridos");
   });
 });
 
