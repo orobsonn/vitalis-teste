@@ -17,10 +17,11 @@
  *   e é truncado a 12 caracteres — o sufixo do hash nunca vaza.
  * - `duracao_ms`, `tentativas` e `itens` só passam como `number` finito.
  * - `evento` vem do primeiro argumento, nunca de `campos.evento`, e precisa ser
- *   um **nome de operação estável** (`FORMATO_EVENTO_ESTAVEL`, até
- *   `COMPRIMENTO_MAXIMO_EVENTO` caracteres): texto livre, mensagem do provedor,
- *   objeto ou string fora do formato descarta o evento inteiro antes de
- *   registrar. Não é canal de dados — é o nome controlado pelo desenvolvedor.
+ *   **membro exato do vocabulário fechado `EVENTOS_PERMITIDOS`**: qualquer outro
+ *   texto — inclusive string livre sintaticamente válida como
+ *   `info("paciente_joao_da_silva", {})` ou `info("invalid_api_key", {})` —
+ *   descarta o evento inteiro antes de registrar. Não é canal de dados — é o
+ *   nome da operação, pertencente ao vocabulário controlado pelo desenvolvedor.
  * - `estado` só atravessa se pertencer ao conjunto fechado `ESTADOS_CHECAGEM`
  *   de §3.6 (`nao_aplicavel`, `completa`, `incompleta`).
  * - Cada campo é lido apenas como **propriedade própria de dados** via
@@ -84,7 +85,14 @@ export interface CamposPermitidos {
   [chave: string]: unknown;
 }
 
-/** Registrador redigido consumido pela orquestração. */
+/**
+ * Registrador redigido consumido pela orquestração.
+ *
+ * O parâmetro `evento` é `string` por contrato (§3.7): a assinatura pública não
+ * restringe estaticamente o nome da operação. A pertinência ao vocabulário
+ * fechado `EVENTOS_PERMITIDOS` é um controle **de runtime**, exercido por
+ * `redigir`/`ehEventoPermitido` — texto livre é descartado sem registrar.
+ */
 export interface RegistradorRedigido {
   info(evento: string, campos: CamposPermitidos): void;
 }
@@ -98,19 +106,31 @@ export interface OpcoesRegistradorRedigido {
 /** Comprimento máximo do prefixo hex observável de `cache_prefixo` (§3.10). */
 export const COMPRIMENTO_MAXIMO_CACHE_PREFIXO = 12;
 
-/** Comprimento máximo do nome de evento aceito pelo registrador (§3.10). */
-export const COMPRIMENTO_MAXIMO_EVENTO = 64;
-
 /**
- * Formato de nome de evento estável: identificador em minúsculas iniciado por
- * letra, com dígitos e `_` como separador. Texto livre (espaços, maiúsculas,
- * acentos, pontuação ou mensagem crua do provedor) não atravessa.
+ * Vocabulário fechado de nomes de evento desta superfície semântica (§3.10).
+ * Não é canal de dados: fora deste conjunto o evento é descartado, mesmo que a
+ * string pareça um identificador válido (`paciente_joao_da_silva`, `invalid_api_key`).
  */
-export const FORMATO_EVENTO_ESTAVEL = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
+export const EVENTOS_PERMITIDOS = [
+  "extracao_iniciada",
+  "extracao_concluida",
+  "extracao_falhou",
+  "cache_leitura_falhou",
+  "cache_gravacao_falhou",
+  "quota_recusada",
+  "conferencia_iniciada",
+  "conferencia_concluida",
+  "conferencia_falhou",
+] as const;
+
+/** Nome de evento pertencente ao vocabulário fechado de §3.10. */
+export type EventoPermitido = (typeof EVENTOS_PERMITIDOS)[number];
 
 const CONJUNTO_CLASSIFICACOES: ReadonlySet<string> = new Set(
   CLASSIFICACOES_ESTAVEIS,
 );
+
+const CONJUNTO_EVENTOS: ReadonlySet<string> = new Set(EVENTOS_PERMITIDOS);
 
 const CONJUNTO_ESTADOS: ReadonlySet<string> = new Set(ESTADOS_CHECAGEM);
 
@@ -140,27 +160,26 @@ function lerCampoProprio(campos: unknown, chave: string): unknown {
   return descritor.value;
 }
 
-/** Aceita somente nome de operação estável de §3.10 (nunca texto livre). */
-function ehNomeDeEventoEstavel(evento: unknown): evento is string {
-  return (
-    typeof evento === "string" &&
-    evento.length > 0 &&
-    evento.length <= COMPRIMENTO_MAXIMO_EVENTO &&
-    FORMATO_EVENTO_ESTAVEL.test(evento)
-  );
+/**
+ * Aceita somente nome de evento do vocabulário fechado de §3.10 (nunca texto
+ * livre): valida em runtime a pertinência ao `Set` derivado de
+ * `EVENTOS_PERMITIDOS`.
+ */
+function ehEventoPermitido(evento: unknown): evento is EventoPermitido {
+  return typeof evento === "string" && CONJUNTO_EVENTOS.has(evento);
 }
 
 /**
  * Redige os campos candidatos em um `EventoRedigido`. Cada chave é avaliada
  * isoladamente contra a allowlist e o tipo esperado; nada é copiado em bloco.
- * Devolve `undefined` quando o `evento` não é um nome estável — nesse caso o
- * evento inteiro é descartado antes de registrar.
+ * Devolve `undefined` quando o `evento` não pertence ao vocabulário fechado —
+ * nesse caso o evento inteiro é descartado antes de registrar.
  */
 function redigir(
   evento: unknown,
   campos: unknown,
 ): EventoRedigido | undefined {
-  if (!ehNomeDeEventoEstavel(evento)) {
+  if (!ehEventoPermitido(evento)) {
     return undefined;
   }
 

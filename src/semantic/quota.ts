@@ -9,6 +9,11 @@
  * - Relógio injetável (`agora`), sem timers reais; padrão `Date.now`.
  * - Padrões `LIMITE_PADRAO_CHAMADAS` (60) e `JANELA_PADRAO_MS` (60000 ms),
  *   ambos configuráveis por opção.
+ * - Configuração inválida **não desativa a quota**: `limite` só é aceito como
+ *   `number` finito, inteiro e `>= 1`; `janelaMs` só como `number` finito e
+ *   `> 0`; `agora` só como função. Valores inválidos (`NaN`, `Infinity`, `0`,
+ *   negativo, fracionário) caem nos padrões seguros em vez de liberar chamadas
+ *   (`janelaMs: 0` reiniciaria a janela a cada tentativa) ou nunca recusar.
  * - Cada `consumir()` representa uma tentativa efetiva; quando o saldo acaba a
  *   recusa é devolvida (`false`) **antes** de o chamador acionar o modelo, e o
  *   observador injetável é notificado a cada recusa (cumulativo, não flag).
@@ -53,15 +58,41 @@ export const LIMITE_PADRAO_CHAMADAS = 60;
 export const JANELA_PADRAO_MS = 60000;
 
 /**
+ * Aceita `limite` somente como inteiro finito `>= 1`; qualquer outra forma
+ * (`NaN`, `Infinity`, `0`, negativo, fracionário) devolve o padrão seguro.
+ */
+function normalizarLimite(valor: unknown): number {
+  return typeof valor === "number" &&
+    Number.isFinite(valor) &&
+    Number.isInteger(valor) &&
+    valor >= 1
+    ? valor
+    : LIMITE_PADRAO_CHAMADAS;
+}
+
+/**
+ * Aceita `janelaMs` somente como número finito `> 0`; qualquer outra forma
+ * (`NaN`, `Infinity`, `0`, negativo) devolve o padrão seguro.
+ */
+function normalizarJanelaMs(valor: unknown): number {
+  return typeof valor === "number" && Number.isFinite(valor) && valor > 0
+    ? valor
+    : JANELA_PADRAO_MS;
+}
+
+/**
  * Cria uma quota em memória com relógio e observador injetáveis. O estado fica
  * confinado à instância devolvida, o que corresponde a "por isolate" no runtime.
+ *
+ * Configuração inválida é substituída por padrões seguros em vez de lançar
+ * exceção: a quota nunca é desativada por `limite`/`janelaMs` inutilizáveis.
  */
 export function criarQuotaDeChamadas(
   opcoes: OpcoesQuotaDeChamadas = {},
 ): QuotaDeChamadas {
-  const limite = opcoes.limite ?? LIMITE_PADRAO_CHAMADAS;
-  const janelaMs = opcoes.janelaMs ?? JANELA_PADRAO_MS;
-  const agora = opcoes.agora ?? Date.now;
+  const limite = normalizarLimite(opcoes.limite);
+  const janelaMs = normalizarJanelaMs(opcoes.janelaMs);
+  const agora = typeof opcoes.agora === "function" ? opcoes.agora : Date.now;
 
   let inicioJanela: number | undefined;
   let consumidas = 0;
