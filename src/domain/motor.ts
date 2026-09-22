@@ -118,8 +118,12 @@ const TEXTOS: Record<string, TextoCanonico> = {
       "Confirme a autorização ou divida o excedente: a posição da sessão passa do limite aplicável.",
   },
   prazo_envio_excedido: {
-    regra: "O prazo do convênio é contado da data do atendimento e o último dia é inclusivo.",
-    orientacao: "Envie a guia dentro do prazo do convênio contado da data do atendimento.",
+    regra:
+      "O prazo de envio é contado em dias corridos como política do exercício: " +
+      "data_limite = data_atendimento + prazo_envio_dias, com o último dia inclusivo.",
+    orientacao:
+      "Envie a guia dentro do prazo em dias corridos contado da data do atendimento, " +
+      "conforme a política do exercício.",
   },
   cronologia_incoerente: {
     regra: "A data de lançamento não pode ser anterior à data do atendimento.",
@@ -323,6 +327,10 @@ export function verificarGuia(
   } else if (!guia.dataAtendimento || !convenio) {
     adicionarLimitacao("prazo_nao_verificavel");
   } else {
+    // A convenção de contagem do prazo é política do exercício, não uma regra
+    // adicional do convênio: registra-se a limitação uma única vez sempre que o
+    // prazo é de fato verificável, com ou sem prazo_envio_excedido.
+    adicionarLimitacao("prazo_como_politica_do_exercicio");
     const dataLimite = somarDias(guia.dataAtendimento, convenio.prazoEnvioDias);
     if (compararData(referencia, dataLimite) > 0) {
       criarMotivo(
