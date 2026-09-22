@@ -335,6 +335,32 @@ describe("carregarCatalogo e consultarRegra", () => {
     const valorInseguro = clonarCatalogo();
     valorInseguro.procedimentos[0]!.valor_referencia = Number.MAX_SAFE_INTEGER;
 
+    // §4.5/#ac-8: `limitacoes_globais` também precisa ser validada no
+    // carregamento. Um valor não-array ou com membros que não sejam textos
+    // utilizáveis não pode virar `ok: true` com um catálogo parcial: o hash
+    // inclui o valor bruto, mas `catalogo.limitacoesGlobais` e
+    // `consultarRegra(...).limitacoes` descartam esse membro em silêncio, de
+    // modo que a consulta divergiria da versão que a rotula.
+    const limitacoesNaoArrayTexto: unknown = {
+      ...clonarCatalogo(),
+      limitacoes_globais: "limite_a",
+    };
+
+    const limitacoesNaoArrayNumero: unknown = {
+      ...clonarCatalogo(),
+      limitacoes_globais: 7,
+    };
+
+    const limitacoesComMembroNumerico: unknown = {
+      ...clonarCatalogo(),
+      limitacoes_globais: ["limite_a", 7],
+    };
+
+    const limitacoesComMembroEmBranco: unknown = {
+      ...clonarCatalogo(),
+      limitacoes_globais: ["limite_a", "  "],
+    };
+
     const invalidos: Array<[string, unknown]> = [
       ["código de procedimento duplicado", codigoDuplicado],
       ["nome de convênio normalizado duplicado", nomeDuplicado],
@@ -344,6 +370,10 @@ describe("carregarCatalogo e consultarRegra", () => {
       ["limite de sessões fracionário", limiteFracionario],
       ["validade máxima fracionária", validadeFracionaria],
       ["valor de referência inseguro", valorInseguro],
+      ["limitações globais não-array (texto)", limitacoesNaoArrayTexto],
+      ["limitações globais não-array (número)", limitacoesNaoArrayNumero],
+      ["limitação global com membro numérico", limitacoesComMembroNumerico],
+      ["limitação global com membro em branco", limitacoesComMembroEmBranco],
     ];
 
     for (const [rotulo, entrada] of invalidos) {
