@@ -361,6 +361,31 @@ describe("carregarCatalogo e consultarRegra", () => {
       limitacoes_globais: ["limite_a", "  "],
     };
 
+    // §4.5/#ac-8: `definicoes` também precisa ser validada no carregamento. Um
+    // valor que não seja um objeto, ou um objeto com membros que não sejam
+    // textos, não pode virar `ok: true` com um catálogo parcial: o hash inclui o
+    // valor bruto, mas `catalogo.definicoes` descarta a chave em silêncio, de
+    // modo que o catálogo entregue divergiria da versão que o rotula.
+    const definicoesNaoObjetoTexto: unknown = {
+      ...clonarCatalogo(),
+      definicoes: "x",
+    };
+
+    const definicoesNaoObjetoNumero: unknown = {
+      ...clonarCatalogo(),
+      definicoes: 7,
+    };
+
+    const definicoesComoLista: unknown = {
+      ...clonarCatalogo(),
+      definicoes: ["x"],
+    };
+
+    const definicoesComMembroNumerico: unknown = {
+      ...clonarCatalogo(),
+      definicoes: { prazo_envio_dias: 7 },
+    };
+
     const invalidos: Array<[string, unknown]> = [
       ["código de procedimento duplicado", codigoDuplicado],
       ["nome de convênio normalizado duplicado", nomeDuplicado],
@@ -374,6 +399,10 @@ describe("carregarCatalogo e consultarRegra", () => {
       ["limitações globais não-array (número)", limitacoesNaoArrayNumero],
       ["limitação global com membro numérico", limitacoesComMembroNumerico],
       ["limitação global com membro em branco", limitacoesComMembroEmBranco],
+      ["definições não-objeto (texto)", definicoesNaoObjetoTexto],
+      ["definições não-objeto (número)", definicoesNaoObjetoNumero],
+      ["definições como lista", definicoesComoLista],
+      ["definição com membro numérico", definicoesComMembroNumerico],
     ];
 
     for (const [rotulo, entrada] of invalidos) {
