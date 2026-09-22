@@ -3,11 +3,20 @@
  *
  * Cada guia pendente entra uma única vez em `valorAssociadoCentavos`, mesmo com
  * vários motivos; alertas não entram. A limitação global aparece uma única vez.
+ *
+ * A soma monetária é verificada: duas parcelas individualmente seguras podem
+ * ultrapassar `Number.MAX_SAFE_INTEGER` e um total arredondado não pode ser
+ * publicado. Ao detectar o estouro, o total satura em `Number.MAX_SAFE_INTEGER`
+ * e a limitação `LIMITACAO_SOMA_NAO_VERIFICAVEL` é acrescentada à via existente
+ * de `limitacoesGlobais`. Saturar (em vez de descartar a parcela) mantém o
+ * resultado independente da ordem de entrada.
  */
 
 import { LIMITACAO_GLOBAL_DURACAO_MAXIMA } from "./catalogo";
 import type { GuiaNormalizada } from "./normalizacao";
 import type { ResultadoVerificacao } from "./motor";
+
+export const LIMITACAO_SOMA_NAO_VERIFICAVEL = "soma_de_valores_nao_verificavel";
 
 export interface AgregacaoCorpus {
   ocorrencias: number;
@@ -26,6 +35,7 @@ export function agregarVerificacoes(
   let guiasComPendencia = 0;
   let valorAssociadoCentavos = 0;
   let totalIncompleto = false;
+  let somaNaoVerificavel = false;
   const porCodigo: Record<string, number> = {};
   const camposObrigatoriosAusentes: Record<string, number> = {};
 
@@ -36,7 +46,13 @@ export function agregarVerificacoes(
     if (resultado.decisao === "PENDENTE") {
       guiasComPendencia += 1;
       if (guia.valorCentavos !== null) {
-        valorAssociadoCentavos += guia.valorCentavos;
+        const proximoTotal = valorAssociadoCentavos + guia.valorCentavos;
+        if (Number.isSafeInteger(proximoTotal)) {
+          valorAssociadoCentavos = proximoTotal;
+        } else {
+          valorAssociadoCentavos = Number.MAX_SAFE_INTEGER;
+          somaNaoVerificavel = true;
+        }
       }
     }
 
@@ -54,6 +70,11 @@ export function agregarVerificacoes(
     }
   }
 
+  const limitacoesGlobais = [LIMITACAO_GLOBAL_DURACAO_MAXIMA];
+  if (somaNaoVerificavel) {
+    limitacoesGlobais.push(LIMITACAO_SOMA_NAO_VERIFICAVEL);
+  }
+
   return {
     ocorrencias,
     guiasComPendencia,
@@ -61,6 +82,6 @@ export function agregarVerificacoes(
     porCodigo,
     camposObrigatoriosAusentes,
     totalIncompleto,
-    limitacoesGlobais: [LIMITACAO_GLOBAL_DURACAO_MAXIMA],
+    limitacoesGlobais,
   };
 }
