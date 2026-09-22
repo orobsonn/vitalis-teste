@@ -37,6 +37,20 @@ export type {
 } from "./workers-ai";
 
 export {
+  NAMESPACE_CACHE_SEMANTICO,
+  TTL_PADRAO_CACHE_SEGUNDOS,
+  criarAdaptadorCacheSemantico,
+  montarChaveCacheSemantica,
+} from "./cache";
+export type {
+  AdaptadorCacheSemantico,
+  BindingCacheSemantico,
+  ChaveCacheSemantica,
+  ContextoChaveCacheSemantica,
+  OpcoesAdaptadorCacheSemantico,
+} from "./cache";
+
+export {
   LIMITE_AMBIGUIDADES,
   LIMITE_EVIDENCIA,
   LIMITE_SINAIS,
