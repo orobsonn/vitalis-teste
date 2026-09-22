@@ -8,6 +8,9 @@
 // NENHUMA exceção é lançada no escopo do módulo. Toda afirmação vive dentro de
 // um caso `test(...)` e falha por comparação de valores concretos, nunca por
 // erro de import/resolução.
+//
+// Reatestado nativamente para proveniência do hand vigente; as asserções do
+// contrato aprovado permanecem inalteradas.
 
 import test from "node:test";
 import assert from "node:assert/strict";
