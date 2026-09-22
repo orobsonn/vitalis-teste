@@ -426,6 +426,15 @@ describe("carregarCatalogo e consultarRegra", () => {
       definicoes: { prazo_envio_dias: 7 },
     };
 
+    // §4.5/#ac-8: `soma_de_valores_nao_verificavel` é estado da agregação, não
+    // uma limitação de catálogo. Aceitá-la como limitação global permitiria que
+    // um catálogo expusesse a limitação de estouro sem que nenhum estouro
+    // existisse; o nome reservado precisa ser rejeitado no carregamento.
+    const limitacaoDeAgregacaoNoCatalogo: unknown = {
+      ...clonarCatalogo(),
+      limitacoes_globais: ["soma_de_valores_nao_verificavel"],
+    };
+
     const invalidos: Array<[string, unknown]> = [
       ["código de procedimento duplicado", codigoDuplicado],
       ["nome de convênio normalizado duplicado", nomeDuplicado],
@@ -448,6 +457,7 @@ describe("carregarCatalogo e consultarRegra", () => {
       ["definições não-objeto (número)", definicoesNaoObjetoNumero],
       ["definições como lista", definicoesComoLista],
       ["definição com membro numérico", definicoesComMembroNumerico],
+      ["limitação reservada à agregação", limitacaoDeAgregacaoNoCatalogo],
     ];
 
     for (const [rotulo, entrada] of invalidos) {

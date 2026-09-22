@@ -35,11 +35,7 @@ interface RegistroCsv {
   malformado: boolean;
 }
 
-function dividirRegistros(
-  entrada: string,
-  linhaBase = 1,
-  preservarLinhasEmBranco = false,
-): RegistroCsv[] {
+function dividirRegistros(entrada: string, linhaBase = 1): RegistroCsv[] {
   const texto = entrada.charCodeAt(0) === 0xfeff ? entrada.slice(1) : entrada;
   const registros: RegistroCsv[] = [];
   let campos: string[] = [];
@@ -61,13 +57,17 @@ function dividirRegistros(
   const concluirRegistro = (): void => {
     concluirCampo();
     const linhaEmBranco = campos.length === 1 && campos[0] === "" && textoCru === "";
-    if (!linhaEmBranco) {
-      registros.push({ campos, textoCru, numeroLinha: linhaInicial, aspasAbertas: emAspas, malformado });
-    } else if (preservarLinhasEmBranco) {
-      // Na recuperação toda linha física precisa de um desfecho: a linha em
-      // branco vira falha de cardinalidade com 0 campos.
-      registros.push({ campos: [], textoCru, numeroLinha: linhaInicial, aspasAbertas: emAspas, malformado });
-    }
+    // §4.2/#ac-5 e PRD #23/#28: nenhuma linha física é descartada em silêncio.
+    // Uma linha em branco entre dados vira falha de cardinalidade com 0 campos,
+    // tanto na leitura normal quanto na recuperação pós-malformação.
+    const camposDoRegistro = linhaEmBranco ? [] : campos;
+    registros.push({
+      campos: camposDoRegistro,
+      textoCru,
+      numeroLinha: linhaInicial,
+      aspasAbertas: emAspas,
+      malformado,
+    });
     campos = [];
     textoCru = "";
     emAspas = false;
@@ -159,8 +159,8 @@ function dividirRegistros(
 
   // Um terminador final não cria uma linha física: o último segmento vazio é
   // apenas o resíduo do `\n`/`\r` que fecha o texto. Só conclui se houver
-  // conteúdo pendente, de modo que a recuperação (`preservarLinhasEmBranco`)
-  // não duplique uma linha em branco real já emitida dentro do laço.
+  // conteúdo pendente, de modo que o terminador final não duplique uma linha em
+  // branco real já emitida dentro do laço.
   if (textoCru !== "" || campos.length > 0 || campo !== "") {
     concluirRegistro();
   }
@@ -185,6 +185,9 @@ function cabecalhoEsperado(cabecalho: readonly string[]): boolean {
 const MOTIVO_ASPAS_NAO_TERMINADAS =
   "aspas_nao_terminadas: campo entre aspas sem fechamento até o fim do arquivo";
 const MOTIVO_ASPAS_MALFORMADAS = "aspas_malformadas: sintaxe de aspas inválida no campo";
+// Motivo das linhas físicas que, sem cabeçalho válido, nunca podem ser guias.
+const MOTIVO_CABECALHO_INVALIDO_LINHA =
+  "cabecalho_invalido: linha nao processada sem cabecalho valido";
 
 function motivoCardinalidade(quantidade: number): string {
   return `cardinalidade_invalida: esperado ${COLUNAS_GUIA.length} colunas, obtido ${quantidade}`;
@@ -224,6 +227,7 @@ function processarRegistros(
   registros: readonly RegistroCsv[],
   guias: LinhaGuiaCsv[],
   falhas: FalhaCsv[],
+  promoverGuias: boolean,
 ): void {
   // Pilha de trabalho explícita e iterativa, processada em ordem: os registros
   // recuperados de uma ressincronização são empilhados na ordem inversa para
@@ -239,18 +243,28 @@ function processarRegistros(
     const registro = trabalho.pop()!;
     const quebra = localizarPrimeiraQuebra(registro.textoCru);
 
-    // Só registros com sintaxe de aspas inválida engolem linhas seguintes; se o
-    // texto cru abrange mais de uma linha física, emite uma única falha para a
+    // Registros com sintaxe de aspas inválida engolem linhas seguintes: o texto
+    // cru abrange mais de uma linha física, então emite uma única falha para a
     // primeira linha e reexamina o restante com o parser completo, para que uma
-    // guia recuperada com quebra interna em campo citado sobreviva inteira.
-    if ((registro.aspasAbertas || registro.malformado) && quebra !== null) {
+    // guia recuperada com quebra interna em campo citado sobreviva inteira. Sem
+    // cabeçalho válido (`promoverGuias` falso), um registro sintaticamente válido
+    // que ocupe várias linhas físicas também é ressincronizado, para que cada
+    // linha física receba um desfecho explícito, sem linha descartada em silêncio.
+    if (
+      (registro.aspasAbertas || registro.malformado || !promoverGuias) &&
+      quebra !== null
+    ) {
       falhas.push({
         numero: registro.numeroLinha,
-        motivo: registro.aspasAbertas ? MOTIVO_ASPAS_NAO_TERMINADAS : MOTIVO_ASPAS_MALFORMADAS,
+        motivo: registro.aspasAbertas
+          ? MOTIVO_ASPAS_NAO_TERMINADAS
+          : registro.malformado
+            ? MOTIVO_ASPAS_MALFORMADAS
+            : MOTIVO_CABECALHO_INVALIDO_LINHA,
         linhaOriginal: registro.textoCru.slice(0, quebra.indice),
       });
       const resto = registro.textoCru.slice(quebra.indice + quebra.comprimento);
-      const recuperados = dividirRegistros(resto, registro.numeroLinha + 1, true);
+      const recuperados = dividirRegistros(resto, registro.numeroLinha + 1);
       for (let indice = recuperados.length - 1; indice >= 0; indice -= 1) {
         trabalho.push(recuperados[indice]!);
       }
@@ -263,9 +277,20 @@ function processarRegistros(
       continue;
     }
 
-    guias.push({
+    if (promoverGuias) {
+      guias.push({
+        numero: registro.numeroLinha,
+        original: montarOriginal(registro.campos),
+        linhaOriginal: registro.textoCru,
+      });
+      continue;
+    }
+
+    // Sem cabeçalho válido um registro sintaticamente válido ainda é falha: a
+    // linha física entra no resultado em vez de ser promovida a guia.
+    falhas.push({
       numero: registro.numeroLinha,
-      original: montarOriginal(registro.campos),
+      motivo: MOTIVO_CABECALHO_INVALIDO_LINHA,
       linhaOriginal: registro.textoCru,
     });
   }
@@ -280,24 +305,51 @@ export function parseGuiasCsv(texto: string): ResultadoCsv {
   const falhas: FalhaCsv[] = [];
 
   if (primeiro && primeiro.aspasAbertas) {
-    falhas.push({
-      numero: primeiro.numeroLinha,
-      motivo: "aspas_nao_terminadas: campo entre aspas sem fechamento até o fim do arquivo",
-      linhaOriginal: primeiro.textoCru,
-    });
+    // §4.2/#ac-5 e PRD #23/#28: o cabeçalho com aspas não terminadas é a falha
+    // de sua primeira linha física; a máquina de recuperação existente reexame
+    // o restante do registro, sempre como falha e nunca como guia.
+    processarRegistros(registros, guias, falhas, false);
     return { cabecalho, guias, falhas };
   }
 
   if (!cabecalhoEsperado(cabecalho)) {
-    falhas.push({
-      numero: primeiro ? primeiro.numeroLinha : 1,
-      motivo: `cabecalho_invalido: esperado ${COLUNAS_GUIA.join(",")}`,
-      linhaOriginal: primeiro ? primeiro.textoCru : "",
-    });
+    const motivoCabecalhoInvalido = `cabecalho_invalido: esperado ${COLUNAS_GUIA.join(",")}`;
+    const quebraCabecalho = primeiro ? localizarPrimeiraQuebra(primeiro.textoCru) : null;
+
+    if (primeiro && quebraCabecalho) {
+      // §4.2/#ac-5 e PRD #23/#28: a falha de cabeçalho inválido pertence à
+      // primeira linha física do registro; se ele tiver quebra interna citada,
+      // o restante é reexaminado fisicamente para que a continuação também
+      // receba um desfecho próprio, nunca fundida na falha da linha 1.
+      falhas.push({
+        numero: primeiro.numeroLinha,
+        motivo: motivoCabecalhoInvalido,
+        linhaOriginal: primeiro.textoCru.slice(0, quebraCabecalho.indice),
+      });
+      const resto = primeiro.textoCru.slice(
+        quebraCabecalho.indice + quebraCabecalho.comprimento,
+      );
+      processarRegistros(
+        dividirRegistros(resto, primeiro.numeroLinha + 1),
+        guias,
+        falhas,
+        false,
+      );
+    } else {
+      falhas.push({
+        numero: primeiro ? primeiro.numeroLinha : 1,
+        motivo: motivoCabecalhoInvalido,
+        linhaOriginal: primeiro ? primeiro.textoCru : "",
+      });
+    }
+    // §4.2/#ac-5 e PRD #23/#28: sem cabeçalho válido nada é promovido a guia,
+    // mas cada linha física restante precisa de um desfecho explícito, inclusive
+    // a ressincronização de um registro que ocupe várias linhas físicas.
+    processarRegistros(demais, guias, falhas, false);
     return { cabecalho, guias, falhas };
   }
 
-  processarRegistros(demais, guias, falhas);
+  processarRegistros(demais, guias, falhas, true);
 
   return { cabecalho, guias, falhas };
 }

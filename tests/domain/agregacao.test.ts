@@ -102,7 +102,10 @@ interface ApiAprovada {
     catalogo: Catalogo,
     opcoes?: { referenciaTemporal?: DataCivil },
   ): ResultadoVerificacao;
-  agregarVerificacoes(entradas: Entrada[]): AgregacaoCorpus;
+  agregarVerificacoes(
+    entradas: Entrada[],
+    limitacoesGlobaisDoCatalogo?: readonly string[],
+  ): AgregacaoCorpus;
 }
 
 const COLUNAS = [
@@ -293,5 +296,67 @@ describe("agregarVerificacoes", () => {
     ]);
     expect(agregadoSemEstouro.totalIncompleto).toBe(false);
     expect(agregadoSemEstouro.guiasComPendencia).toBe(1);
+  });
+
+  it("propaga as limitações globais validadas do catálogo sem duplicar a obrigatória", () => {
+    expect(typeof api.agregarVerificacoes).toBe("function");
+
+    const entradaValida = entrada();
+    expect(entradaValida.guia.valorCentavos).toBe(6200);
+
+    // O catálogo declara uma limitação própria: ela precisa chegar ao agregado
+    // junto da obrigatória, sem duplicatas e sem entradas vazias.
+    const comLimiteDoCatalogo = api.agregarVerificacoes([entradaValida], ["limite_a"]);
+    expect(comLimiteDoCatalogo.limitacoesGlobais).toContain("limite_a");
+    expect(comLimiteDoCatalogo.limitacoesGlobais).toContain(
+      "duracao_maxima_autorizacao_nao_verificavel",
+    );
+    expect(new Set(comLimiteDoCatalogo.limitacoesGlobais).size).toBe(
+      comLimiteDoCatalogo.limitacoesGlobais.length,
+    );
+    for (const limitacao of comLimiteDoCatalogo.limitacoesGlobais) {
+      expect(typeof limitacao).toBe("string");
+      expect(limitacao.length).toBeGreaterThan(0);
+    }
+
+    // O catálogo já declara a limitação obrigatória: ela aparece uma única vez.
+    const comObrigatoriaNoCatalogo = api.agregarVerificacoes([entradaValida], [
+      "duracao_maxima_autorizacao_nao_verificavel",
+    ]);
+    expect(
+      comObrigatoriaNoCatalogo.limitacoesGlobais.filter(
+        (limitacao) => limitacao === "duracao_maxima_autorizacao_nao_verificavel",
+      ),
+    ).toHaveLength(1);
+
+    // `soma_de_valores_nao_verificavel` é estado derivado de um estouro real,
+    // não uma limitação vinda do catálogo. Mesmo que o catálogo a traga numa
+    // agregação pequena e segura (6200 centavos, sem estouro), ela é excluída
+    // defensivamente, sem que isso suprima a limitação própria (`limite_a`) nem
+    // a obrigatória.
+    const entradaPendenteSegura = entrada({
+      valor: "62,00",
+      autorizacao_validade: "2026-08-09",
+    });
+    expect(entradaPendenteSegura.resultado.decisao).toBe("PENDENTE");
+    expect(entradaPendenteSegura.guia.valorCentavos).toBe(6200);
+    const comSomaDeAgregacaoNoCatalogo = api.agregarVerificacoes(
+      [entradaPendenteSegura],
+      ["soma_de_valores_nao_verificavel", "limite_a"],
+    );
+    expect(comSomaDeAgregacaoNoCatalogo.valorAssociadoCentavos).toBe(6200);
+    expect(comSomaDeAgregacaoNoCatalogo.limitacoesGlobais).not.toContain(
+      "soma_de_valores_nao_verificavel",
+    );
+    expect(comSomaDeAgregacaoNoCatalogo.limitacoesGlobais).toContain("limite_a");
+    expect(comSomaDeAgregacaoNoCatalogo.limitacoesGlobais).toContain(
+      "duracao_maxima_autorizacao_nao_verificavel",
+    );
+
+    // Sem o segundo argumento, o comportamento selado permanece: só a obrigatória.
+    const semCatalogo = api.agregarVerificacoes([entradaValida]);
+    expect(semCatalogo.limitacoesGlobais).toEqual([
+      "duracao_maxima_autorizacao_nao_verificavel",
+    ]);
   });
 });

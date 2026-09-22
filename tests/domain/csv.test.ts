@@ -485,6 +485,45 @@ describe("parseGuiasCsv — preservação da entrada", () => {
     expect(resultado.falhas[0]!.linhaOriginal).toContain("G-R-0002");
   });
 
+  it("registra a linha em branco entre dados como falha e não penaliza o terminador final", () => {
+    expect(typeof api.parseGuiasCsv).toBe("function");
+
+    const linhaValida1 = linhaLiteral("G-B-0001", "2026-08-04");
+    const linhaValida2 = linhaLiteral("G-B-0002", "2026-08-05");
+
+    // Cabeçalho (1), guia (2), linha física em branco (3), guia (4) e o
+    // terminador final, que não cria uma linha. A linha em branco intermediária
+    // não pode ser descartada em silêncio: ela vira uma falha preservada.
+    const csv =
+      COLUNAS.join(",") + "\n" + linhaValida1 + "\n\n" + linhaValida2 + "\n";
+
+    const resultado = api.parseGuiasCsv(csv);
+
+    expect(resultado.cabecalho).toEqual([...COLUNAS]);
+
+    // As duas guias válidas são coletadas, em ordem.
+    expect(resultado.guias.map((guia) => guia.original.id_guia)).toEqual([
+      "G-B-0001",
+      "G-B-0002",
+    ]);
+
+    // Exatamente uma falha, para a linha física em branco (3), com motivo de
+    // cardinalidade (não vazio) e a linha em branco preservada.
+    expect(resultado.falhas).toHaveLength(1);
+    const falha = resultado.falhas[0]!;
+    expect(falha.numero).toBe(3);
+    expect(typeof falha.motivo).toBe("string");
+    expect(falha.motivo.length).toBeGreaterThan(0);
+    expect(falha.linhaOriginal.trim()).toBe("");
+
+    // Um arquivo que termina após a última linha de dados com um único `\n` não
+    // ganha uma falha fantasma: o terminador final não é uma linha física.
+    const csvFinal = COLUNAS.join(",") + "\n" + linhaValida1 + "\n";
+    const resultadoFinal = api.parseGuiasCsv(csvFinal);
+    expect(resultadoFinal.guias.map((guia) => guia.original.id_guia)).toEqual(["G-B-0001"]);
+    expect(resultadoFinal.falhas).toHaveLength(0);
+  });
+
   it("recupera as guias seguintes após aspa aberta que não fecha na linha", () => {
     expect(typeof api.parseGuiasCsv).toBe("function");
 
@@ -583,5 +622,78 @@ describe("parseGuiasCsv — preservação da entrada", () => {
     expect(resultado.guias[0]!.linhaOriginal).toContain("\n");
     expect(resultado.guias[0]!.linhaOriginal).toContain("Segunda linha de observação");
     expect(resultado.guias[1]!.original.id_guia).toBe("G-R-0004");
+  });
+
+  it("registra como falha todas as linhas físicas quando o cabeçalho é inválido", () => {
+    expect(typeof api.parseGuiasCsv).toBe("function");
+
+    // Cabeçalho de 3 colunas (linha física 1) seguido de duas linhas bem
+    // formadas de 18 colunas (linhas físicas 2 e 3) e o terminador final.
+    const linhaValida1 = linhaLiteral("G-HDR-0001", "2026-08-04");
+    const linhaValida2 = linhaLiteral("G-HDR-0002", "2026-08-05");
+    const csv = "X,Y,Z" + "\n" + linhaValida1 + "\n" + linhaValida2 + "\n";
+
+    const resultado = api.parseGuiasCsv(csv);
+
+    // §4.2/#ac-5 e PRD #23/#28: sem cabeçalho válido nada é promovido a guia,
+    // mas nenhuma linha física pode ser descartada em silêncio. As três linhas
+    // físicas aparecem em falhas, cada uma com número, motivo e linhaOriginal.
+    expect(resultado.guias).toEqual([]);
+    expect(new Set(resultado.falhas.map((falha) => falha.numero))).toEqual(new Set([1, 2, 3]));
+
+    // A primeira falha reflete o cabeçalho inválido e preserva a linha crua.
+    const primeira = resultado.falhas[0]!;
+    expect(primeira.numero).toBe(1);
+    expect(primeira.motivo.toLowerCase()).toContain("cabecalho");
+    expect(primeira.linhaOriginal).toContain("X,Y,Z");
+
+    // Toda falha tem motivo textual não vazio e linhaOriginal presente.
+    for (const falha of resultado.falhas) {
+      expect(typeof falha.motivo).toBe("string");
+      expect(falha.motivo.length).toBeGreaterThan(0);
+      expect(typeof falha.linhaOriginal).toBe("string");
+      expect(falha.linhaOriginal.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("atribui uma falha por linha física quando o cabeçalho inválido tem quebra interna citada", () => {
+    expect(typeof api.parseGuiasCsv).toBe("function");
+
+    // Cabeçalho inválido cujo primeiro REGISTRO ocupa duas linhas físicas: a
+    // linha 1 abre aspas e a linha 2 as fecha em `Y",Z`. Em seguida uma linha
+    // bem formada de 18 colunas (linha física 3) e o terminador final.
+    const linhaValida = linhaLiteral("G-HDR-ML-0003", "2026-08-06");
+    const csv = '"X\nY",Z\n' + linhaValida + "\n";
+
+    const resultado = api.parseGuiasCsv(csv);
+
+    // §4.2/#ac-5: sem cabeçalho válido nada é promovido a guia.
+    expect(resultado.guias).toEqual([]);
+
+    // Toda linha física tem um desfecho explícito ({1,2,3}); a continuação
+    // citada não pode ser fundida na falha da linha 1.
+    expect(new Set(resultado.falhas.map((falha) => falha.numero))).toEqual(
+      new Set([1, 2, 3]),
+    );
+
+    const porNumero = new Map(resultado.falhas.map((falha) => [falha.numero, falha]));
+    const falhaLinha1 = porNumero.get(1)!;
+    const falhaLinha2 = porNumero.get(2)!;
+
+    // Linha 1: cabeçalho inválido, com apenas o texto cru desta linha física.
+    expect(falhaLinha1.motivo.toLowerCase()).toContain("cabecalho");
+    expect(falhaLinha1.linhaOriginal).toContain("X");
+    expect(falhaLinha1.linhaOriginal).not.toContain("Y");
+
+    // Linha 2: a continuação citada é reexaminada e ganha motivo próprio.
+    expect(falhaLinha2.motivo.length).toBeGreaterThan(0);
+    expect(falhaLinha2.linhaOriginal).toContain("Y");
+
+    for (const falha of resultado.falhas) {
+      expect(typeof falha.motivo).toBe("string");
+      expect(falha.motivo.length).toBeGreaterThan(0);
+      expect(typeof falha.linhaOriginal).toBe("string");
+      expect(falha.linhaOriginal.length).toBeGreaterThan(0);
+    }
   });
 });
