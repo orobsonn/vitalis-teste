@@ -234,7 +234,16 @@ export function verificarGuia(
         `O procedimento ${procedimento.codigo} não está na cobertura do convênio ${convenio.nome}.`,
       );
     }
-    if (normalizarChave(guia.procedimentoDescricao) !== normalizarChave(procedimento.descricao)) {
+    // §4.6/#ac-21: uma descrição obrigatória e vazia é coberta apenas por
+    // `campo_obrigatorio_ausente` (emitido no passo 3). §4.8 governa os demais
+    // casos — vazia não obrigatória ou preenchida divergente seguem comparadas.
+    const descricaoVaziaObrigatoria =
+      convenio.camposObrigatorios.includes("procedimento_descricao") &&
+      cru(guia, "procedimento_descricao").trim() === "";
+    if (
+      !descricaoVaziaObrigatoria &&
+      normalizarChave(guia.procedimentoDescricao) !== normalizarChave(procedimento.descricao)
+    ) {
       criarMotivo(
         "procedimento_descricao_divergente",
         "pendencia",
