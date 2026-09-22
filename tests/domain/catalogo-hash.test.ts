@@ -320,6 +320,13 @@ describe("carregarCatalogo e consultarRegra", () => {
     const campoDesconhecido = clonarCatalogo();
     campoDesconhecido.convenios[0]!.campos_obrigatorios.push("campo_inexistente");
 
+    // §4.5/#ac-8: uma lista com membro repetido é ambígua. O hash versiona as
+    // duas ocorrências de `cid`, mas `catalogo.convenios[i].camposObrigatorios`
+    // expõe uma só; aceitar isso entrega um catálogo que diverge em silêncio da
+    // versão que o rotula, em vez de falhar sem catálogo parcial.
+    const campoObrigatorioDuplicado = clonarCatalogo();
+    campoObrigatorioDuplicado.convenios[0]!.campos_obrigatorios.push("cid");
+
     const coberturaOrfa = clonarCatalogo();
     coberturaOrfa.convenios[0]!.procedimentos_cobertos.push("99999999");
 
@@ -371,6 +378,16 @@ describe("carregarCatalogo e consultarRegra", () => {
       limitacoes_globais: ["limite_a", "  "],
     };
 
+    // §4.5/#ac-8: uma limitação global declarada em duplicidade também é
+    // ambígua. O hash versiona `limite_a` duas vezes, mas
+    // `catalogo.limitacoesGlobais` deduplica em silêncio; aceitar isso entrega
+    // um catálogo divergente da versão que o rotula, em vez de falhar sem
+    // catálogo parcial.
+    const limitacaoGlobalDuplicada: unknown = {
+      ...clonarCatalogo(),
+      limitacoes_globais: ["limite_a", "limite_a"],
+    };
+
     // §4.5/#ac-8: `definicoes` também precisa ser validada no carregamento. Um
     // valor que não seja um objeto, ou um objeto com membros que não sejam
     // textos, não pode virar `ok: true` com um catálogo parcial: o hash inclui o
@@ -400,6 +417,7 @@ describe("carregarCatalogo e consultarRegra", () => {
       ["código de procedimento duplicado", codigoDuplicado],
       ["nome de convênio normalizado duplicado", nomeDuplicado],
       ["campo obrigatório fora das 18 colunas", campoDesconhecido],
+      ["campo obrigatório duplicado", campoObrigatorioDuplicado],
       ["procedimento coberto ausente", coberturaOrfa],
       ["prazo de envio fracionário", prazoFracionario],
       ["limite de sessões fracionário", limiteFracionario],
@@ -411,6 +429,7 @@ describe("carregarCatalogo e consultarRegra", () => {
       ["limitações globais não-array (número)", limitacoesNaoArrayNumero],
       ["limitação global com membro numérico", limitacoesComMembroNumerico],
       ["limitação global com membro em branco", limitacoesComMembroEmBranco],
+      ["limitação global duplicada", limitacaoGlobalDuplicada],
       ["definições não-objeto (texto)", definicoesNaoObjetoTexto],
       ["definições não-objeto (número)", definicoesNaoObjetoNumero],
       ["definições como lista", definicoesComoLista],
@@ -466,6 +485,29 @@ describe("carregarCatalogo e consultarRegra", () => {
       resultadoInteiro.catalogo,
     );
     expect(regraInteiro.procedimento?.valorReferenciaCentavos).toBe(6200);
+  });
+
+  it("aceita a limitação global declarada explicitamente sem duplicá-la", () => {
+    expect(typeof api.carregarCatalogo).toBe("function");
+
+    // O complemento positivo dos casos de limitação duplicada acima: declarar
+    // explicitamente a limitação obrigatória continua válido e ela aparece
+    // exatamente uma vez, sem duplicação artificial.
+    const comLimitacaoGlobal: unknown = {
+      ...clonarCatalogo(),
+      limitacoes_globais: [GLOBAL_NAO_VERIFICAVEL],
+    };
+    const resultado = api.carregarCatalogo(comLimitacaoGlobal);
+    expect(resultado.ok).toBe(true);
+    if (!resultado.ok) {
+      throw new Error(
+        `catálogo com limitação global declarada deveria ser válido: ${resultado.erros.join("; ")}`,
+      );
+    }
+    const ocorrencias = resultado.catalogo.limitacoesGlobais.filter(
+      (item) => item === GLOBAL_NAO_VERIFICAVEL,
+    );
+    expect(ocorrencias).toHaveLength(1);
   });
 
   it("resolve o procedimento pelo código exato, sem ambiguidade de ordem", () => {
