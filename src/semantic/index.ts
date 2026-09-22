@@ -30,6 +30,12 @@ export {
   versaoEfetivaDoPrompt,
 } from "./prompt";
 
+export { MODELO_OBSERVACAO, criarInterpretadorWorkersAi } from "./workers-ai";
+export type {
+  BindingAi,
+  OpcoesInterpretadorWorkersAi,
+} from "./workers-ai";
+
 export {
   LIMITE_AMBIGUIDADES,
   LIMITE_EVIDENCIA,
