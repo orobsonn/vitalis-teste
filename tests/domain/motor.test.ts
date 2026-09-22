@@ -455,6 +455,64 @@ describe("verificarGuia — alertas e incoerências", () => {
     ).toHaveLength(0);
   });
 
+  it("descrição divergente independe do convênio: procedimento catalogado ainda compara sem convênio utilizável", () => {
+    expect(typeof api.verificarGuia).toBe("function");
+
+    // §4.8: a comparação normalizada da descrição depende apenas de o
+    // procedimento estar catalogado. #ac-24/#ac-26 exigem preservar
+    // inconsistências independentes; convênio ausente/desconhecido não pode
+    // suprimir o motivo adicional.
+    const descricaoCatalogo = "Sessão de fisioterapia musculoesquelética";
+    const descricaoGuia = "Descrição divergente";
+    const casos: Array<{
+      rotulo: string;
+      overrides: Partial<Record<Coluna, string>>;
+      codigoConvenio: string;
+    }> = [
+      {
+        rotulo: "convênio vazio",
+        overrides: { convenio: "" },
+        codigoConvenio: "convenio_ausente",
+      },
+      {
+        rotulo: "convênio não catalogado",
+        overrides: { convenio: "Inexistente" },
+        codigoConvenio: "convenio_nao_catalogado",
+      },
+    ];
+
+    for (const caso of casos) {
+      const { guia, resultado } = verificar({
+        ...caso.overrides,
+        procedimento_descricao: descricaoGuia,
+      });
+
+      // Só o convênio ficou inutilizável; o procedimento segue catalogado.
+      expect(guia.procedimentoCodigo).toBe("50000470");
+      expect(resultado.decisao).toBe("PENDENTE");
+
+      const divergencias = resultado.motivos.filter(
+        (item) => item.codigo === "procedimento_descricao_divergente",
+      );
+      expect(divergencias).toHaveLength(1);
+
+      const pendencia = divergencias[0]!;
+      expect(pendencia.severidade).toBe("pendencia");
+      expect(pendencia.campos).toEqual(
+        expect.arrayContaining(["procedimento_codigo", "procedimento_descricao"]),
+      );
+      // A evidência preserva as duas versões: o texto cru da guia e o do catálogo.
+      expect(pendencia.evidencia).toContain(descricaoGuia);
+      expect(pendencia.evidencia).toContain(descricaoCatalogo);
+
+      // O motivo do convênio é preservado: o novo motivo é adicional, não substitui.
+      expect(motivo(resultado, caso.codigoConvenio)).toBeDefined();
+
+      // A limitação preexistente de cobertura continua quando o convênio não é utilizável.
+      expect(resultado.limitacoes).toContain("cobertura_indefinida");
+    }
+  });
+
   it("lançamento anterior ao atendimento gera cronologia_incoerente", () => {
     expect(typeof api.verificarGuia).toBe("function");
 
