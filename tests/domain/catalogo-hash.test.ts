@@ -30,6 +30,7 @@ interface Catalogo {
   convenios: unknown[];
   procedimentos: unknown[];
   limitacoesGlobais: string[];
+  definicoes: Record<string, string>;
 }
 
 type ResultadoCatalogo = { ok: true; catalogo: Catalogo } | { ok: false; erros: string[] };
@@ -50,6 +51,24 @@ interface ConsultaRegra {
   observacao: string;
   limitacoes: string[];
   regrasVersao: string;
+}
+
+// Visão mutável local do convênio/procedimento apenas para que as tentativas de
+// escrita do teste abaixo type-checkem. Não é importada do barrel.
+interface ConvenioMutavel {
+  nome: string;
+  camposObrigatorios: string[];
+  validadeMaximaDias: number;
+  limiteSessoes: number;
+  procedimentosCobertos: string[];
+  prazoEnvioDias: number;
+  observacao: string;
+}
+
+interface ProcedimentoMutavel {
+  codigo: string;
+  descricao: string;
+  valorReferenciaCentavos: number;
 }
 
 interface ApiAprovada {
@@ -475,6 +494,126 @@ describe("carregarCatalogo e consultarRegra", () => {
         problemas.push(`${rotulo}: catalogo parcial presente`);
       }
     }
+    expect(problemas).toEqual([]);
+  });
+
+  it("mantém o catálogo carregado imutável e preserva decisão e regrasVersao", () => {
+    expect(typeof api.carregarCatalogo).toBe("function");
+    expect(typeof api.consultarRegra).toBe("function");
+
+    const resultado = api.carregarCatalogo(CATALOGO_JSON);
+    expect(resultado.ok).toBe(true);
+    if (!resultado.ok) {
+      throw new Error(`catálogo sintético deveria ser válido: ${resultado.erros.join("; ")}`);
+    }
+    const catalogo = resultado.catalogo;
+
+    const convenios = catalogo.convenios as unknown as ConvenioMutavel[];
+    const procedimentos = catalogo.procedimentos as unknown as ProcedimentoMutavel[];
+    const convenio = convenios[0]!;
+    const procedimento = procedimentos[0]!;
+
+    // A regra efetiva e a versão vigente são registradas antes de qualquer
+    // tentativa de mutação: elas não podem divergir depois.
+    const versaoOriginal = catalogo.regrasVersao;
+    const regraAntes = api.consultarRegra(
+      { convenio: "Vitalcard", procedimento_codigo: "50000470" },
+      catalogo,
+    );
+    expect(regraAntes.limiteSessoes).toBe(10);
+    expect(regraAntes.prazoEnvioDias).toBe(30);
+    expect(regraAntes.validadeMaximaDias).toBe(30);
+    expect(regraAntes.regrasVersao).toBe(versaoOriginal);
+
+    // Em ESM estrito uma escrita sobre alvo congelado lança `TypeError`; num
+    // catálogo mutável ela apenas tem efeito. As tentativas são capturadas para
+    // que a asserção seja sobre o efeito observado, nunca sobre o lançamento.
+    const tentativasDeMutacao: Array<() => void> = [
+      () => {
+        convenio.limiteSessoes = 999;
+      },
+      () => {
+        procedimento.valorReferenciaCentavos = 1;
+      },
+      () => {
+        convenios.push({ ...convenio });
+      },
+      () => {
+        convenio.camposObrigatorios.push("cid");
+      },
+    ];
+    for (const tentativa of tentativasDeMutacao) {
+      try {
+        tentativa();
+      } catch {
+        // imutável: a escrita foi rejeitada, que é o comportamento exigido
+      }
+    }
+
+    // O catálogo versionado é a fonte única de regras e de versão: enquanto ele
+    // for mutável, a decisão passa a divergir em silêncio do hash que a rotula.
+    const problemas: string[] = [];
+
+    const exigirCongelado = (alvo: unknown, rotulo: string): void => {
+      if (!Object.isFrozen(alvo)) {
+        problemas.push(`${rotulo} não está congelado`);
+      }
+    };
+    exigirCongelado(catalogo, "catalogo");
+    exigirCongelado(catalogo.convenios, "catalogo.convenios");
+    exigirCongelado(catalogo.procedimentos, "catalogo.procedimentos");
+    exigirCongelado(catalogo.limitacoesGlobais, "catalogo.limitacoesGlobais");
+    exigirCongelado(catalogo.definicoes, "catalogo.definicoes");
+
+    // A fixture tem mais de um convênio e mais de um procedimento: congelar só
+    // a primeira entrada deixaria uma entrada posterior mutável e passaria. A
+    // checagem percorre todos os itens e nomeia o índice na mensagem.
+    for (let i = 0; i < convenios.length; i += 1) {
+      const item = convenios[i]!;
+      exigirCongelado(item, `catalogo.convenios[${i}]`);
+      exigirCongelado(item.camposObrigatorios, `catalogo.convenios[${i}].camposObrigatorios`);
+      exigirCongelado(
+        item.procedimentosCobertos,
+        `catalogo.convenios[${i}].procedimentosCobertos`,
+      );
+    }
+    for (let i = 0; i < procedimentos.length; i += 1) {
+      exigirCongelado(procedimentos[i], `catalogo.procedimentos[${i}]`);
+    }
+
+    if (convenio.limiteSessoes !== 10) {
+      problemas.push(`limiteSessoes mutou para ${convenio.limiteSessoes}`);
+    }
+    if (procedimento.valorReferenciaCentavos !== 6200) {
+      problemas.push(`valorReferenciaCentavos mutou para ${procedimento.valorReferenciaCentavos}`);
+    }
+    if (convenios.length !== CATALOGO_JSON.convenios.length) {
+      problemas.push(`convenios mutou para ${convenios.length} itens`);
+    }
+    if (
+      convenio.camposObrigatorios.length !== CATALOGO_JSON.convenios[0]!.campos_obrigatorios.length
+    ) {
+      problemas.push(`camposObrigatorios mutou para ${convenio.camposObrigatorios.length} itens`);
+    }
+
+    const regraDepois = api.consultarRegra(
+      { convenio: "Vitalcard", procedimento_codigo: "50000470" },
+      catalogo,
+    );
+    if (catalogo.regrasVersao !== versaoOriginal) {
+      problemas.push("regrasVersao divergiu depois das tentativas de mutação");
+    }
+    if (
+      regraDepois.limiteSessoes !== regraAntes.limiteSessoes ||
+      regraDepois.prazoEnvioDias !== regraAntes.prazoEnvioDias ||
+      regraDepois.validadeMaximaDias !== regraAntes.validadeMaximaDias ||
+      regraDepois.regrasVersao !== regraAntes.regrasVersao
+    ) {
+      problemas.push(
+        `a decisão consultada divergiu do hash/versão registrados: ${JSON.stringify(regraDepois)}`,
+      );
+    }
+
     expect(problemas).toEqual([]);
   });
 });
