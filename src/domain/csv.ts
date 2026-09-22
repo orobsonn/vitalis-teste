@@ -35,7 +35,11 @@ interface RegistroCsv {
   malformado: boolean;
 }
 
-function dividirRegistros(entrada: string, linhaBase = 1): RegistroCsv[] {
+function dividirRegistros(
+  entrada: string,
+  linhaBase = 1,
+  preservarLinhasEmBranco = false,
+): RegistroCsv[] {
   const texto = entrada.charCodeAt(0) === 0xfeff ? entrada.slice(1) : entrada;
   const registros: RegistroCsv[] = [];
   let campos: string[] = [];
@@ -59,6 +63,10 @@ function dividirRegistros(entrada: string, linhaBase = 1): RegistroCsv[] {
     const linhaEmBranco = campos.length === 1 && campos[0] === "" && textoCru === "";
     if (!linhaEmBranco) {
       registros.push({ campos, textoCru, numeroLinha: linhaInicial, aspasAbertas: emAspas, malformado });
+    } else if (preservarLinhasEmBranco) {
+      // Na recuperação toda linha física precisa de um desfecho: a linha em
+      // branco vira falha de cardinalidade com 0 campos.
+      registros.push({ campos: [], textoCru, numeroLinha: linhaInicial, aspasAbertas: emAspas, malformado });
     }
     campos = [];
     textoCru = "";
@@ -149,7 +157,13 @@ function dividirRegistros(entrada: string, linhaBase = 1): RegistroCsv[] {
     indice += 1;
   }
 
-  concluirRegistro();
+  // Um terminador final não cria uma linha física: o último segmento vazio é
+  // apenas o resíduo do `\n`/`\r` que fecha o texto. Só conclui se houver
+  // conteúdo pendente, de modo que a recuperação (`preservarLinhasEmBranco`)
+  // não duplique uma linha em branco real já emitida dentro do laço.
+  if (textoCru !== "" || campos.length > 0 || campo !== "") {
+    concluirRegistro();
+  }
   return registros;
 }
 
@@ -176,6 +190,25 @@ function motivoCardinalidade(quantidade: number): string {
   return `cardinalidade_invalida: esperado ${COLUNAS_GUIA.length} colunas, obtido ${quantidade}`;
 }
 
+interface QuebraFisica {
+  indice: number;
+  comprimento: number;
+}
+
+/** Primeira quebra de linha física do texto, ou `null` se ele tem uma só linha. */
+function localizarPrimeiraQuebra(texto: string): QuebraFisica | null {
+  for (let indice = 0; indice < texto.length; indice += 1) {
+    const caractere = texto[indice]!;
+    if (caractere === "\n") {
+      return { indice, comprimento: 1 };
+    }
+    if (caractere === "\r") {
+      return { indice, comprimento: texto[indice + 1] === "\n" ? 2 : 1 };
+    }
+  }
+  return null;
+}
+
 /** Motivo da falha de um registro recuperado, ou `null` se ele for uma guia válida. */
 function motivoDoRegistro(registro: RegistroCsv): string | null {
   if (registro.aspasAbertas || registro.malformado) {
@@ -192,75 +225,44 @@ function processarRegistros(
   guias: LinhaGuiaCsv[],
   falhas: FalhaCsv[],
 ): void {
-  for (const registro of registros) {
-    // Registro malformado já delimitado por uma aspa de fechamento: uma única
-    // falha com o texto cru integral, sem ressincronizar as linhas físicas que
-    // ele engoliu.
-    if (registro.malformado) {
+  // Pilha de trabalho explícita e iterativa, processada em ordem: os registros
+  // recuperados de uma ressincronização são empilhados na ordem inversa para
+  // serem consumidos do início ao fim. Cada ressincronização consome ao menos a
+  // primeira linha física do registro, então a pilha nunca cresce além da
+  // entrada e a recursão de chamadas é evitada.
+  const trabalho: RegistroCsv[] = [];
+  for (let indice = registros.length - 1; indice >= 0; indice -= 1) {
+    trabalho.push(registros[indice]!);
+  }
+
+  while (trabalho.length > 0) {
+    const registro = trabalho.pop()!;
+    const quebra = localizarPrimeiraQuebra(registro.textoCru);
+
+    // Só registros com sintaxe de aspas inválida engolem linhas seguintes; se o
+    // texto cru abrange mais de uma linha física, emite uma única falha para a
+    // primeira linha e reexamina o restante com o parser completo, para que uma
+    // guia recuperada com quebra interna em campo citado sobreviva inteira.
+    if ((registro.aspasAbertas || registro.malformado) && quebra !== null) {
       falhas.push({
         numero: registro.numeroLinha,
-        motivo: MOTIVO_ASPAS_MALFORMADAS,
-        linhaOriginal: registro.textoCru,
+        motivo: registro.aspasAbertas ? MOTIVO_ASPAS_NAO_TERMINADAS : MOTIVO_ASPAS_MALFORMADAS,
+        linhaOriginal: registro.textoCru.slice(0, quebra.indice),
       });
-      continue;
-    }
-    if (registro.aspasAbertas) {
-      const linhas = registro.textoCru.split(/\r\n|\r|\n/);
-      // Um terminador final não cria uma linha física: o último segmento vazio
-      // é apenas o resíduo do `\n`/`\r` que fecha o arquivo. Linha em branco
-      // real (entre terminadores) permanece e segue para a recuperação.
-      if (linhas.length > 1 && linhas[linhas.length - 1] === "") {
-        linhas.pop();
-      }
-      falhas.push({
-        numero: registro.numeroLinha,
-        motivo: MOTIVO_ASPAS_NAO_TERMINADAS,
-        linhaOriginal: linhas[0] ?? "",
-      });
-      // Recuperação iterativa e apenas para a frente: cada linha física restante
-      // é examinada exatamente uma vez, em ordem, como registro independente.
-      for (let deslocamento = 1; deslocamento < linhas.length; deslocamento += 1) {
-        const numero = registro.numeroLinha + deslocamento;
-        const textoLinha = linhas[deslocamento]!;
-        const recuperados = dividirRegistros(textoLinha, numero);
-        // `dividirRegistros` não emite registro para linha física em branco; na
-        // recuperação toda linha restante precisa de seu próprio desfecho, então
-        // a linha em branco vira falha de cardinalidade (0 campos obtidos).
-        if (recuperados.length === 0) {
-          falhas.push({
-            numero,
-            motivo: motivoCardinalidade(0),
-            linhaOriginal: textoLinha,
-          });
-          continue;
-        }
-        for (const recuperado of recuperados) {
-          const motivo = motivoDoRegistro(recuperado);
-          if (motivo === null) {
-            guias.push({
-              numero: recuperado.numeroLinha,
-              original: montarOriginal(recuperado.campos),
-              linhaOriginal: recuperado.textoCru,
-            });
-          } else {
-            falhas.push({
-              numero: recuperado.numeroLinha,
-              motivo,
-              linhaOriginal: recuperado.textoCru,
-            });
-          }
-        }
+      const resto = registro.textoCru.slice(quebra.indice + quebra.comprimento);
+      const recuperados = dividirRegistros(resto, registro.numeroLinha + 1, true);
+      for (let indice = recuperados.length - 1; indice >= 0; indice -= 1) {
+        trabalho.push(recuperados[indice]!);
       }
       continue;
     }
-    if (registro.campos.length !== COLUNAS_GUIA.length) {
-      falhas.push({
-        numero: registro.numeroLinha,
-        motivo: motivoCardinalidade(registro.campos.length),
-        linhaOriginal: registro.textoCru,
-      });
+
+    const motivo = motivoDoRegistro(registro);
+    if (motivo !== null) {
+      falhas.push({ numero: registro.numeroLinha, motivo, linhaOriginal: registro.textoCru });
       continue;
     }
+
     guias.push({
       numero: registro.numeroLinha,
       original: montarOriginal(registro.campos),

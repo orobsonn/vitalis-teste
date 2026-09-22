@@ -236,4 +236,62 @@ describe("agregarVerificacoes", () => {
     expect(agregadoValido.totalIncompleto).toBe(false);
     expect(agregadoValido.valorAssociadoCentavos).toBe(6200);
   });
+
+  it("nunca devolve um total arredondado além de Number.MAX_SAFE_INTEGER e reporta a limitação existente", () => {
+    expect(typeof api.agregarVerificacoes).toBe("function");
+
+    // Cada guia tem valorCentavos individualmente seguro, mas a soma
+    // 9007199254740991 + 2 ultrapassa Number.MAX_SAFE_INTEGER e seria devolvida
+    // arredondada se o agregado somasse sem verificar a segurança do total.
+    const guiaGrande = entrada({
+      valor: "90071992547409,91",
+      autorizacao_validade: "2026-08-09",
+    });
+    const guiaPequena = entrada({
+      valor: "0,02",
+      autorizacao_validade: "2026-08-09",
+    });
+    expect(guiaGrande.guia.valorCentavos).toBe(9007199254740991);
+    expect(guiaPequena.guia.valorCentavos).toBe(2);
+    expect(Number.isSafeInteger(guiaGrande.guia.valorCentavos)).toBe(true);
+    expect(Number.isSafeInteger(guiaPequena.guia.valorCentavos)).toBe(true);
+    expect(guiaGrande.resultado.decisao).toBe("PENDENTE");
+    expect(guiaPequena.resultado.decisao).toBe("PENDENTE");
+
+    const agregado = api.agregarVerificacoes([guiaGrande, guiaPequena]);
+
+    // O total exposto nunca é o valor arredondado/fora da faixa segura.
+    expect(Number.isSafeInteger(agregado.valorAssociadoCentavos)).toBe(true);
+    expect(agregado.valorAssociadoCentavos).toBeGreaterThanOrEqual(0);
+    expect(agregado.valorAssociadoCentavos).toBeLessThanOrEqual(Number.MAX_SAFE_INTEGER);
+
+    // A limitação obrigatória vem acompanhada de pelo menos uma entrada
+    // adicional na mesma via existente; nenhum código dedicado é presumido.
+    expect(agregado.limitacoesGlobais).toContain("duracao_maxima_autorizacao_nao_verificavel");
+    expect(agregado.limitacoesGlobais.length).toBeGreaterThan(1);
+    for (const limitacao of agregado.limitacoesGlobais) {
+      expect(typeof limitacao).toBe("string");
+      expect(limitacao.length).toBeGreaterThan(0);
+    }
+
+    // A política de estouro não pode depender da ordem de entrada.
+    const agregadoInverso = api.agregarVerificacoes([guiaPequena, guiaGrande]);
+    expect(agregadoInverso.valorAssociadoCentavos).toBe(agregado.valorAssociadoCentavos);
+    expect(Number.isSafeInteger(agregadoInverso.valorAssociadoCentavos)).toBe(true);
+    expect(agregadoInverso.limitacoesGlobais).toContain(
+      "duracao_maxima_autorizacao_nao_verificavel",
+    );
+
+    // Sem estouro, o total segue integral, nada extra é declarado e as
+    // semânticas de contagem permanecem as aprovadas.
+    const semEstouro = entrada({ valor: "62,00", autorizacao_validade: "2026-08-09" });
+    const agregadoSemEstouro = api.agregarVerificacoes([semEstouro]);
+    expect(agregadoSemEstouro.valorAssociadoCentavos).toBe(6200);
+    expect(Number.isSafeInteger(agregadoSemEstouro.valorAssociadoCentavos)).toBe(true);
+    expect(agregadoSemEstouro.limitacoesGlobais).toEqual([
+      "duracao_maxima_autorizacao_nao_verificavel",
+    ]);
+    expect(agregadoSemEstouro.totalIncompleto).toBe(false);
+    expect(agregadoSemEstouro.guiasComPendencia).toBe(1);
+  });
 });
