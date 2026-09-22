@@ -85,17 +85,25 @@ function evidenciaEhLiteral(evidencia: string, textoObservacao: string): boolean
   }
 
   const textoNormalizado = normalizarEvidencia(textoObservacao);
-  const indice = textoNormalizado.indexOf(evidenciaNormalizada);
+  let indice = textoNormalizado.indexOf(evidenciaNormalizada);
   if (indice < 0) {
     return false;
   }
 
-  const antes = indice > 0 ? textoNormalizado.charAt(indice - 1) : "";
-  const depois =
-    indice + evidenciaNormalizada.length < textoNormalizado.length
-      ? textoNormalizado.charAt(indice + evidenciaNormalizada.length)
-      : "";
-  return !CARACTERE_ALFANUMERICO.test(antes) && !CARACTERE_ALFANUMERICO.test(depois);
+  // Aceita se QUALQUER ocorrência contígua estiver alinhada a palavras;
+  // uma ocorrência embutida em outra palavra não impede uma posterior alinhada.
+  while (indice >= 0) {
+    const antes = indice > 0 ? textoNormalizado.charAt(indice - 1) : "";
+    const depois =
+      indice + evidenciaNormalizada.length < textoNormalizado.length
+        ? textoNormalizado.charAt(indice + evidenciaNormalizada.length)
+        : "";
+    if (!CARACTERE_ALFANUMERICO.test(antes) && !CARACTERE_ALFANUMERICO.test(depois)) {
+      return true;
+    }
+    indice = textoNormalizado.indexOf(evidenciaNormalizada, indice + 1);
+  }
+  return false;
 }
 
 function dentroDosLimites(sinais: SinaisObservacao): boolean {
