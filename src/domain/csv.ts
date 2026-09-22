@@ -35,7 +35,7 @@ interface RegistroCsv {
   malformado: boolean;
 }
 
-function dividirRegistros(entrada: string): RegistroCsv[] {
+function dividirRegistros(entrada: string, linhaBase = 1): RegistroCsv[] {
   const texto = entrada.charCodeAt(0) === 0xfeff ? entrada.slice(1) : entrada;
   const registros: RegistroCsv[] = [];
   let campos: string[] = [];
@@ -44,8 +44,8 @@ function dividirRegistros(entrada: string): RegistroCsv[] {
   let emAspas = false;
   let aposAspas = false;
   let malformado = false;
-  let numeroLinha = 1;
-  let linhaInicial = 1;
+  let numeroLinha = linhaBase;
+  let linhaInicial = linhaBase;
   let indice = 0;
 
   const concluirCampo = (): void => {
@@ -164,6 +164,57 @@ function cabecalhoEsperado(cabecalho: readonly string[]): boolean {
   );
 }
 
+/** Primeira linha física de um texto e o restante, ou `null` se for uma só linha. */
+function separarPrimeiraLinhaFisica(textoCru: string): { primeira: string; resto: string } | null {
+  const quebra = /\r\n|\r|\n/.exec(textoCru);
+  if (!quebra) {
+    return null;
+  }
+  return {
+    primeira: textoCru.slice(0, quebra.index),
+    resto: textoCru.slice(quebra.index + quebra[0].length),
+  };
+}
+
+const MOTIVO_ASPAS_NAO_TERMINADAS =
+  "aspas_nao_terminadas: campo entre aspas sem fechamento até o fim do arquivo";
+const MOTIVO_ASPAS_MALFORMADAS = "aspas_malformadas: sintaxe de aspas inválida no campo";
+
+function processarRegistros(
+  registros: readonly RegistroCsv[],
+  guias: LinhaGuiaCsv[],
+  falhas: FalhaCsv[],
+): void {
+  for (const registro of registros) {
+    if (registro.aspasAbertas || registro.malformado) {
+      const motivo = registro.aspasAbertas ? MOTIVO_ASPAS_NAO_TERMINADAS : MOTIVO_ASPAS_MALFORMADAS;
+      const corte = separarPrimeiraLinhaFisica(registro.textoCru);
+      if (corte) {
+        // Um registro defeituoso que engoliu várias linhas físicas tem como
+        // falha apenas a sua primeira linha; o sufixo vira registros novos.
+        falhas.push({ numero: registro.numeroLinha, motivo, linhaOriginal: corte.primeira });
+        processarRegistros(dividirRegistros(corte.resto, registro.numeroLinha + 1), guias, falhas);
+        continue;
+      }
+      falhas.push({ numero: registro.numeroLinha, motivo, linhaOriginal: registro.textoCru });
+      continue;
+    }
+    if (registro.campos.length !== COLUNAS_GUIA.length) {
+      falhas.push({
+        numero: registro.numeroLinha,
+        motivo: `cardinalidade_invalida: esperado ${COLUNAS_GUIA.length} colunas, obtido ${registro.campos.length}`,
+        linhaOriginal: registro.textoCru,
+      });
+      continue;
+    }
+    guias.push({
+      numero: registro.numeroLinha,
+      original: montarOriginal(registro.campos),
+      linhaOriginal: registro.textoCru,
+    });
+  }
+}
+
 export function parseGuiasCsv(texto: string): ResultadoCsv {
   const registros = dividirRegistros(texto);
   const [primeiro, ...demais] = registros;
@@ -190,37 +241,7 @@ export function parseGuiasCsv(texto: string): ResultadoCsv {
     return { cabecalho, guias, falhas };
   }
 
-  for (const registro of demais) {
-    if (registro.aspasAbertas) {
-      falhas.push({
-        numero: registro.numeroLinha,
-        motivo: "aspas_nao_terminadas: campo entre aspas sem fechamento até o fim do arquivo",
-        linhaOriginal: registro.textoCru,
-      });
-      continue;
-    }
-    if (registro.malformado) {
-      falhas.push({
-        numero: registro.numeroLinha,
-        motivo: "aspas_malformadas: sintaxe de aspas inválida no campo",
-        linhaOriginal: registro.textoCru,
-      });
-      continue;
-    }
-    if (registro.campos.length !== COLUNAS_GUIA.length) {
-      falhas.push({
-        numero: registro.numeroLinha,
-        motivo: `cardinalidade_invalida: esperado ${COLUNAS_GUIA.length} colunas, obtido ${registro.campos.length}`,
-        linhaOriginal: registro.textoCru,
-      });
-      continue;
-    }
-    guias.push({
-      numero: registro.numeroLinha,
-      original: montarOriginal(registro.campos),
-      linhaOriginal: registro.textoCru,
-    });
-  }
+  processarRegistros(demais, guias, falhas);
 
   return { cabecalho, guias, falhas };
 }

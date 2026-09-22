@@ -57,7 +57,11 @@ export function normalizarChave(texto: string): string {
 }
 
 function ehObjeto(valor: unknown): valor is Record<string, unknown> {
-  return typeof valor === "object" && valor !== null && !Array.isArray(valor);
+  if (typeof valor !== "object" || valor === null || Array.isArray(valor)) {
+    return false;
+  }
+  const prototipo = Object.getPrototypeOf(valor);
+  return prototipo === Object.prototype || prototipo === null;
 }
 
 function ehColunaGuia(valor: string): valor is ColunaGuia {
@@ -199,6 +203,15 @@ function lerLimitacoes(valor: unknown): string[] {
 
 /** Valida a estrutura e devolve o catálogo versionado, ou os erros encontrados. */
 export function carregarCatalogo(json: unknown): ResultadoCatalogo {
+  try {
+    return validarCatalogo(json);
+  } catch (erro) {
+    const mensagem = erro instanceof Error ? erro.message : String(erro);
+    return { ok: false, erros: [`catalogo invalido: ${mensagem}`] };
+  }
+}
+
+function validarCatalogo(json: unknown): ResultadoCatalogo {
   if (!ehObjeto(json)) {
     return { ok: false, erros: ["catalogo deve ser um objeto JSON"] };
   }
@@ -270,11 +283,10 @@ export function buscarConvenio(catalogo: Catalogo, nome: string): ConvenioCatalo
 }
 
 export function buscarProcedimento(catalogo: Catalogo, codigo: string): ProcedimentoCatalogo | null {
-  const limpo = codigo.trim();
-  if (limpo === "") {
+  if (codigo.trim() === "") {
     return null;
   }
-  return catalogo.procedimentos.find((procedimento) => procedimento.codigo === limpo) ?? null;
+  return catalogo.procedimentos.find((procedimento) => procedimento.codigo === codigo) ?? null;
 }
 
 export function consultarRegra(

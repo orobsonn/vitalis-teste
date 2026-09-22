@@ -22,17 +22,30 @@ export function textoCanonico(valor: unknown, profundidade = 0): string {
   if (typeof valor === "string") {
     return JSON.stringify(valor);
   }
-  if (valor === null || typeof valor !== "object") {
-    const serializado = JSON.stringify(valor);
-    return serializado === undefined ? "null" : serializado;
+  if (valor === null) {
+    return "null";
   }
-  if (Array.isArray(valor)) {
-    return `[${valor.map((item) => textoCanonico(item, profundidade + 1)).join(",")}]`;
+  if (typeof valor === "number") {
+    if (!Number.isFinite(valor)) {
+      throw new ErroCanonicalizacao("número não finito não é um valor JSON canônico");
+    }
+    return JSON.stringify(valor);
   }
-  const objeto = valor as Record<string, unknown>;
-  const chaves = Object.keys(objeto).sort();
-  const partes = chaves.map(
-    (chave) => `${JSON.stringify(chave)}:${textoCanonico(objeto[chave], profundidade + 1)}`,
+  if (typeof valor === "boolean") {
+    return valor ? "true" : "false";
+  }
+  if (typeof valor === "object") {
+    if (Array.isArray(valor)) {
+      return `[${valor.map((item) => textoCanonico(item, profundidade + 1)).join(",")}]`;
+    }
+    const objeto = valor as Record<string, unknown>;
+    const chaves = Object.keys(objeto).sort();
+    const partes = chaves.map(
+      (chave) => `${JSON.stringify(chave)}:${textoCanonico(objeto[chave], profundidade + 1)}`,
+    );
+    return `{${partes.join(",")}}`;
+  }
+  throw new ErroCanonicalizacao(
+    `valor não é JSON canônico: ${typeof valor === "undefined" ? "undefined" : typeof valor}`,
   );
-  return `{${partes.join(",")}}`;
 }
