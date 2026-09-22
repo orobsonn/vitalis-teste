@@ -68,12 +68,19 @@ function ehIndiceDeArray(nome: string, comprimento: number): boolean {
 }
 
 function copiarArray(valor: unknown[], visitados: Set<object>): unknown[] {
-  for (const nome of Object.getOwnPropertyNames(valor)) {
+  for (const nome of Reflect.ownKeys(valor)) {
+    if (typeof nome === "symbol") {
+      throw new ErroCanonicalizacao("chave símbolo não é um valor JSON");
+    }
     if (nome === "length") {
       continue;
     }
     if (!ehIndiceDeArray(nome, valor.length)) {
       throw new ErroCanonicalizacao(`array possui propriedade não indexada "${nome}"`);
+    }
+    const descritor = Object.getOwnPropertyDescriptor(valor, nome);
+    if (descritor && !descritor.enumerable) {
+      throw new ErroCanonicalizacao(`array possui propriedade não enumerável "${nome}"`);
     }
   }
   const copia = new Array<unknown>(valor.length);
@@ -96,15 +103,28 @@ function copiarObjeto(valor: object, visitados: Set<object>): Record<string, unk
     throw new ErroCanonicalizacao("objeto não é um objeto JSON puro");
   }
   const copia: Record<string, unknown> = {};
-  for (const chave of Object.keys(valor)) {
+  for (const chave of Reflect.ownKeys(valor)) {
+    if (typeof chave === "symbol") {
+      throw new ErroCanonicalizacao("chave símbolo não é um valor JSON");
+    }
     const descritor = Object.getOwnPropertyDescriptor(valor, chave);
     if (!descritor) {
       continue;
     }
+    if (!descritor.enumerable) {
+      throw new ErroCanonicalizacao(`propriedade "${chave}" não enumerável não é JSON`);
+    }
     if (descritor.get || descritor.set) {
       throw new ErroCanonicalizacao(`propriedade "${chave}" é um acessor não JSON`);
     }
-    copia[chave] = copiarSnapshot(descritor.value, visitados);
+    // `defineProperty` grava sempre uma propriedade própria de dados: uma chave
+    // `__proto__` continua sendo dado comum e nunca muta o protótipo da cópia.
+    Object.defineProperty(copia, chave, {
+      value: copiarSnapshot(descritor.value, visitados),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
   }
   return copia;
 }

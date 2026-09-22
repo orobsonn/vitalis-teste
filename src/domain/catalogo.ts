@@ -73,9 +73,19 @@ function ehInteiroNaoNegativo(valor: unknown): valor is number {
   return typeof valor === "number" && Number.isSafeInteger(valor) && valor >= 0;
 }
 
-/** Digest SHA-256 do JSON canônico (chaves ordenadas recursivamente, UTF-8). */
+/** Digest SHA-256 de um snapshot já validado como dados JSON puros. */
+function hashCatalogoDeSnapshot(snapshot: unknown): string {
+  return sha256Hex(textoCanonico(snapshot));
+}
+
+/**
+ * Digest SHA-256 do JSON canônico (chaves ordenadas recursivamente, UTF-8).
+ * A entrada é primeiro reduzida a um snapshot estrito de dados JSON puros, de
+ * modo que acessores e proxies nunca sejam invocados e entradas não JSON
+ * lancem `ErroCanonicalizacao` em vez de gerar um digest não determinístico.
+ */
 export function hashCatalogo(json: unknown): string {
-  return sha256Hex(textoCanonico(json));
+  return hashCatalogoDeSnapshot(criarSnapshotJson(json));
 }
 
 function lerProcedimentos(valor: unknown, erros: string[]): ProcedimentoCatalogo[] {
@@ -271,7 +281,7 @@ function validarCatalogo(json: unknown): ResultadoCatalogo {
 
   let hash: string;
   try {
-    hash = hashCatalogo(json);
+    hash = hashCatalogoDeSnapshot(json);
   } catch (erro) {
     erros.push(`catalogo invalido: nao foi possivel canonicalizar (${formatarErro(erro)})`);
     return { ok: false, erros };

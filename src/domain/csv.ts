@@ -206,6 +206,12 @@ function processarRegistros(
     }
     if (registro.aspasAbertas) {
       const linhas = registro.textoCru.split(/\r\n|\r|\n/);
+      // Um terminador final não cria uma linha física: o último segmento vazio
+      // é apenas o resíduo do `\n`/`\r` que fecha o arquivo. Linha em branco
+      // real (entre terminadores) permanece e segue para a recuperação.
+      if (linhas.length > 1 && linhas[linhas.length - 1] === "") {
+        linhas.pop();
+      }
       falhas.push({
         numero: registro.numeroLinha,
         motivo: MOTIVO_ASPAS_NAO_TERMINADAS,
@@ -215,7 +221,20 @@ function processarRegistros(
       // é examinada exatamente uma vez, em ordem, como registro independente.
       for (let deslocamento = 1; deslocamento < linhas.length; deslocamento += 1) {
         const numero = registro.numeroLinha + deslocamento;
-        for (const recuperado of dividirRegistros(linhas[deslocamento]!, numero)) {
+        const textoLinha = linhas[deslocamento]!;
+        const recuperados = dividirRegistros(textoLinha, numero);
+        // `dividirRegistros` não emite registro para linha física em branco; na
+        // recuperação toda linha restante precisa de seu próprio desfecho, então
+        // a linha em branco vira falha de cardinalidade (0 campos obtidos).
+        if (recuperados.length === 0) {
+          falhas.push({
+            numero,
+            motivo: motivoCardinalidade(0),
+            linhaOriginal: textoLinha,
+          });
+          continue;
+        }
+        for (const recuperado of recuperados) {
           const motivo = motivoDoRegistro(recuperado);
           if (motivo === null) {
             guias.push({
