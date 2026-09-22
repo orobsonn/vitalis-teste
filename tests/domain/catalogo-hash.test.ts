@@ -273,6 +273,10 @@ describe("carregarCatalogo e consultarRegra", () => {
     expect(regra.observacao).toBe("Reavaliação médica obrigatória a cada 10 sessões.");
     expect(Array.isArray(regra.limitacoes)).toBe(true);
     expect(regra.limitacoes.every((item) => typeof item === "string")).toBe(true);
+    // §4.5/#ac-8: a consulta direta da regra devolve as limitações do catálogo,
+    // incluindo a limitação global (ausência de data de concessão). O item
+    // específico da guia é que não a repete (§4.7/#ac-18).
+    expect(regra.limitacoes).toContain(GLOBAL_NAO_VERIFICAVEL);
     expect(regra.regrasVersao).toBe(catalogo.regrasVersao);
 
     const foraDeCobertura = api.consultarRegra(
