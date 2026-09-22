@@ -67,6 +67,11 @@ const NAMESPACES_RESERVADOS_NORMALIZADOS = [
   // reservado e nao pode escapar para os assets.
   "/%2525252561pi/x",
   "/%252525252561pi/x",
+  // Escape invalido (`%zz`) junto de escapes validos: um escape invalido nao
+  // pode interromper a decodificacao dos demais nem esconder um prefixo que
+  // canonicaliza para namespace reservado (`/%2561pi/%25zz` -> `/%61pi/%zz`
+  // -> `/api/...`). Regressao do bypass: o `%zz` mascarava o `%61`.
+  "/%2561pi/%25zz",
   "/api/",
   "/api/.",
   "/api/..%2fx",
@@ -278,7 +283,16 @@ describe("lt-worker-delegacao-assets: navegacao delegada uma vez e fallbacks JSO
   });
 
   it("caminhos de navegacao com // ou % literal delegam uma unica vez", async () => {
-    for (const caminho of ["/rota%20da%20spa", "/%2ffoo/api/x", "//foo/api/x", "/rota%25x"]) {
+    for (const caminho of [
+      "/rota%20da%20spa",
+      "/%2ffoo/api/x",
+      "//foo/api/x",
+      "/rota%25x",
+      // Camadas extras de `%25` sobre navegacao legitima nao podem virar
+      // 404: o over-blocking transformava `/rota%25x` em `/rota%x` so apos
+      // varios passes. Mesmo tratamento de `/rota%25x`: delegacao unica.
+      "/rota%2525252525x",
+    ]) {
       await afirmarDelegacaoUnica(caminho);
     }
   });
