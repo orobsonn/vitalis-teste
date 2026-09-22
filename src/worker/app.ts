@@ -24,14 +24,36 @@ function pertenceANamespaceReservado(pathname: string): boolean {
   );
 }
 
+/** Base fixa usada apenas para resolver segmentos de travessia (`.`/`..`). */
+const BASE_CANONICA = "http://canonical.invalid";
+
 /**
  * Representacao canonicalizada (percent-decoded) do pathname usada apenas para
  * classificar namespaces reservados. Retorna `undefined` quando o encoding e
  * invalido para que a classificacao falhe fechado (404 JSON, sem assets).
+ *
+ * A decodificacao pode revelar separadores (`%2f`) e travessia (`%2e%2e`) que o
+ * parser de URL nao normaliza; por isso o caminho decodificado e resolvido
+ * contra uma base fixa antes da classificacao. Assim `/x/%2e%2e%2fapi/x` vira
+ * `/api/x` e nao escapa do namespace reservado.
  */
 function pathnameCanonicalizado(url: string): string | undefined {
+  let decodificado: string;
+
   try {
-    return decodeURIComponent(new URL(url).pathname);
+    decodificado = decodeURIComponent(new URL(url).pathname);
+  } catch {
+    return undefined;
+  }
+
+  try {
+    // `?` e `#` decodificados sao caracteres de caminho (na URL original
+    // vinham percent-encoded), entao sao re-encoded para nao truncarem o
+    // caminho ao resolvermos `.`/`..`.
+    const semDelimitadores = decodificado.replace(/[?#]/g, (caractere) =>
+      encodeURIComponent(caractere),
+    );
+    return new URL(semDelimitadores, BASE_CANONICA).pathname;
   } catch {
     return undefined;
   }
