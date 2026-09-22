@@ -62,6 +62,11 @@ const NAMESPACES_RESERVADOS_NORMALIZADOS = [
   "/api/./x",
   "/x/%2e%2e%2fapi/x",
   "/%2561pi/x",
+  // Codificacao profunda do prefixo reservado (`%25` repetido): nao importa
+  // quantas camadas de `%25` envolvem o `%61`/prefixo, o namespace continua
+  // reservado e nao pode escapar para os assets.
+  "/%2525252561pi/x",
+  "/%252525252561pi/x",
   "/api/",
   "/api/.",
   "/api/..%2fx",
