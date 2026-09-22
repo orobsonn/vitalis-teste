@@ -485,6 +485,45 @@ describe("parseGuiasCsv — preservação da entrada", () => {
     expect(resultado.falhas[0]!.linhaOriginal).toContain("G-R-0002");
   });
 
+  it("registra a linha em branco entre dados como falha e não penaliza o terminador final", () => {
+    expect(typeof api.parseGuiasCsv).toBe("function");
+
+    const linhaValida1 = linhaLiteral("G-B-0001", "2026-08-04");
+    const linhaValida2 = linhaLiteral("G-B-0002", "2026-08-05");
+
+    // Cabeçalho (1), guia (2), linha física em branco (3), guia (4) e o
+    // terminador final, que não cria uma linha. A linha em branco intermediária
+    // não pode ser descartada em silêncio: ela vira uma falha preservada.
+    const csv =
+      COLUNAS.join(",") + "\n" + linhaValida1 + "\n\n" + linhaValida2 + "\n";
+
+    const resultado = api.parseGuiasCsv(csv);
+
+    expect(resultado.cabecalho).toEqual([...COLUNAS]);
+
+    // As duas guias válidas são coletadas, em ordem.
+    expect(resultado.guias.map((guia) => guia.original.id_guia)).toEqual([
+      "G-B-0001",
+      "G-B-0002",
+    ]);
+
+    // Exatamente uma falha, para a linha física em branco (3), com motivo de
+    // cardinalidade (não vazio) e a linha em branco preservada.
+    expect(resultado.falhas).toHaveLength(1);
+    const falha = resultado.falhas[0]!;
+    expect(falha.numero).toBe(3);
+    expect(typeof falha.motivo).toBe("string");
+    expect(falha.motivo.length).toBeGreaterThan(0);
+    expect(falha.linhaOriginal.trim()).toBe("");
+
+    // Um arquivo que termina após a última linha de dados com um único `\n` não
+    // ganha uma falha fantasma: o terminador final não é uma linha física.
+    const csvFinal = COLUNAS.join(",") + "\n" + linhaValida1 + "\n";
+    const resultadoFinal = api.parseGuiasCsv(csvFinal);
+    expect(resultadoFinal.guias.map((guia) => guia.original.id_guia)).toEqual(["G-B-0001"]);
+    expect(resultadoFinal.falhas).toHaveLength(0);
+  });
+
   it("recupera as guias seguintes após aspa aberta que não fecha na linha", () => {
     expect(typeof api.parseGuiasCsv).toBe("function");
 

@@ -102,7 +102,10 @@ interface ApiAprovada {
     catalogo: Catalogo,
     opcoes?: { referenciaTemporal?: DataCivil },
   ): ResultadoVerificacao;
-  agregarVerificacoes(entradas: Entrada[]): AgregacaoCorpus;
+  agregarVerificacoes(
+    entradas: Entrada[],
+    limitacoesGlobaisDoCatalogo?: readonly string[],
+  ): AgregacaoCorpus;
 }
 
 const COLUNAS = [
@@ -293,5 +296,43 @@ describe("agregarVerificacoes", () => {
     ]);
     expect(agregadoSemEstouro.totalIncompleto).toBe(false);
     expect(agregadoSemEstouro.guiasComPendencia).toBe(1);
+  });
+
+  it("propaga as limitações globais validadas do catálogo sem duplicar a obrigatória", () => {
+    expect(typeof api.agregarVerificacoes).toBe("function");
+
+    const entradaValida = entrada();
+    expect(entradaValida.guia.valorCentavos).toBe(6200);
+
+    // O catálogo declara uma limitação própria: ela precisa chegar ao agregado
+    // junto da obrigatória, sem duplicatas e sem entradas vazias.
+    const comLimiteDoCatalogo = api.agregarVerificacoes([entradaValida], ["limite_a"]);
+    expect(comLimiteDoCatalogo.limitacoesGlobais).toContain("limite_a");
+    expect(comLimiteDoCatalogo.limitacoesGlobais).toContain(
+      "duracao_maxima_autorizacao_nao_verificavel",
+    );
+    expect(new Set(comLimiteDoCatalogo.limitacoesGlobais).size).toBe(
+      comLimiteDoCatalogo.limitacoesGlobais.length,
+    );
+    for (const limitacao of comLimiteDoCatalogo.limitacoesGlobais) {
+      expect(typeof limitacao).toBe("string");
+      expect(limitacao.length).toBeGreaterThan(0);
+    }
+
+    // O catálogo já declara a limitação obrigatória: ela aparece uma única vez.
+    const comObrigatoriaNoCatalogo = api.agregarVerificacoes([entradaValida], [
+      "duracao_maxima_autorizacao_nao_verificavel",
+    ]);
+    expect(
+      comObrigatoriaNoCatalogo.limitacoesGlobais.filter(
+        (limitacao) => limitacao === "duracao_maxima_autorizacao_nao_verificavel",
+      ),
+    ).toHaveLength(1);
+
+    // Sem o segundo argumento, o comportamento selado permanece: só a obrigatória.
+    const semCatalogo = api.agregarVerificacoes([entradaValida]);
+    expect(semCatalogo.limitacoesGlobais).toEqual([
+      "duracao_maxima_autorizacao_nao_verificavel",
+    ]);
   });
 });
