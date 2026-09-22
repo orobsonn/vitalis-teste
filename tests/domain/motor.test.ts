@@ -164,6 +164,21 @@ const CATALOGO_JSON = {
   ],
 };
 
+// §4.8 define `procedimento_descricao_divergente` sem precondição de
+// preenchimento ("descrição difere da do catálogo, comparação normalizada;
+// preserva as duas versões"), mas §4.6/#ac-21 fixa a matriz única: "obrigatório
+// e vazio ⇒ só `campo_obrigatorio_ausente`". Quando o convênio declara
+// `procedimento_descricao` como obrigatório, a matriz §4.6/#ac-21 tem
+// precedência para a célula vazia; §4.8 vale em todo o resto (não exigido e
+// vazio, ou preenchido e divergente).
+const CATALOGO_DESCRICAO_OBRIGATORIA_JSON = {
+  ...CATALOGO_JSON,
+  convenios: CATALOGO_JSON.convenios.map((convenio) => ({
+    ...convenio,
+    campos_obrigatorios: [...convenio.campos_obrigatorios, "procedimento_descricao"],
+  })),
+};
+
 const ORIENTACAO_VENCIDA =
   "Atualize a autorização: a validade termina antes da data do atendimento.";
 const ORIENTACAO_SESSAO =
@@ -175,6 +190,22 @@ function catalogo(): Catalogo {
     throw new Error(`catálogo sintético deveria ser válido: ${resultado.erros.join("; ")}`);
   }
   return resultado.catalogo;
+}
+
+function catalogoDescricaoObrigatoria(): Catalogo {
+  const resultado = api.carregarCatalogo(CATALOGO_DESCRICAO_OBRIGATORIA_JSON);
+  if (!resultado.ok) {
+    throw new Error(`catálogo sintético deveria ser válido: ${resultado.erros.join("; ")}`);
+  }
+  return resultado.catalogo;
+}
+
+function verificarComDescricaoObrigatoria(
+  overrides: Partial<Record<Coluna, string>> = {},
+): { guia: GuiaNormalizada; resultado: ResultadoVerificacao } {
+  const guia = api.normalizarGuia(linhaBase(overrides));
+  const resultado = api.verificarGuia(guia, catalogoDescricaoObrigatoria());
+  return { guia, resultado };
 }
 
 function linhaBase(overrides: Partial<Record<Coluna, string>> = {}): LinhaGuiaCsv {
@@ -380,6 +411,48 @@ describe("verificarGuia — alertas e incoerências", () => {
       expect(pendencia.evidencia).toContain(`Guia: "${caso.descricao}"`);
       expect(pendencia.evidencia).toContain(descricaoCatalogo);
     }
+  });
+
+  it("descrição obrigatória e vazia emite só campo_obrigatorio_ausente, e preenchida divergente ainda diverge", () => {
+    expect(typeof api.verificarGuia).toBe("function");
+
+    // §4.6/#ac-21: "obrigatório e vazio ⇒ só `campo_obrigatorio_ausente`".
+    // A matriz única vence sobre §4.8 quando a descrição é exigida e está vazia.
+    const vazia = verificarComDescricaoObrigatoria({ procedimento_descricao: "" });
+    expect(vazia.guia.procedimentoCodigo).toBe("50000470");
+    expect(vazia.resultado.decisao).toBe("PENDENTE");
+
+    const ausencias = vazia.resultado.motivos.filter(
+      (item) => item.codigo === "campo_obrigatorio_ausente",
+    );
+    expect(ausencias).toHaveLength(1);
+    expect(ausencias[0]!.campos).toContain("procedimento_descricao");
+
+    // A mesma célula vazia não pode gerar também a divergência (dedup §4.6/#ac-21).
+    expect(
+      vazia.resultado.motivos.filter(
+        (item) => item.codigo === "procedimento_descricao_divergente",
+      ),
+    ).toHaveLength(0);
+
+    // §4.8 continua valendo para o campo obrigatório preenchido e divergente:
+    // a comparação normalizada roda e nenhuma ausência é inventada.
+    const divergente = verificarComDescricaoObrigatoria({
+      procedimento_descricao: "Descrição divergente",
+    });
+    expect(divergente.resultado.decisao).toBe("PENDENTE");
+    expect(
+      divergente.resultado.motivos.filter(
+        (item) => item.codigo === "procedimento_descricao_divergente",
+      ),
+    ).toHaveLength(1);
+    expect(
+      divergente.resultado.motivos.filter(
+        (item) =>
+          item.codigo === "campo_obrigatorio_ausente" &&
+          item.campos.includes("procedimento_descricao"),
+      ),
+    ).toHaveLength(0);
   });
 
   it("lançamento anterior ao atendimento gera cronologia_incoerente", () => {
