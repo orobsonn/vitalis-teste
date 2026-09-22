@@ -335,6 +335,16 @@ describe("carregarCatalogo e consultarRegra", () => {
     const valorInseguro = clonarCatalogo();
     valorInseguro.procedimentos[0]!.valor_referencia = Number.MAX_SAFE_INTEGER;
 
+    // §4.5/#ac-8: `valor_referencia` precisa ser representável em centavos. Um
+    // valor com fração de centavo não pode virar `ok: true` com arredondamento
+    // silencioso: o hash versiona o número bruto, mas o procedimento entregue
+    // divergiria da versão que o rotula.
+    const valorSubCentavo = clonarCatalogo();
+    valorSubCentavo.procedimentos[0]!.valor_referencia = 62.001;
+
+    const outroValorSubCentavo = clonarCatalogo();
+    outroValorSubCentavo.procedimentos[0]!.valor_referencia = 10.005;
+
     // §4.5/#ac-8: `limitacoes_globais` também precisa ser validada no
     // carregamento. Um valor não-array ou com membros que não sejam textos
     // utilizáveis não pode virar `ok: true` com um catálogo parcial: o hash
@@ -395,6 +405,8 @@ describe("carregarCatalogo e consultarRegra", () => {
       ["limite de sessões fracionário", limiteFracionario],
       ["validade máxima fracionária", validadeFracionaria],
       ["valor de referência inseguro", valorInseguro],
+      ["valor de referência com fração de centavo (62.001)", valorSubCentavo],
+      ["valor de referência com fração de centavo (10.005)", outroValorSubCentavo],
       ["limitações globais não-array (texto)", limitacoesNaoArrayTexto],
       ["limitações globais não-array (número)", limitacoesNaoArrayNumero],
       ["limitação global com membro numérico", limitacoesComMembroNumerico],
@@ -415,6 +427,45 @@ describe("carregarCatalogo e consultarRegra", () => {
       expect(resultado.erros.length).toBeGreaterThan(0);
       expect("catalogo" in resultado).toBe(false);
     }
+  });
+
+  it("aceita valores de referência representáveis em centavos", () => {
+    expect(typeof api.carregarCatalogo).toBe("function");
+    expect(typeof api.consultarRegra).toBe("function");
+
+    // O complemento positivo dos casos sub-centavo acima: um valor com duas
+    // casas decimais exatas continua válido e chega à consulta convertido de
+    // forma exata, sem perder o valor fracionário legítimo de centavos.
+    const comCentavos = clonarCatalogo();
+    comCentavos.procedimentos[0]!.valor_referencia = 62.01;
+    const resultadoCentavos = api.carregarCatalogo(comCentavos);
+    expect(resultadoCentavos.ok).toBe(true);
+    if (!resultadoCentavos.ok) {
+      throw new Error(
+        `catálogo com valor em centavos deveria ser válido: ${resultadoCentavos.erros.join("; ")}`,
+      );
+    }
+    const regraCentavos = api.consultarRegra(
+      { convenio: "Vitalcard", procedimento_codigo: "50000470" },
+      resultadoCentavos.catalogo,
+    );
+    expect(regraCentavos.procedimento?.codigo).toBe("50000470");
+    expect(regraCentavos.procedimento?.valorReferenciaCentavos).toBe(6201);
+
+    const comValorInteiro = clonarCatalogo();
+    comValorInteiro.procedimentos[0]!.valor_referencia = 62;
+    const resultadoInteiro = api.carregarCatalogo(comValorInteiro);
+    expect(resultadoInteiro.ok).toBe(true);
+    if (!resultadoInteiro.ok) {
+      throw new Error(
+        `catálogo com valor inteiro deveria ser válido: ${resultadoInteiro.erros.join("; ")}`,
+      );
+    }
+    const regraInteiro = api.consultarRegra(
+      { convenio: "Vitalcard", procedimento_codigo: "50000470" },
+      resultadoInteiro.catalogo,
+    );
+    expect(regraInteiro.procedimento?.valorReferenciaCentavos).toBe(6200);
   });
 
   it("resolve o procedimento pelo código exato, sem ambiguidade de ordem", () => {
