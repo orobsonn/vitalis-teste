@@ -7,11 +7,20 @@
 /** Profundidade máxima tolerada para não estourar a pilha em aninhamento patológico. */
 const PROFUNDIDADE_MAXIMA = 100;
 
+/**
+ * Identidade inforjável dos erros criados por este módulo. Um `instanceof` é
+ * forgeável: um Proxy pode devolver `ErroCanonicalizacao.prototype` em
+ * `getPrototypeOf` e passar por um erro legítimo. O WeakSet registra apenas as
+ * instâncias que o próprio construtor abaixo criou.
+ */
+const ERROS_CANONICALIZACAO = new WeakSet<object>();
+
 /** Erro tipado de canonicalização, devolvido como `{ ok: false, erros }` pelo catálogo. */
 export class ErroCanonicalizacao extends Error {
   constructor(mensagem: string) {
     super(mensagem);
     this.name = "ErroCanonicalizacao";
+    ERROS_CANONICALIZACAO.add(this);
   }
 }
 
@@ -190,16 +199,13 @@ function copiarSnapshot(valor: unknown, visitados: Set<object>): unknown {
 const MENSAGEM_ENTRADA_INVALIDA = "entrada não é um valor JSON canônico";
 
 /**
- * Checa a marca de `ErroCanonicalizacao` sem deixar um valor hostil lançar — por
- * exemplo, um Proxy com trap `getPrototypeOf` hostil faria o próprio `instanceof`
- * propagar uma exceção estrangeira.
+ * Checa a marca de `ErroCanonicalizacao` sem `instanceof` — que um Proxy com trap
+ * `getPrototypeOf` hostil pode forjar ou fazer propagar uma exceção estrangeira.
+ * Só a identidade registrada pelo construtor conta; nenhuma leitura de
+ * propriedade ocorre sobre o valor lançado.
  */
 function ehErroCanonicalizacao(erro: unknown): boolean {
-  try {
-    return erro instanceof ErroCanonicalizacao;
-  } catch {
-    return false;
-  }
+  return typeof erro === "object" && erro !== null && ERROS_CANONICALIZACAO.has(erro as object);
 }
 
 /**
