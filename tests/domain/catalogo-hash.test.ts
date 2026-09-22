@@ -330,6 +330,19 @@ describe("carregarCatalogo e consultarRegra", () => {
     const coberturaOrfa = clonarCatalogo();
     coberturaOrfa.convenios[0]!.procedimentos_cobertos.push("99999999");
 
+    // §4.5/#ac-8: uma lista de procedimentos cobertos com código repetido é
+    // ambígua, como já o são `campos_obrigatorios` e `limitacoes_globais`. O
+    // hash versiona as duas ocorrências de `50000470`, mas a cobertura exposta
+    // apresenta o código uma só vez; aceitar isso entrega um catálogo que
+    // diverge em silêncio da versão que o rotula, em vez de falhar sem
+    // catálogo parcial.
+    const procedimentoCobertoDuplicado = clonarCatalogo();
+    procedimentoCobertoDuplicado.convenios[0]!.procedimentos_cobertos = [
+      "50000470",
+      "50000560",
+      "50000470",
+    ];
+
     const prazoFracionario = clonarCatalogo();
     prazoFracionario.convenios[0]!.prazo_envio_dias = 30.5;
 
@@ -419,6 +432,7 @@ describe("carregarCatalogo e consultarRegra", () => {
       ["campo obrigatório fora das 18 colunas", campoDesconhecido],
       ["campo obrigatório duplicado", campoObrigatorioDuplicado],
       ["procedimento coberto ausente", coberturaOrfa],
+      ["procedimento coberto duplicado", procedimentoCobertoDuplicado],
       ["prazo de envio fracionário", prazoFracionario],
       ["limite de sessões fracionário", limiteFracionario],
       ["validade máxima fracionária", validadeFracionaria],

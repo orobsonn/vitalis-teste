@@ -176,6 +176,10 @@ function lerConvenios(valor: unknown, erros: string[]): ConvenioCatalogo[] {
     }
     if (!Array.isArray(cobertos) || !cobertos.every((codigo) => typeof codigo === "string")) {
       problemas.push("procedimentos_cobertos deve ser uma lista de textos");
+    } else if (new Set(cobertos).size !== cobertos.length) {
+      // §4.5/#ac-8: o hash versiona cada ocorrência bruta, mas a lista entregue
+      // expõe uma só se deduplicarmos em silêncio; rejeita sem catálogo parcial.
+      problemas.push("procedimentos_cobertos não pode conter duplicatas");
     }
     if (!ehInteiroNaoNegativo(prazo)) {
       problemas.push("prazo_envio_dias deve ser um inteiro não negativo");
