@@ -181,6 +181,34 @@ const CSV_SINTETICO =
   LINHA_C +
   "\r\n";
 
+// Campos compartilhados das linhas que exercitam aspas malformadas: só a
+// primeira célula (id_guia) recebe sintaxe crua; o restante é escapado por
+// `celula`, de modo que o defeito testado seja exatamente a aspa malformada.
+const CAMPOS_COMUNS_ASPAS = [
+  "Sul",
+  "03/08/2026",
+  "P-8001",
+  "Vitalcard",
+  "0008123",
+  "M79.7",
+  "50000470",
+  "Sessão de fisioterapia",
+  "AUTASPAS1",
+  "2026-08-14",
+  "10",
+  "1",
+  "Profissional Teste",
+  "CREFITO-3 204411-F",
+  "62,00",
+  "obs, com vírgula",
+  "2026-08-04",
+];
+
+// A primeira célula é literal: `celula()` nunca produz sintaxe malformada.
+function linhaComPrimeiraCelulaCrua(primeira: string): string {
+  return [primeira, ...CAMPOS_COMUNS_ASPAS.map(celula)].join(",");
+}
+
 describe("parseGuiasCsv — preservação da entrada", () => {
   it("preserva as 18 colunas, as células cruas e segue após a linha divergente", () => {
     expect(typeof api.parseGuiasCsv).toBe("function");
@@ -232,5 +260,61 @@ describe("parseGuiasCsv — preservação da entrada", () => {
     ];
     expect(new Set(numeros).size).toBe(numeros.length);
     expect(numeros.every((n) => Number.isInteger(n) && n > 0)).toBe(true);
+  });
+
+  it("rejeita aspas malformadas preservando as linhas válidas vizinhas", () => {
+    expect(typeof api.parseGuiasCsv).toBe("function");
+
+    const linhaValidaAntes = linhaComPrimeiraCelulaCrua("G-ASPAS-0001");
+    const linhaValidaDepois = linhaComPrimeiraCelulaCrua("G-ASPAS-0002");
+    // Lixo após a aspa de fechamento de um campo citado.
+    const linhaComJunkAposAspas = linhaComPrimeiraCelulaCrua('"G-1"lixo');
+    // Aspa solta dentro de um campo não citado.
+    const linhaComAspaNoMeio = linhaComPrimeiraCelulaCrua('G-1"x');
+
+    const csv =
+      COLUNAS.join(",") +
+      "\n" +
+      linhaValidaAntes +
+      "\n" +
+      linhaComJunkAposAspas +
+      "\n" +
+      linhaComAspaNoMeio +
+      "\n" +
+      linhaValidaDepois +
+      "\n";
+
+    const resultado = api.parseGuiasCsv(csv);
+
+    expect(resultado.cabecalho).toEqual([...COLUNAS]);
+
+    // As linhas bem formadas ao redor continuam em guias; a vírgula dentro do
+    // campo citado permanece válida e preservada.
+    expect(resultado.guias).toHaveLength(2);
+    expect(resultado.guias.map((guia) => guia.original.id_guia)).toEqual([
+      "G-ASPAS-0001",
+      "G-ASPAS-0002",
+    ]);
+    expect(resultado.guias[0]!.original.valor).toBe("62,00");
+    expect(resultado.guias[0]!.original.observacao_recepcao).toBe("obs, com vírgula");
+
+    // As duas linhas com sintaxe de aspas inválida viram falhas preservadas.
+    expect(resultado.falhas).toHaveLength(2);
+    for (const falha of resultado.falhas) {
+      expect(typeof falha.numero).toBe("number");
+      expect(falha.motivo.length).toBeGreaterThan(0);
+      expect(falha.linhaOriginal.length).toBeGreaterThan(0);
+    }
+
+    // Nunca são aceitas como guias.
+    const idsGuias = resultado.guias.map((guia) => guia.original.id_guia);
+    expect(idsGuias).not.toContain("G-1");
+    expect(idsGuias.some((id) => id.includes("lixo"))).toBe(false);
+    expect(idsGuias.some((id) => id.includes('"'))).toBe(false);
+
+    // A linhaOriginal preserva byte a byte a sintaxe malformada.
+    const originaisFalhas = resultado.falhas.map((falha) => falha.linhaOriginal);
+    expect(originaisFalhas.some((linha) => linha.includes('"G-1"lixo'))).toBe(true);
+    expect(originaisFalhas.some((linha) => linha.includes('G-1"x'))).toBe(true);
   });
 });
