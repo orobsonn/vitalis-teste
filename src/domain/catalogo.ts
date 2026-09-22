@@ -162,6 +162,11 @@ function lerConvenios(valor: unknown, erros: string[]): ConvenioCatalogo[] {
       problemas.push("campos_obrigatorios deve ser uma lista de textos");
     } else if (!obrigatorios.every((campo) => ehColunaGuia(campo as string))) {
       problemas.push("campos_obrigatorios só pode conter colunas conhecidas da guia");
+    } else if (new Set(obrigatorios).size !== obrigatorios.length) {
+      // §4.5/#ac-8: o hash versiona cada ocorrência bruta, mas a lista entregue
+      // expõe uma só se deduplicarmos em silêncio. Um membro repetido torna o
+      // catálogo ambíguo e precisa ser rejeitado, sem catálogo parcial.
+      problemas.push("campos_obrigatorios não pode conter duplicatas");
     }
     if (!ehInteiroNaoNegativo(validade)) {
       problemas.push("validade_maxima_autorizacao_dias deve ser um inteiro não negativo");
@@ -186,7 +191,7 @@ function lerConvenios(valor: unknown, erros: string[]): ConvenioCatalogo[] {
 
     convenios.push({
       nome: nome as string,
-      camposObrigatorios: [...new Set(obrigatorios as ColunaGuia[])],
+      camposObrigatorios: [...(obrigatorios as ColunaGuia[])],
       validadeMaximaDias: validade as number,
       limiteSessoes: limite as number,
       procedimentosCobertos: [...(cobertos as string[])],
@@ -226,9 +231,9 @@ function lerDefinicoes(valor: unknown, erros: string[]): Record<string, string> 
 
 /**
  * Lê `limitacoes_globais` de forma estrita: a chave ausente é válida e não
- * acrescenta limitações próprias; um valor não-array ou com qualquer membro que
- * não seja texto não vazio (após `trim`) acumula erro e impede o catálogo
- * parcial. Nunca filtra em silêncio nem substitui o valor rejeitado.
+ * acrescenta limitações próprias; um valor não-array, um membro que não seja
+ * texto não vazio (após `trim`) ou um membro repetido acumula erro e impede o
+ * catálogo parcial. Nunca filtra em silêncio nem substitui o valor rejeitado.
  */
 function lerLimitacoes(valor: unknown, erros: string[]): string[] {
   if (valor === undefined) {
@@ -239,11 +244,19 @@ function lerLimitacoes(valor: unknown, erros: string[]): string[] {
     return [];
   }
   const limitacoes: string[] = [];
+  const vistas = new Set<string>();
   valor.forEach((item, indice) => {
     if (typeof item !== "string" || item.trim() === "") {
       erros.push(`limitacoes_globais[${indice}] deve ser um texto não vazio`);
       return;
     }
+    // §4.5/#ac-8: o hash versiona `item` duas vezes, mas a lista entregue
+    // expõe uma só se deduplicarmos em silêncio; rejeita sem catálogo parcial.
+    if (vistas.has(item)) {
+      erros.push("limitacoes_globais não pode conter duplicatas");
+      return;
+    }
+    vistas.add(item);
     limitacoes.push(item);
   });
   return limitacoes;
@@ -347,7 +360,12 @@ function validarCatalogo(json: unknown): ResultadoCatalogo {
     erros.push(`catalogo invalido: nao foi possivel canonicalizar (${formatarErro(erro)})`);
     return { ok: false, erros };
   }
-  const limitacoesGlobais = [...new Set([...limitacoes, LIMITACAO_GLOBAL_DURACAO_MAXIMA])];
+  // §4.5/#ac-8: lista validada preservada intacta; a limitação obrigatória é
+  // acrescentada apenas quando não declarada na fonte, para aparecer exatamente
+  // uma vez sem duplicar artificialmente.
+  const limitacoesGlobais = limitacoes.includes(LIMITACAO_GLOBAL_DURACAO_MAXIMA)
+    ? [...limitacoes]
+    : [...limitacoes, LIMITACAO_GLOBAL_DURACAO_MAXIMA];
 
   return {
     ok: true,
