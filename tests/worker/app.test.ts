@@ -48,6 +48,13 @@ const NAMESPACES_RESERVADOS_BARRA_INVERTIDA = [
 // Namespace reservado alcancado por codificacao/normalizacao do proprio
 // prefixo (`%61` = `a`, `%2F` = `/`, `%2e%2e` = `..`) e por dupla codificacao
 // (`%2561` decodifica para `%61`). Regressao da classe ja existente.
+//
+// Fronteira: `/api/..`, `/api/../x` e `/api/%2e%2e` NAO entram nesta lista. O
+// parser WHATWG da propria `app.request()` resolve segmentos `.`/`..` antes de
+// `createApp` ver o request, entao essas entradas chegam indistinguiveis de
+// `/` ou `/x` e seguem como navegacao neste boundary (decisao registrada);
+// `/api/..%2fx` mantem o `..` intacto (a barra esta codificada) e por isso
+// exercita a classificacao lexical do prefixo `/api/` sem colidir com `/`.
 const NAMESPACES_RESERVADOS_NORMALIZADOS = [
   "/%61pi/x",
   "/api%2Fx",
@@ -57,7 +64,7 @@ const NAMESPACES_RESERVADOS_NORMALIZADOS = [
   "/%2561pi/x",
   "/api/",
   "/api/.",
-  "/api/..",
+  "/api/..%2fx",
 ];
 
 // Byte nulo/controle no caminho: pode truncar o prefixo em runtimes
