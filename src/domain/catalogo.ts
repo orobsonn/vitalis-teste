@@ -355,7 +355,7 @@ export function consultarRegra(
     limiteSessoes: convenio ? convenio.limiteSessoes : 0,
     prazoEnvioDias: convenio ? convenio.prazoEnvioDias : 0,
     observacao: convenio ? convenio.observacao : "",
-    limitacoes: [],
+    limitacoes: [...catalogo.limitacoesGlobais],
     regrasVersao: catalogo.regrasVersao,
   };
 }
