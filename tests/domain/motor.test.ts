@@ -345,6 +345,43 @@ describe("verificarGuia — alertas e incoerências", () => {
     expect(texto).toContain("Sessão de fisioterapia musculoesquelética");
   });
 
+  it("descrição vazia ou apenas com espaços em procedimento catalogado também diverge e preserva as duas versões", () => {
+    expect(typeof api.verificarGuia).toBe("function");
+
+    const descricaoCatalogo = "Sessão de fisioterapia musculoesquelética";
+    const casos: Array<{ rotulo: string; descricao: string }> = [
+      { rotulo: "vazia", descricao: "" },
+      { rotulo: "somente espaços", descricao: "   " },
+    ];
+
+    for (const caso of casos) {
+      const { guia, resultado } = verificar({ procedimento_descricao: caso.descricao });
+
+      // O procedimento está catalogado: a ausência de texto não pode pular a
+      // comparação com a descrição do catálogo.
+      expect(guia.procedimentoCodigo).toBe("50000470");
+      expect(resultado.decisao).toBe("PENDENTE");
+
+      const divergencias = resultado.motivos.filter(
+        (item) => item.codigo === "procedimento_descricao_divergente",
+      );
+      expect(divergencias).toHaveLength(1);
+
+      const pendencia = divergencias[0]!;
+      expect(pendencia.severidade).toBe("pendencia");
+      expect(pendencia.campos).toEqual([
+        "procedimento_codigo",
+        "procedimento_descricao",
+      ]);
+
+      // A evidência preserva as duas versões: o valor cru da guia (vazio ou
+      // apenas espaços) e a descrição do catálogo.
+      expect(pendencia.evidencia).toContain("Guia:");
+      expect(pendencia.evidencia).toContain(`Guia: "${caso.descricao}"`);
+      expect(pendencia.evidencia).toContain(descricaoCatalogo);
+    }
+  });
+
   it("lançamento anterior ao atendimento gera cronologia_incoerente", () => {
     expect(typeof api.verificarGuia).toBe("function");
 
