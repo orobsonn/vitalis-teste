@@ -204,11 +204,29 @@ function lerDefinicoes(valor: unknown): Record<string, string> {
   return definicoes;
 }
 
-function lerLimitacoes(valor: unknown): string[] {
-  if (!Array.isArray(valor)) {
+/**
+ * Lê `limitacoes_globais` de forma estrita: a chave ausente é válida e não
+ * acrescenta limitações próprias; um valor não-array ou com qualquer membro que
+ * não seja texto não vazio (após `trim`) acumula erro e impede o catálogo
+ * parcial. Nunca filtra em silêncio nem substitui o valor rejeitado.
+ */
+function lerLimitacoes(valor: unknown, erros: string[]): string[] {
+  if (valor === undefined) {
     return [];
   }
-  return valor.filter((item): item is string => typeof item === "string" && item.trim() !== "");
+  if (!Array.isArray(valor)) {
+    erros.push("limitacoes_globais deve ser uma lista de textos não vazios");
+    return [];
+  }
+  const limitacoes: string[] = [];
+  valor.forEach((item, indice) => {
+    if (typeof item !== "string" || item.trim() === "") {
+      erros.push(`limitacoes_globais[${indice}] deve ser um texto não vazio`);
+      return;
+    }
+    limitacoes.push(item);
+  });
+  return limitacoes;
 }
 
 /**
@@ -269,6 +287,9 @@ function validarCatalogo(json: unknown): ResultadoCatalogo {
 
   const procedimentos = lerProcedimentos(json["procedimentos"], erros);
   const convenios = lerConvenios(json["convenios"], erros);
+  // §4.5: a validação das limitações precisa acontecer antes do portão de
+  // erros para que seus problemas façam parte do `{ok:false, erros}` devolvido.
+  const limitacoes = lerLimitacoes(json["limitacoes_globais"], erros);
 
   const codigosDeProcedimento = new Set<string>();
   for (const procedimento of procedimentos) {
@@ -302,7 +323,7 @@ function validarCatalogo(json: unknown): ResultadoCatalogo {
     erros.push(`catalogo invalido: nao foi possivel canonicalizar (${formatarErro(erro)})`);
     return { ok: false, erros };
   }
-  const limitacoesGlobais = [...new Set([...lerLimitacoes(json["limitacoes_globais"]), LIMITACAO_GLOBAL_DURACAO_MAXIMA])];
+  const limitacoesGlobais = [...new Set([...limitacoes, LIMITACAO_GLOBAL_DURACAO_MAXIMA])];
 
   return {
     ok: true,
