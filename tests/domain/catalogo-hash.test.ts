@@ -334,4 +334,74 @@ describe("carregarCatalogo e consultarRegra", () => {
       expect("catalogo" in resultado).toBe(false);
     }
   });
+
+  it("resolve o procedimento pelo código exato, sem ambiguidade de ordem", () => {
+    expect(typeof api.carregarCatalogo).toBe("function");
+    expect(typeof api.consultarRegra).toBe("function");
+
+    // O catálogo sintético intacto continua válido.
+    expect(api.carregarCatalogo(CATALOGO_JSON).ok).toBe(true);
+
+    // §4.5 exige a consulta pelo código exato: um código que difere do outro
+    // apenas por espaço periférico é uma entrada própria e precisa continuar
+    // alcançável, sem que uma consulta resolva para o procedimento do outro.
+    const codigoComEspaco = clonarCatalogo();
+    codigoComEspaco.procedimentos.push({
+      codigo: "50000470 ",
+      descricao: "Sessão com espaço periférico no código",
+      valor_referencia: 62.0,
+    });
+
+    const resultado = api.carregarCatalogo(codigoComEspaco);
+    expect(resultado.ok).toBe(true);
+    if (!resultado.ok) {
+      throw new Error(`catálogo deveria ser válido: ${resultado.erros.join("; ")}`);
+    }
+    const catalogo = resultado.catalogo;
+
+    const semEspaco = api.consultarRegra(
+      { convenio: "Vitalcard", procedimento_codigo: "50000470" },
+      catalogo,
+    );
+    expect(semEspaco.procedimento?.codigo).toBe("50000470");
+
+    const comEspaco = api.consultarRegra(
+      { convenio: "Vitalcard", procedimento_codigo: "50000470 " },
+      catalogo,
+    );
+    expect(comEspaco.procedimento?.codigo).toBe("50000470 ");
+  });
+
+  it("rejeita dados que não são JSON canônico em vez de colidir no hash", () => {
+    expect(typeof api.carregarCatalogo).toBe("function");
+
+    // O catálogo sintético intacto continua válido.
+    expect(api.carregarCatalogo(CATALOGO_JSON).ok).toBe(true);
+
+    // `undefined` e números não finitos seriam serializados como `null`,
+    // fazendo entradas estruturalmente distintas colidirem no mesmo hash.
+    const comPropriedadeIndefinida: unknown = { ...clonarCatalogo(), extra: undefined };
+    const comNumeroNaoFinito: unknown = { ...clonarCatalogo(), extra: Number.NaN };
+
+    // Herdar os campos do protótipo não os torna propriedades próprias: o hash
+    // canônico veria apenas `{}` e colidiria com qualquer outro objeto.
+    const camposHerdados: unknown = Object.create(clonarCatalogo());
+
+    const invalidos: Array<[string, unknown]> = [
+      ["propriedade com valor undefined", comPropriedadeIndefinida],
+      ["propriedade com número não finito", comNumeroNaoFinito],
+      ["campos herdados por protótipo", camposHerdados],
+    ];
+
+    for (const [rotulo, entrada] of invalidos) {
+      const resultado = api.carregarCatalogo(entrada);
+      expect(resultado.ok, rotulo).toBe(false);
+      if (resultado.ok) {
+        throw new Error(`entrada não canônica foi aceita como catálogo: ${rotulo}`);
+      }
+      expect(Array.isArray(resultado.erros), rotulo).toBe(true);
+      expect(resultado.erros.length, rotulo).toBeGreaterThan(0);
+      expect("catalogo" in resultado, rotulo).toBe(false);
+    }
+  });
 });

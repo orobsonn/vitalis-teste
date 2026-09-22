@@ -317,4 +317,56 @@ describe("parseGuiasCsv — preservação da entrada", () => {
     expect(originaisFalhas.some((linha) => linha.includes('"G-1"lixo'))).toBe(true);
     expect(originaisFalhas.some((linha) => linha.includes('G-1"x'))).toBe(true);
   });
+
+  it("recupera linhas válidas após aspa aberta na última célula", () => {
+    expect(typeof api.parseGuiasCsv).toBe("function");
+
+    // 16 campos compartilhados (unidade..observacao_recepcao): junto do
+    // id_guia formam as 17 primeiras colunas de cada linha.
+    const camposAteObservacao = CAMPOS_COMUNS_ASPAS.slice(0, 16);
+
+    // A última célula abre uma aspa que nunca fecha: a linha é literal, pois
+    // `celula()` nunca produz sintaxe malformada.
+    const linhaAspasAberta =
+      ["G-Q-0002", ...camposAteObservacao].map(celula).join(",") + ',"aspas abertas sem fim';
+    const linhaValida1 =
+      ["G-Q-0003", ...camposAteObservacao].map(celula).join(",") + ",2026-08-04";
+    const linhaValida2 =
+      ["G-Q-0004", ...camposAteObservacao].map(celula).join(",") + ",2026-08-05";
+
+    const csv =
+      COLUNAS.join(",") +
+      "\n" +
+      linhaAspasAberta +
+      "\n" +
+      linhaValida1 +
+      "\n" +
+      linhaValida2 +
+      "\n";
+
+    const resultado = api.parseGuiasCsv(csv);
+
+    expect(resultado.cabecalho).toEqual([...COLUNAS]);
+
+    // A linha com aspa aberta não engole as duas linhas bem formadas seguintes.
+    expect(resultado.guias.map((guia) => guia.original.id_guia)).toEqual([
+      "G-Q-0003",
+      "G-Q-0004",
+    ]);
+
+    // Exatamente uma falha, para a linha física 2, preservando a sintaxe crua.
+    expect(resultado.falhas).toHaveLength(1);
+    const falha = resultado.falhas[0]!;
+    expect(falha.numero).toBe(2);
+    expect(falha.motivo.length).toBeGreaterThan(0);
+    expect(falha.linhaOriginal).toContain('"aspas abertas sem fim');
+
+    // As linhas seguintes preservam as células cruas, inclusive a vírgula
+    // dentro do campo citado.
+    for (const guia of resultado.guias) {
+      expect(guia.original.carteirinha).toBe("0008123");
+      expect(guia.original.valor).toBe("62,00");
+      expect(guia.original.observacao_recepcao).toBe("obs, com vírgula");
+    }
+  });
 });
