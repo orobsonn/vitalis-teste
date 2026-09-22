@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mockup — Tela 4 · Nova guia em wizard</title>
+  <style>
+    :root { --bg:#f8fafc; --fg:#0f172a; --card:#fff; --muted:#f1f5f9; --muted-fg:#64748b; --border:#e2e8f0; --primary:#0f766e; --accent:#f0fdfa; --blue:#2563eb; --blue-bg:#eff6ff; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-width:320px; background:#e8edf1; color:var(--fg); font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    button,input,select,textarea { font:inherit; }
+    .review-note { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:10px 20px; border-bottom:1px solid #cbd5e1; background:#fff; color:#475569; font-size:12px; }
+    .review-note strong { color:var(--fg); }
+    .tag { padding:4px 8px; border-radius:999px; background:#0f172a; color:#fff; font-size:10px; font-weight:800; letter-spacing:.04em; }
+    .frame { width:min(1440px,calc(100% - 28px)); min-height:900px; margin:14px auto 32px; overflow:hidden; border:1px solid #cbd5e1; border-radius:14px; background:var(--bg); box-shadow:0 20px 55px rgba(15,23,42,.12); }
+    .appbar { height:64px; display:flex; align-items:center; justify-content:space-between; padding:0 24px; border-bottom:1px solid var(--border); background:#fff; }
+    .logo { display:flex; align-items:center; gap:10px; font-size:14px; font-weight:780; }
+    .logo-mark { width:31px; height:31px; display:grid; place-items:center; border-radius:8px; background:var(--primary); color:#fff; font-weight:900; }
+    .appbar-actions { display:flex; align-items:center; gap:8px; }
+    .env { padding:5px 8px; border:1px solid var(--border); border-radius:999px; color:var(--muted-fg); font-size:10px; }
+    .user { width:30px; height:30px; display:grid; place-items:center; border-radius:50%; background:var(--muted); color:#475569; font-size:10px; font-weight:800; }
+    .layout { display:grid; grid-template-columns:214px minmax(0,1fr); min-height:836px; }
+    .sidebar { padding:18px 12px; border-right:1px solid var(--border); background:#fff; }
+    .nav-label { margin:2px 10px 8px; color:#94a3b8; font-size:10px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+    .nav-item { display:flex; align-items:center; gap:9px; margin-bottom:3px; padding:9px 10px; border-radius:7px; color:#475569; font-size:12px; font-weight:620; }
+    .nav-item.active { background:var(--accent); color:var(--primary); }
+    .nav-icon { width:18px; text-align:center; }
+    .content { min-width:0; padding:27px 28px 38px; }
+    .page-header { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; margin-bottom:18px; }
+    h1 { margin:0; font-size:27px; letter-spacing:-.035em; }
+    .page-header p { margin:5px 0 0; color:var(--muted-fg); font-size:12px; }
+    .btn { min-height:36px; padding:0 13px; border:1px solid var(--border); border-radius:7px; background:#fff; color:#1e293b; font-size:12px; font-weight:700; box-shadow:0 1px 2px rgba(15,23,42,.03); }
+    .btn.primary { border-color:var(--primary); background:var(--primary); color:#fff; }
+    .form-layout { display:grid; grid-template-columns:minmax(0,1fr) 292px; gap:14px; align-items:start; }
+    .card { min-width:0; border:1px solid var(--border); border-radius:10px; background:var(--card); box-shadow:0 1px 2px rgba(15,23,42,.025); }
+    .stepper { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; padding:14px 18px; border-bottom:1px solid var(--border); background:#f8fafc; }
+    .step { display:grid; grid-template-columns:30px minmax(0,1fr); align-items:center; gap:9px; min-width:0; padding:10px; border:1px solid var(--border); border-radius:8px; background:#fff; color:#94a3b8; }
+    .step-circle { width:30px; height:30px; display:grid; place-items:center; border:1px solid var(--border); border-radius:8px; background:var(--muted); color:#64748b; font-size:10px; font-weight:800; }
+    .step-copy { min-width:0; }
+    .step-copy strong { display:block; overflow:hidden; color:#64748b; font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
+    .step-copy span { display:block; overflow:hidden; margin-top:2px; font-size:8px; text-overflow:ellipsis; white-space:nowrap; }
+    .step.done { border-color:#99f6e4; background:var(--accent); }
+    .step.done .step-circle { border-color:var(--primary); background:var(--primary); color:#fff; }
+    .step.active { border-color:var(--primary); background:#fff; box-shadow:0 0 0 2px rgba(15,118,110,.12); }
+    .step.active .step-circle { border-color:var(--primary); background:var(--accent); color:var(--primary); }
+    .step.done .step-copy strong,.step.active .step-copy strong { color:var(--primary); }
+    .section { padding:22px 18px 24px; }
+    .section-head { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; margin-bottom:16px; }
+    .section-head h2 { margin:0; font-size:14px; }
+    .section-head p { margin:4px 0 0; color:var(--muted-fg); font-size:10px; }
+    .section-index { padding:5px 8px; border-radius:999px; background:var(--accent); color:var(--primary); font-size:9px; font-weight:800; }
+    .form-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+    .validation-note { display:flex; gap:8px; margin-top:14px; padding:10px 11px; border:1px solid #bae6fd; border-radius:7px; background:#f0f9ff; color:#075985; font-size:9px; line-height:1.45; }
+    .validation-note svg { width:14px; height:14px; flex:none; }
+    .field.span-2 { grid-column:span 2; }
+    .field.full { grid-column:1 / -1; }
+    label { display:block; margin-bottom:5px; color:#334155; font-size:10px; font-weight:700; }
+    .required { color:#b91c1c; }
+    .input,.select,.textarea { width:100%; border:1px solid var(--border); border-radius:7px; background:#fff; color:var(--fg); font-size:11px; outline:none; }
+    .input,.select { height:36px; padding:0 10px; }
+    .textarea { min-height:84px; padding:9px 10px; resize:none; }
+    .input:focus,.select:focus,.textarea:focus { border-color:var(--primary); box-shadow:0 0 0 3px rgba(15,118,110,.15); }
+    .hint { margin-top:4px; color:#94a3b8; font-size:9px; line-height:1.4; }
+    .form-actions { display:flex; justify-content:flex-end; gap:8px; padding:15px 18px; }
+    .aside { position:sticky; top:14px; display:grid; gap:12px; }
+    .help { padding:16px; }
+    .help h2 { margin:0 0 7px; font-size:12px; }
+    .help p,.help li { color:var(--muted-fg); font-size:10px; line-height:1.55; }
+    .help ul { margin:10px 0 0; padding-left:17px; }
+    .flow { display:grid; gap:9px; margin-top:12px; }
+    .flow-item { display:grid; grid-template-columns:28px 1fr; gap:9px; align-items:start; }
+    .flow-icon { width:28px; height:28px; display:grid; place-items:center; border-radius:8px; background:var(--accent); color:var(--primary); }
+    .flow-icon svg { width:15px; height:15px; }
+    .flow-item strong { display:block; font-size:10px; }
+    .flow-item span { display:block; margin-top:2px; color:var(--muted-fg); font-size:9px; line-height:1.4; }
+    .info { display:flex; gap:9px; padding:12px; border:1px solid #bfdbfe; border-radius:8px; background:var(--blue-bg); color:#1e40af; }
+    .info svg { width:16px; height:16px; flex:none; }
+    .info p { margin:0; font-size:9px; line-height:1.5; }
+    @media(max-width:1050px){.form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.field.span-2{grid-column:auto}.field.full{grid-column:1/-1}}
+    @media(max-width:900px){.layout{grid-template-columns:70px minmax(0,1fr)}.sidebar{padding-inline:8px}.nav-label,.nav-item span:not(.nav-icon){display:none}.nav-item{justify-content:center}.form-layout{grid-template-columns:1fr}.aside{position:static}}
+    @media(max-width:620px){.review-note{align-items:flex-start;flex-direction:column}.frame{width:calc(100% - 12px);margin-top:6px}.appbar{padding-inline:14px}.env{display:none}.layout{display:block}.sidebar{display:none}.content{padding:20px 14px 28px}.form-grid{grid-template-columns:1fr}.field.full{grid-column:auto}.section-head{align-items:flex-start}.page-header{display:block}}
+  </style>
+</head>
+<body>
+  <header class="review-note"><div><strong>Tela 4 — Nova guia em wizard</strong><br>Revise a navegação em etapas e a separação entre validação imediata e decisão final.</div><span class="tag">SHADCN/UI · MOCKUP</span></header>
+  <main class="frame">
+    <header class="appbar"><div class="logo"><span class="logo-mark">V</span>Conferência de guias</div><div class="appbar-actions"><span class="env">Ambiente demonstrativo</span><span class="user">OP</span></div></header>
+    <div class="layout">
+      <aside class="sidebar"><div class="nav-label">Operação</div><div class="nav-item"><span class="nav-icon">▦</span><span>Visão geral</span></div><div class="nav-item"><span class="nav-icon">▤</span><span>Guias</span></div><div class="nav-item active"><span class="nav-icon">＋</span><span>Nova guia</span></div><div class="nav-item"><span class="nav-icon">⇧</span><span>Importações</span></div><div class="nav-item"><span class="nav-icon">◉</span><span>Regras</span></div></aside>
+      <section class="content">
+        <div class="page-header"><div><h1>Nova guia</h1><p>Preencha em etapas. Formatos são verificados durante o preenchimento; a decisão completa acontece ao final.</p></div></div>
+        <div class="form-layout">
+          <article class="card">
+            <div class="stepper">
+              <div class="step done"><span class="step-circle">✓</span><div class="step-copy"><strong>Identificação</strong><span>Atendimento</span></div></div>
+              <div class="step active"><span class="step-circle">2</span><div class="step-copy"><strong>Convênio</strong><span>Procedimento</span></div></div>
+              <div class="step"><span class="step-circle">3</span><div class="step-copy"><strong>Autorização</strong><span>Sessões</span></div></div>
+              <div class="step"><span class="step-circle">4</span><div class="step-copy"><strong>Finalização</strong><span>Profissional e texto</span></div></div>
+            </div>
+            <section class="section">
+              <div class="section-head"><div><h2>Convênio e procedimento</h2><p>Etapa 2 de 4 · as exigências se ajustam ao convênio selecionado.</p></div><span class="section-index">Em preenchimento</span></div>
+              <div class="form-grid">
+                <div class="field"><label>Convênio <span class="required">*</span></label><select class="select"><option>Selecione</option></select></div>
+                <div class="field"><label>Carteirinha</label><input class="input" placeholder="Número informado"><div class="hint">A obrigatoriedade aparece após selecionar o convênio.</div></div>
+                <div class="field"><label>CID</label><input class="input" placeholder="Código informado"></div>
+                <div class="field"><label>Código do procedimento <span class="required">*</span></label><input class="input" placeholder="Código"></div>
+                <div class="field full"><label>Descrição do procedimento <span class="required">*</span></label><input class="input" placeholder="Descrição recebida"></div>
+              </div>
+              <div class="validation-note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg><span>Nesta etapa, o sistema sinaliza campo obrigatório, código inexistente e formato inválido. Cobertura e decisão final são calculadas somente depois que a guia estiver completa.</span></div>
+            </section>
+            <div class="form-actions"><button class="btn">Voltar</button><button class="btn primary">Continuar</button></div>
+          </article>
+          <aside class="aside">
+            <article class="card help"><h2>Como a validação funciona</h2><p>O wizard ajuda a corrigir entrada inválida cedo sem fingir que uma guia incompleta já recebeu uma decisão.</p><div class="flow"><div class="flow-item"><span class="flow-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg></span><div><strong>Enquanto preenche</strong><span>Formato, calendário, número e obrigatoriedade contextual.</span></div></div><div class="flow-item"><span class="flow-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"></path></svg></span><div><strong>Ao salvar e conferir</strong><span>Cobertura, validade, limite, duplicidade e observação.</span></div></div><div class="flow-item"><span class="flow-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"></path></svg></span><div><strong>Resultado persistido</strong><span>Uma pendência de negócio é registrada e explicada; não bloqueia o cadastro.</span></div></div></div></article>
+            <div class="info"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg><p>Formato impossível de interpretar impede avançar. Uma regra de negócio violada salva a guia como PENDENTE, com motivo e orientação de correção.</p></div>
+          </aside>
+        </div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>
