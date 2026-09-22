@@ -514,6 +514,49 @@ test("contrato 7: worker-configuration.d.ts expõe Env com ASSETS/DB/OAUTH_KV/LO
 });
 
 // ---------------------------------------------------------------------------
+// Contrato 12: cache KV semântico dedicado (id placeholder) exposto como
+// KVNamespace na cadeia de Env
+// ---------------------------------------------------------------------------
+
+const KV_SEMANTICO_ESPERADO = {
+  binding: "CACHE_SEMANTICO",
+  id: "00000000000000000000000000000000",
+};
+
+test("contrato 12: wrangler.jsonc declara exatamente um KV CACHE_SEMANTICO com id placeholder e Env expõe KVNamespace", () => {
+  const cfg = readJsonc("wrangler.jsonc");
+  assert.notEqual(cfg, null, "wrangler.jsonc ausente ou ilegível");
+
+  assert.ok(Array.isArray(cfg.kv_namespaces), "kv_namespaces ausente");
+  assert.deepEqual(
+    cfg.kv_namespaces.filter((e) => e && e.binding === "CACHE_SEMANTICO"),
+    [KV_SEMANTICO_ESPERADO],
+  );
+
+  const texto = readText("worker-configuration.d.ts");
+  assert.notEqual(texto, null, "worker-configuration.d.ts ausente ou ilegível");
+
+  const declaracoes = declaracoesDeTipos(texto);
+  assert.ok(
+    declaracoes.some((d) => d.nome === "Env"),
+    "declaração Env ausente em worker-configuration.d.ts",
+  );
+
+  const visitados = new Set();
+  const escopo = declaracoes
+    .map((declaracao, indice) =>
+      declaracao.nome === "Env" ? escopoDeDeclaracao(indice, declaracoes, visitados) : "",
+    )
+    .join("\n");
+
+  assert.match(
+    escopo,
+    /\bCACHE_SEMANTICO\b\s*:\s*KVNamespace\b/,
+    "binding CACHE_SEMANTICO: KVNamespace ausente em Env",
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Contrato 8: .gitignore cobre artefatos e segredos listados
 // ---------------------------------------------------------------------------
 
