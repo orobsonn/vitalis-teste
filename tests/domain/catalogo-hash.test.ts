@@ -404,4 +404,77 @@ describe("carregarCatalogo e consultarRegra", () => {
       expect("catalogo" in resultado, rotulo).toBe(false);
     }
   });
+
+  it("rejeita valores aninhados não canônicos e acessores sem deixar a exceção escapar", () => {
+    expect(typeof api.carregarCatalogo).toBe("function");
+
+    // O catálogo sintético intacto continua válido.
+    expect(api.carregarCatalogo(CATALOGO_JSON).ok).toBe(true);
+
+    // `Date` não é um objeto JSON puro: sem chaves próprias enumeráveis seria
+    // canonicalizado como `{}` e colidiria com qualquer outro objeto vazio.
+    const comData: unknown = { ...clonarCatalogo(), extra: new Date(0) };
+
+    // Um array esparso de comprimento 1 tem um buraco: `map`/`join` o renderizam
+    // como `[]`, exatamente como um array vazio.
+    const esparso: unknown[] = [];
+    esparso.length = 1;
+    const comArrayEsparso: unknown = { ...clonarCatalogo(), extra: esparso };
+
+    // Um acessor não é um valor JSON: a regra validada não pode divergir do
+    // dado efetivamente hasheado.
+    const comAcessor: unknown = clonarCatalogo();
+    Object.defineProperty(comAcessor, "extra", { get: () => 1, enumerable: true });
+
+    // Getter hostil: o valor lançado não é um `Error` e o `String()` dele
+    // também lança, então a exceção não pode escapar de `carregarCatalogo`.
+    const hostil = {
+      [Symbol.toPrimitive](): never {
+        throw hostil;
+      },
+    };
+    const comAcessorHostil: unknown = clonarCatalogo();
+    Object.defineProperty(comAcessorHostil, "extra", {
+      get: () => {
+        throw hostil;
+      },
+      enumerable: true,
+    });
+
+    const invalidos: Array<[string, unknown]> = [
+      ["propriedade com Date", comData],
+      ["propriedade com array esparso", comArrayEsparso],
+      ["propriedade como acessor", comAcessor],
+      ["acessor com getter hostil", comAcessorHostil],
+    ];
+
+    // Cada caso é avaliado independentemente para que a falha liste todos os
+    // dados não canônicos ainda aceitos, não apenas o primeiro.
+    const problemas: string[] = [];
+    for (const [rotulo, entrada] of invalidos) {
+      let resultado: ResultadoCatalogo | undefined;
+      let lancou = false;
+      try {
+        resultado = api.carregarCatalogo(entrada);
+      } catch {
+        lancou = true;
+      }
+      if (lancou) {
+        problemas.push(`${rotulo}: a excecao escapou de carregarCatalogo`);
+        continue;
+      }
+      if (resultado === undefined || resultado.ok) {
+        problemas.push(`${rotulo}: aceito como catalogo valido`);
+        continue;
+      }
+      if (!Array.isArray(resultado.erros) || resultado.erros.length === 0) {
+        problemas.push(`${rotulo}: erros vazios`);
+        continue;
+      }
+      if ("catalogo" in resultado) {
+        problemas.push(`${rotulo}: catalogo parcial presente`);
+      }
+    }
+    expect(problemas).toEqual([]);
+  });
 });

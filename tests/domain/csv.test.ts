@@ -209,6 +209,32 @@ function linhaComPrimeiraCelulaCrua(primeira: string): string {
   return [primeira, ...CAMPOS_COMUNS_ASPAS.map(celula)].join(",");
 }
 
+// Colunas unidade..observacao_recepcao sem nenhum caractere que exija aspas:
+// junto do id_guia formam as 17 primeiras colunas de uma linha literal. Assim,
+// qualquer aspa no texto é intencional e nunca produzida por `celula()`.
+const CAMPOS_SEM_ASPAS = [
+  "Sul",
+  "03/08/2026",
+  "P-8001",
+  "Vitalcard",
+  "0008123",
+  "M79.7",
+  "50000470",
+  "Sessão de fisioterapia",
+  "AUTASPAS1",
+  "2026-08-14",
+  "10",
+  "1",
+  "Profissional Teste",
+  "CREFITO-3 204411-F",
+  "62.00",
+  "",
+];
+
+function linhaLiteral(id: string, dataLancamento: string): string {
+  return [id, ...CAMPOS_SEM_ASPAS, dataLancamento].join(",");
+}
+
 describe("parseGuiasCsv — preservação da entrada", () => {
   it("preserva as 18 colunas, as células cruas e segue após a linha divergente", () => {
     expect(typeof api.parseGuiasCsv).toBe("function");
@@ -321,18 +347,15 @@ describe("parseGuiasCsv — preservação da entrada", () => {
   it("recupera linhas válidas após aspa aberta na última célula", () => {
     expect(typeof api.parseGuiasCsv).toBe("function");
 
-    // 16 campos compartilhados (unidade..observacao_recepcao): junto do
-    // id_guia formam as 17 primeiras colunas de cada linha.
-    const camposAteObservacao = CAMPOS_COMUNS_ASPAS.slice(0, 16);
+    // As linhas seguintes são literais: nenhuma célula exige aspas, de modo que
+    // a única aspa do arquivo é a que abre e permanece aberta até o fim.
+    const linhaValida1 = linhaLiteral("G-Q-0003", "2026-08-04");
+    const linhaValida2 = linhaLiteral("G-Q-0004", "2026-08-05");
 
-    // A última célula abre uma aspa que nunca fecha: a linha é literal, pois
+    // A última célula abre uma aspa que nunca fecha. A linha é literal, pois
     // `celula()` nunca produz sintaxe malformada.
     const linhaAspasAberta =
-      ["G-Q-0002", ...camposAteObservacao].map(celula).join(",") + ',"aspas abertas sem fim';
-    const linhaValida1 =
-      ["G-Q-0003", ...camposAteObservacao].map(celula).join(",") + ",2026-08-04";
-    const linhaValida2 =
-      ["G-Q-0004", ...camposAteObservacao].map(celula).join(",") + ",2026-08-05";
+      ["G-Q-0002", ...CAMPOS_SEM_ASPAS].join(",") + ',"aspas abertas sem fim';
 
     const csv =
       COLUNAS.join(",") +
@@ -361,12 +384,97 @@ describe("parseGuiasCsv — preservação da entrada", () => {
     expect(falha.motivo.length).toBeGreaterThan(0);
     expect(falha.linhaOriginal).toContain('"aspas abertas sem fim');
 
-    // As linhas seguintes preservam as células cruas, inclusive a vírgula
-    // dentro do campo citado.
+    // As linhas recuperadas preservam as células cruas e não contêm aspa alguma:
+    // o defeito exercitado é só o registro com aspas ainda abertas no fim do
+    // arquivo, nunca um fechamento prematuro na linha seguinte.
     for (const guia of resultado.guias) {
       expect(guia.original.carteirinha).toBe("0008123");
-      expect(guia.original.valor).toBe("62,00");
-      expect(guia.original.observacao_recepcao).toBe("obs, com vírgula");
+      expect(guia.original.valor).toBe("62.00");
+      expect(guia.original.observacao_recepcao).toBe("");
+      expect(guia.linhaOriginal).not.toContain('"');
     }
+    expect(resultado.guias[0]!.original.data_lancamento).toBe("2026-08-04");
+    expect(resultado.guias[1]!.original.data_lancamento).toBe("2026-08-05");
+  });
+
+  it("não ressincroniza registro malformado já delimitado por aspas fechadas", () => {
+    expect(typeof api.parseGuiasCsv).toBe("function");
+
+    const linhaValidaAntes = linhaLiteral("G-J-0001", "2026-08-04");
+    const linhaValidaDepois = linhaLiteral("G-J-0004", "2026-08-06");
+
+    // O campo entre aspas fecha corretamente e só então recebe lixo ("junk");
+    // como o campo citado tem quebra interna, o registro ocupa duas linhas
+    // físicas, mas já está delimitado por uma aspa de fechamento.
+    const linhaComLixoAposFechamento =
+      ["G-J-0002", ...CAMPOS_SEM_ASPAS].join(",") + ',"primeira\nsegunda"junk';
+
+    const csv =
+      COLUNAS.join(",") +
+      "\n" +
+      linhaValidaAntes +
+      "\n" +
+      linhaComLixoAposFechamento +
+      "\n" +
+      linhaValidaDepois +
+      "\n";
+
+    const resultado = api.parseGuiasCsv(csv);
+
+    expect(resultado.cabecalho).toEqual([...COLUNAS]);
+
+    // O registro malformado inteiro é uma única falha: as duas linhas físicas
+    // ficam no mesmo `linhaOriginal`.
+    expect(resultado.falhas).toHaveLength(1);
+    const falha = resultado.falhas[0]!;
+    expect(falha.numero).toBe(3);
+    expect(falha.motivo.length).toBeGreaterThan(0);
+    expect(falha.linhaOriginal).toContain("primeira\nsegunda");
+    expect(falha.linhaOriginal).toContain("junk");
+
+    // A linha interna citada não vira guia fantasma nem desloca a válida final.
+    expect(resultado.guias.map((guia) => guia.original.id_guia)).toEqual([
+      "G-J-0001",
+      "G-J-0004",
+    ]);
+  });
+
+  it("conta \\r isolado dentro de aspas como quebra de linha física", () => {
+    expect(typeof api.parseGuiasCsv).toBe("function");
+
+    // Campo citado e corretamente fechado com um `\r` solto dentro: o registro
+    // ocupa duas linhas físicas.
+    const linhaComCrDentroDeAspas =
+      ["G-R-0001", ...CAMPOS_SEM_ASPAS].join(",") + ',"primeira\rsegunda"';
+    // 17 colunas: cardinalidade divergente, logo uma falha.
+    const linhaDivergente = ["G-R-0002", ...CAMPOS_SEM_ASPAS].join(",");
+    const linhaValidaDepois = linhaLiteral("G-R-0003", "2026-08-07");
+
+    const csv =
+      COLUNAS.join(",") +
+      "\n" +
+      linhaComCrDentroDeAspas +
+      "\n" +
+      linhaDivergente +
+      "\n" +
+      linhaValidaDepois +
+      "\n";
+
+    const resultado = api.parseGuiasCsv(csv);
+
+    expect(resultado.cabecalho).toEqual([...COLUNAS]);
+
+    // A guia com o `\r` interno continua válida e preserva o campo cru.
+    expect(resultado.guias.map((guia) => guia.original.id_guia)).toEqual([
+      "G-R-0001",
+      "G-R-0003",
+    ]);
+    expect(resultado.guias[0]!.original.data_lancamento).toBe("primeira\rsegunda");
+
+    // Cabeçalho (1), guia que ocupa as linhas 2-3, divergente (4) e válida
+    // final (5): o `\r` dentro das aspas conta como uma quebra física.
+    expect(resultado.falhas).toHaveLength(1);
+    expect(resultado.falhas[0]!.numero).toBe(4);
+    expect(resultado.falhas[0]!.linhaOriginal).toContain("G-R-0002");
   });
 });
