@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mockup — Tela 5 · Lista de guias</title>
+  <style>
+    :root { --bg:#f8fafc; --fg:#0f172a; --card:#fff; --muted:#f1f5f9; --muted-fg:#64748b; --border:#e2e8f0; --primary:#0f766e; --accent:#f0fdfa; --success:#047857; --success-bg:#ecfdf5; --warning:#b45309; --warning-bg:#fffbeb; --blue:#2563eb; --blue-bg:#eff6ff; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-width:320px; background:#e8edf1; color:var(--fg); font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    button,input,select { font:inherit; }
+    .review-note { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:10px 20px; border-bottom:1px solid #cbd5e1; background:#fff; color:#475569; font-size:12px; }
+    .review-note strong { color:var(--fg); }
+    .tag { padding:4px 8px; border-radius:999px; background:#0f172a; color:#fff; font-size:10px; font-weight:800; letter-spacing:.04em; }
+    .frame { width:min(1440px,calc(100% - 28px)); min-height:800px; margin:14px auto 32px; overflow:hidden; border:1px solid #cbd5e1; border-radius:14px; background:var(--bg); box-shadow:0 20px 55px rgba(15,23,42,.12); }
+    .appbar { height:64px; display:flex; align-items:center; justify-content:space-between; padding:0 24px; border-bottom:1px solid var(--border); background:#fff; }
+    .logo { display:flex; align-items:center; gap:10px; font-size:14px; font-weight:780; }
+    .logo-mark { width:31px; height:31px; display:grid; place-items:center; border-radius:8px; background:var(--primary); color:#fff; font-weight:900; }
+    .appbar-actions { display:flex; align-items:center; gap:8px; }
+    .env { padding:5px 8px; border:1px solid var(--border); border-radius:999px; color:var(--muted-fg); font-size:10px; }
+    .user { width:30px; height:30px; display:grid; place-items:center; border-radius:50%; background:var(--muted); color:#475569; font-size:10px; font-weight:800; }
+    .layout { display:grid; grid-template-columns:214px minmax(0,1fr); min-height:736px; }
+    .sidebar { padding:18px 12px; border-right:1px solid var(--border); background:#fff; }
+    .nav-label { margin:2px 10px 8px; color:#94a3b8; font-size:10px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+    .nav-item { display:flex; align-items:center; gap:9px; margin-bottom:3px; padding:9px 10px; border-radius:7px; color:#475569; font-size:12px; font-weight:620; }
+    .nav-item.active { background:var(--accent); color:var(--primary); }
+    .nav-icon { width:18px; text-align:center; }
+    .content { min-width:0; padding:27px 28px 38px; }
+    .page-header { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; margin-bottom:18px; }
+    h1 { margin:0; font-size:27px; letter-spacing:-.035em; }
+    .page-header p { margin:5px 0 0; color:var(--muted-fg); font-size:12px; }
+    .actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+    .btn { min-height:36px; padding:0 13px; border:1px solid var(--border); border-radius:7px; background:#fff; color:#1e293b; font-size:12px; font-weight:700; box-shadow:0 1px 2px rgba(15,23,42,.03); }
+    .btn.primary { border-color:var(--primary); background:var(--primary); color:#fff; }
+    .card { min-width:0; border:1px solid var(--border); border-radius:10px; background:var(--card); box-shadow:0 1px 2px rgba(15,23,42,.025); }
+    .summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-bottom:13px; }
+    .summary-card { padding:12px 14px; }
+    .summary-card span { display:block; color:var(--muted-fg); font-size:9px; }
+    .summary-card strong { display:block; margin-top:4px; font-size:17px; }
+    .toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:13px 14px; border-bottom:1px solid var(--border); }
+    .filters { display:flex; gap:7px; flex-wrap:wrap; }
+    .control { height:34px; padding:0 9px; border:1px solid var(--border); border-radius:7px; background:#fff; color:#475569; font-size:10px; outline:none; }
+    .control:focus { border-color:var(--primary); box-shadow:0 0 0 3px rgba(15,118,110,.15); }
+    .search { min-width:210px; }
+    .view-note { padding:10px 14px; border-bottom:1px solid var(--border); background:#f8fafc; color:var(--muted-fg); font-size:9px; }
+    .view-note strong { color:#334155; }
+    .table-wrap { overflow-x:auto; }
+    table { width:100%; border-collapse:collapse; font-size:10px; }
+    th,td { padding:11px 12px; border-bottom:1px solid #f1f5f9; text-align:left; white-space:nowrap; }
+    th { background:#fff; color:#64748b; font-size:9px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; }
+    tr:hover { background:#fafcfc; }
+    .link { color:var(--primary); font-weight:750; }
+    .badge { display:inline-flex; align-items:center; gap:5px; padding:4px 7px; border-radius:999px; font-size:9px; font-weight:800; }
+    .badge::before { content:""; width:5px; height:5px; border-radius:50%; background:currentColor; }
+    .badge.ok { color:var(--success); background:var(--success-bg); }
+    .badge.pending { color:var(--warning); background:var(--warning-bg); }
+    .revision { display:inline-flex; padding:4px 7px; border-radius:999px; background:var(--blue-bg); color:var(--blue); font-size:9px; font-weight:700; }
+    .reason { max-width:190px; overflow:hidden; text-overflow:ellipsis; }
+    .pagination { display:flex; align-items:center; justify-content:space-between; gap:14px; padding:11px 14px; color:var(--muted-fg); font-size:10px; }
+    .pages { display:flex; gap:4px; }
+    .page { width:28px; height:28px; display:grid; place-items:center; border:1px solid var(--border); border-radius:6px; background:#fff; color:#475569; }
+    .page.active { border-color:var(--primary); background:var(--primary); color:#fff; }
+    .footnote { margin-top:11px; color:#64748b; font-size:9px; }
+    @media(max-width:900px){.layout{grid-template-columns:70px minmax(0,1fr)}.sidebar{padding-inline:8px}.nav-label,.nav-item span:not(.nav-icon){display:none}.nav-item{justify-content:center}.summary{grid-template-columns:1fr 1fr 1fr}.toolbar{align-items:flex-start;flex-direction:column}.filters{width:100%}}
+    @media(max-width:620px){.review-note{align-items:flex-start;flex-direction:column}.frame{width:calc(100% - 12px);margin-top:6px}.appbar{padding-inline:14px}.env{display:none}.layout{display:block}.sidebar{display:none}.content{padding:20px 14px 28px}.page-header{display:block}.actions{justify-content:flex-start;margin-top:12px}.summary{grid-template-columns:1fr}.filters{overflow-x:auto;flex-wrap:nowrap}.pagination{align-items:flex-start;flex-direction:column}}
+  </style>
+</head>
+<body>
+  <header class="review-note"><div><strong>Tela 5 — Lista de guias</strong><br>Revise a busca, os filtros e a tabela operacional das revisões vigentes.</div><span class="tag">SHADCN/UI · MOCKUP</span></header>
+  <main class="frame">
+    <header class="appbar"><div class="logo"><span class="logo-mark">V</span>Conferência de guias</div><div class="appbar-actions"><span class="env">Ambiente demonstrativo</span><span class="user">OP</span></div></header>
+    <div class="layout">
+      <aside class="sidebar"><div class="nav-label">Operação</div><div class="nav-item"><span class="nav-icon">▦</span><span>Visão geral</span></div><div class="nav-item active"><span class="nav-icon">▤</span><span>Guias</span></div><div class="nav-item"><span class="nav-icon">＋</span><span>Nova guia</span></div><div class="nav-item"><span class="nav-icon">⇧</span><span>Importações</span></div><div class="nav-item"><span class="nav-icon">◉</span><span>Regras</span></div></aside>
+      <section class="content">
+        <div class="page-header"><div><h1>Guias</h1><p>Consulte a revisão vigente, entenda a decisão e encontre o que precisa de correção.</p></div><div class="actions"><button class="btn">⇧ Importar CSV</button><button class="btn primary">＋ Nova guia</button></div></div>
+        <section class="summary"><article class="card summary-card"><span>Guias encontradas</span><strong>00</strong></article><article class="card summary-card"><span>Com pendências</span><strong>00</strong></article><article class="card summary-card"><span>Valor associado ao filtro</span><strong>R$ —</strong></article></section>
+        <article class="card">
+          <div class="toolbar"><div class="filters"><input class="control search" placeholder="Buscar por ID ou paciente"><select class="control"><option>Decisão: todas</option></select><select class="control"><option>Convênio: todos</option></select><select class="control"><option>Lote: todos</option></select><select class="control"><option>Motivo: todos</option></select></div><button class="btn">Limpar filtros</button></div>
+          <div class="view-note"><strong>Visão atual:</strong> cada guia aparece uma vez, usando somente sua revisão vigente. O histórico permanece no detalhe.</div>
+          <div class="table-wrap"><table><thead><tr><th>Guia</th><th>Paciente</th><th>Atendimento</th><th>Convênio</th><th>Procedimento</th><th>Valor</th><th>Decisão</th><th>Revisão</th><th>Pendência principal</th><th></th></tr></thead><tbody>
+            <tr><td class="link">GUIA-B205</td><td>P-EXEMPLO-2</td><td>00/00/0000</td><td>Convênio Beta</td><td>Procedimento exemplo</td><td>R$ —</td><td><span class="badge pending">PENDENTE</span></td><td><span class="revision">v1</span></td><td class="reason">Autorização precisa ser conferida</td><td class="link">Ver resultado</td></tr>
+            <tr><td class="link">GUIA-C310</td><td>P-EXEMPLO-3</td><td>00/00/0000</td><td>Convênio Gama</td><td>Procedimento exemplo</td><td>R$ —</td><td><span class="badge pending">PENDENTE</span></td><td><span class="revision">v2</span></td><td class="reason">Dado obrigatório ausente</td><td class="link">Ver resultado</td></tr>
+            <tr><td class="link">GUIA-A102</td><td>P-EXEMPLO-1</td><td>00/00/0000</td><td>Convênio Alfa</td><td>Procedimento exemplo</td><td>R$ —</td><td><span class="badge ok">OK</span></td><td><span class="revision">v1</span></td><td>—</td><td class="link">Ver resultado</td></tr>
+            <tr><td class="link">GUIA-D415</td><td>P-EXEMPLO-4</td><td>00/00/0000</td><td>Convênio Beta</td><td>Procedimento exemplo</td><td>R$ —</td><td><span class="badge pending">PENDENTE</span></td><td><span class="revision">v1</span></td><td class="reason">Procedimento sem cobertura</td><td class="link">Ver resultado</td></tr>
+            <tr><td class="link">GUIA-E520</td><td>P-EXEMPLO-5</td><td>00/00/0000</td><td>Convênio Alfa</td><td>Procedimento exemplo</td><td>R$ —</td><td><span class="badge ok">OK</span></td><td><span class="revision">v1</span></td><td>—</td><td class="link">Ver resultado</td></tr>
+          </tbody></table></div>
+          <div class="pagination"><span>Mostrando itens — a — de —</span><div class="pages"><span class="page">‹</span><span class="page active">1</span><span class="page">2</span><span class="page">›</span></div></div>
+        </article>
+        <p class="footnote">“Ver resultado” abre o pop-up aprovado. “Salvar correção” conduz ao mesmo wizard preenchido e cria uma nova revisão.</p>
+      </section>
+    </div>
+  </main>
+</body>
+</html>
