@@ -320,6 +320,13 @@ describe("carregarCatalogo e consultarRegra", () => {
     const campoDesconhecido = clonarCatalogo();
     campoDesconhecido.convenios[0]!.campos_obrigatorios.push("campo_inexistente");
 
+    // §4.5/#ac-8: uma lista com membro repetido é ambígua. O hash versiona as
+    // duas ocorrências de `cid`, mas `catalogo.convenios[i].camposObrigatorios`
+    // expõe uma só; aceitar isso entrega um catálogo que diverge em silêncio da
+    // versão que o rotula, em vez de falhar sem catálogo parcial.
+    const campoObrigatorioDuplicado = clonarCatalogo();
+    campoObrigatorioDuplicado.convenios[0]!.campos_obrigatorios.push("cid");
+
     const coberturaOrfa = clonarCatalogo();
     coberturaOrfa.convenios[0]!.procedimentos_cobertos.push("99999999");
 
@@ -335,15 +342,98 @@ describe("carregarCatalogo e consultarRegra", () => {
     const valorInseguro = clonarCatalogo();
     valorInseguro.procedimentos[0]!.valor_referencia = Number.MAX_SAFE_INTEGER;
 
+    // §4.5/#ac-8: `valor_referencia` precisa ser representável em centavos. Um
+    // valor com fração de centavo não pode virar `ok: true` com arredondamento
+    // silencioso: o hash versiona o número bruto, mas o procedimento entregue
+    // divergiria da versão que o rotula.
+    const valorSubCentavo = clonarCatalogo();
+    valorSubCentavo.procedimentos[0]!.valor_referencia = 62.001;
+
+    const outroValorSubCentavo = clonarCatalogo();
+    outroValorSubCentavo.procedimentos[0]!.valor_referencia = 10.005;
+
+    // §4.5/#ac-8: `limitacoes_globais` também precisa ser validada no
+    // carregamento. Um valor não-array ou com membros que não sejam textos
+    // utilizáveis não pode virar `ok: true` com um catálogo parcial: o hash
+    // inclui o valor bruto, mas `catalogo.limitacoesGlobais` e
+    // `consultarRegra(...).limitacoes` descartam esse membro em silêncio, de
+    // modo que a consulta divergiria da versão que a rotula.
+    const limitacoesNaoArrayTexto: unknown = {
+      ...clonarCatalogo(),
+      limitacoes_globais: "limite_a",
+    };
+
+    const limitacoesNaoArrayNumero: unknown = {
+      ...clonarCatalogo(),
+      limitacoes_globais: 7,
+    };
+
+    const limitacoesComMembroNumerico: unknown = {
+      ...clonarCatalogo(),
+      limitacoes_globais: ["limite_a", 7],
+    };
+
+    const limitacoesComMembroEmBranco: unknown = {
+      ...clonarCatalogo(),
+      limitacoes_globais: ["limite_a", "  "],
+    };
+
+    // §4.5/#ac-8: uma limitação global declarada em duplicidade também é
+    // ambígua. O hash versiona `limite_a` duas vezes, mas
+    // `catalogo.limitacoesGlobais` deduplica em silêncio; aceitar isso entrega
+    // um catálogo divergente da versão que o rotula, em vez de falhar sem
+    // catálogo parcial.
+    const limitacaoGlobalDuplicada: unknown = {
+      ...clonarCatalogo(),
+      limitacoes_globais: ["limite_a", "limite_a"],
+    };
+
+    // §4.5/#ac-8: `definicoes` também precisa ser validada no carregamento. Um
+    // valor que não seja um objeto, ou um objeto com membros que não sejam
+    // textos, não pode virar `ok: true` com um catálogo parcial: o hash inclui o
+    // valor bruto, mas `catalogo.definicoes` descarta a chave em silêncio, de
+    // modo que o catálogo entregue divergiria da versão que o rotula.
+    const definicoesNaoObjetoTexto: unknown = {
+      ...clonarCatalogo(),
+      definicoes: "x",
+    };
+
+    const definicoesNaoObjetoNumero: unknown = {
+      ...clonarCatalogo(),
+      definicoes: 7,
+    };
+
+    const definicoesComoLista: unknown = {
+      ...clonarCatalogo(),
+      definicoes: ["x"],
+    };
+
+    const definicoesComMembroNumerico: unknown = {
+      ...clonarCatalogo(),
+      definicoes: { prazo_envio_dias: 7 },
+    };
+
     const invalidos: Array<[string, unknown]> = [
       ["código de procedimento duplicado", codigoDuplicado],
       ["nome de convênio normalizado duplicado", nomeDuplicado],
       ["campo obrigatório fora das 18 colunas", campoDesconhecido],
+      ["campo obrigatório duplicado", campoObrigatorioDuplicado],
       ["procedimento coberto ausente", coberturaOrfa],
       ["prazo de envio fracionário", prazoFracionario],
       ["limite de sessões fracionário", limiteFracionario],
       ["validade máxima fracionária", validadeFracionaria],
       ["valor de referência inseguro", valorInseguro],
+      ["valor de referência com fração de centavo (62.001)", valorSubCentavo],
+      ["valor de referência com fração de centavo (10.005)", outroValorSubCentavo],
+      ["limitações globais não-array (texto)", limitacoesNaoArrayTexto],
+      ["limitações globais não-array (número)", limitacoesNaoArrayNumero],
+      ["limitação global com membro numérico", limitacoesComMembroNumerico],
+      ["limitação global com membro em branco", limitacoesComMembroEmBranco],
+      ["limitação global duplicada", limitacaoGlobalDuplicada],
+      ["definições não-objeto (texto)", definicoesNaoObjetoTexto],
+      ["definições não-objeto (número)", definicoesNaoObjetoNumero],
+      ["definições como lista", definicoesComoLista],
+      ["definição com membro numérico", definicoesComMembroNumerico],
     ];
 
     for (const [rotulo, entrada] of invalidos) {
@@ -356,6 +446,68 @@ describe("carregarCatalogo e consultarRegra", () => {
       expect(resultado.erros.length).toBeGreaterThan(0);
       expect("catalogo" in resultado).toBe(false);
     }
+  });
+
+  it("aceita valores de referência representáveis em centavos", () => {
+    expect(typeof api.carregarCatalogo).toBe("function");
+    expect(typeof api.consultarRegra).toBe("function");
+
+    // O complemento positivo dos casos sub-centavo acima: um valor com duas
+    // casas decimais exatas continua válido e chega à consulta convertido de
+    // forma exata, sem perder o valor fracionário legítimo de centavos.
+    const comCentavos = clonarCatalogo();
+    comCentavos.procedimentos[0]!.valor_referencia = 62.01;
+    const resultadoCentavos = api.carregarCatalogo(comCentavos);
+    expect(resultadoCentavos.ok).toBe(true);
+    if (!resultadoCentavos.ok) {
+      throw new Error(
+        `catálogo com valor em centavos deveria ser válido: ${resultadoCentavos.erros.join("; ")}`,
+      );
+    }
+    const regraCentavos = api.consultarRegra(
+      { convenio: "Vitalcard", procedimento_codigo: "50000470" },
+      resultadoCentavos.catalogo,
+    );
+    expect(regraCentavos.procedimento?.codigo).toBe("50000470");
+    expect(regraCentavos.procedimento?.valorReferenciaCentavos).toBe(6201);
+
+    const comValorInteiro = clonarCatalogo();
+    comValorInteiro.procedimentos[0]!.valor_referencia = 62;
+    const resultadoInteiro = api.carregarCatalogo(comValorInteiro);
+    expect(resultadoInteiro.ok).toBe(true);
+    if (!resultadoInteiro.ok) {
+      throw new Error(
+        `catálogo com valor inteiro deveria ser válido: ${resultadoInteiro.erros.join("; ")}`,
+      );
+    }
+    const regraInteiro = api.consultarRegra(
+      { convenio: "Vitalcard", procedimento_codigo: "50000470" },
+      resultadoInteiro.catalogo,
+    );
+    expect(regraInteiro.procedimento?.valorReferenciaCentavos).toBe(6200);
+  });
+
+  it("aceita a limitação global declarada explicitamente sem duplicá-la", () => {
+    expect(typeof api.carregarCatalogo).toBe("function");
+
+    // O complemento positivo dos casos de limitação duplicada acima: declarar
+    // explicitamente a limitação obrigatória continua válido e ela aparece
+    // exatamente uma vez, sem duplicação artificial.
+    const comLimitacaoGlobal: unknown = {
+      ...clonarCatalogo(),
+      limitacoes_globais: [GLOBAL_NAO_VERIFICAVEL],
+    };
+    const resultado = api.carregarCatalogo(comLimitacaoGlobal);
+    expect(resultado.ok).toBe(true);
+    if (!resultado.ok) {
+      throw new Error(
+        `catálogo com limitação global declarada deveria ser válido: ${resultado.erros.join("; ")}`,
+      );
+    }
+    const ocorrencias = resultado.catalogo.limitacoesGlobais.filter(
+      (item) => item === GLOBAL_NAO_VERIFICAVEL,
+    );
+    expect(ocorrencias).toHaveLength(1);
   });
 
   it("resolve o procedimento pelo código exato, sem ambiguidade de ordem", () => {
