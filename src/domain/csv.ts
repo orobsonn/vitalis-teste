@@ -86,6 +86,10 @@ function dividirRegistros(entrada: string, linhaBase = 1): RegistroCsv[] {
       }
       if (caractere === "\n") {
         numeroLinha += 1;
+      } else if (caractere === "\r" && texto[indice + 1] !== "\n") {
+        // Um `\r` isolado dentro das aspas é uma quebra física própria; em
+        // `\r\n` a quebra é contada uma única vez pelo `\n` seguinte.
+        numeroLinha += 1;
       }
       campo += caractere;
       textoCru += caractere;
@@ -164,21 +168,24 @@ function cabecalhoEsperado(cabecalho: readonly string[]): boolean {
   );
 }
 
-/** Primeira linha física de um texto e o restante, ou `null` se for uma só linha. */
-function separarPrimeiraLinhaFisica(textoCru: string): { primeira: string; resto: string } | null {
-  const quebra = /\r\n|\r|\n/.exec(textoCru);
-  if (!quebra) {
-    return null;
-  }
-  return {
-    primeira: textoCru.slice(0, quebra.index),
-    resto: textoCru.slice(quebra.index + quebra[0].length),
-  };
-}
-
 const MOTIVO_ASPAS_NAO_TERMINADAS =
   "aspas_nao_terminadas: campo entre aspas sem fechamento até o fim do arquivo";
 const MOTIVO_ASPAS_MALFORMADAS = "aspas_malformadas: sintaxe de aspas inválida no campo";
+
+function motivoCardinalidade(quantidade: number): string {
+  return `cardinalidade_invalida: esperado ${COLUNAS_GUIA.length} colunas, obtido ${quantidade}`;
+}
+
+/** Motivo da falha de um registro recuperado, ou `null` se ele for uma guia válida. */
+function motivoDoRegistro(registro: RegistroCsv): string | null {
+  if (registro.aspasAbertas || registro.malformado) {
+    return registro.aspasAbertas ? MOTIVO_ASPAS_NAO_TERMINADAS : MOTIVO_ASPAS_MALFORMADAS;
+  }
+  if (registro.campos.length !== COLUNAS_GUIA.length) {
+    return motivoCardinalidade(registro.campos.length);
+  }
+  return null;
+}
 
 function processarRegistros(
   registros: readonly RegistroCsv[],
@@ -186,23 +193,51 @@ function processarRegistros(
   falhas: FalhaCsv[],
 ): void {
   for (const registro of registros) {
-    if (registro.aspasAbertas || registro.malformado) {
-      const motivo = registro.aspasAbertas ? MOTIVO_ASPAS_NAO_TERMINADAS : MOTIVO_ASPAS_MALFORMADAS;
-      const corte = separarPrimeiraLinhaFisica(registro.textoCru);
-      if (corte) {
-        // Um registro defeituoso que engoliu várias linhas físicas tem como
-        // falha apenas a sua primeira linha; o sufixo vira registros novos.
-        falhas.push({ numero: registro.numeroLinha, motivo, linhaOriginal: corte.primeira });
-        processarRegistros(dividirRegistros(corte.resto, registro.numeroLinha + 1), guias, falhas);
-        continue;
+    // Registro malformado já delimitado por uma aspa de fechamento: uma única
+    // falha com o texto cru integral, sem ressincronizar as linhas físicas que
+    // ele engoliu.
+    if (registro.malformado) {
+      falhas.push({
+        numero: registro.numeroLinha,
+        motivo: MOTIVO_ASPAS_MALFORMADAS,
+        linhaOriginal: registro.textoCru,
+      });
+      continue;
+    }
+    if (registro.aspasAbertas) {
+      const linhas = registro.textoCru.split(/\r\n|\r|\n/);
+      falhas.push({
+        numero: registro.numeroLinha,
+        motivo: MOTIVO_ASPAS_NAO_TERMINADAS,
+        linhaOriginal: linhas[0] ?? "",
+      });
+      // Recuperação iterativa e apenas para a frente: cada linha física restante
+      // é examinada exatamente uma vez, em ordem, como registro independente.
+      for (let deslocamento = 1; deslocamento < linhas.length; deslocamento += 1) {
+        const numero = registro.numeroLinha + deslocamento;
+        for (const recuperado of dividirRegistros(linhas[deslocamento]!, numero)) {
+          const motivo = motivoDoRegistro(recuperado);
+          if (motivo === null) {
+            guias.push({
+              numero: recuperado.numeroLinha,
+              original: montarOriginal(recuperado.campos),
+              linhaOriginal: recuperado.textoCru,
+            });
+          } else {
+            falhas.push({
+              numero: recuperado.numeroLinha,
+              motivo,
+              linhaOriginal: recuperado.textoCru,
+            });
+          }
+        }
       }
-      falhas.push({ numero: registro.numeroLinha, motivo, linhaOriginal: registro.textoCru });
       continue;
     }
     if (registro.campos.length !== COLUNAS_GUIA.length) {
       falhas.push({
         numero: registro.numeroLinha,
-        motivo: `cardinalidade_invalida: esperado ${COLUNAS_GUIA.length} colunas, obtido ${registro.campos.length}`,
+        motivo: motivoCardinalidade(registro.campos.length),
         linhaOriginal: registro.textoCru,
       });
       continue;

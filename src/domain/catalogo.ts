@@ -6,7 +6,7 @@
  * erros e devolve `{ ok: false, erros }`.
  */
 
-import { textoCanonico } from "../shared/json-canonico";
+import { criarSnapshotJson, textoCanonico } from "../shared/json-canonico";
 import { sha256Hex } from "../shared/sha256";
 import { COLUNAS_GUIA, type ColunaGuia } from "./contratos";
 
@@ -201,13 +201,32 @@ function lerLimitacoes(valor: unknown): string[] {
   return valor.filter((item): item is string => typeof item === "string" && item.trim() !== "");
 }
 
+/**
+ * Formata um valor lançado sem deixar a exceção escapar: lê apenas um `message`
+ * textual de um objeto não nulo, dentro do próprio `try/catch`, e usa um texto
+ * constante quando a inspeção falha ou não há mensagem confiável.
+ */
+function formatarErro(erro: unknown): string {
+  try {
+    if (typeof erro === "object" && erro !== null) {
+      const mensagem = (erro as { message?: unknown }).message;
+      if (typeof mensagem === "string" && mensagem.length > 0) {
+        return mensagem;
+      }
+    }
+  } catch {
+    // inspeção hostil: cai no texto constante abaixo
+  }
+  return "erro nao inspecionavel";
+}
+
 /** Valida a estrutura e devolve o catálogo versionado, ou os erros encontrados. */
 export function carregarCatalogo(json: unknown): ResultadoCatalogo {
   try {
-    return validarCatalogo(json);
+    const dados = criarSnapshotJson(json);
+    return validarCatalogo(dados);
   } catch (erro) {
-    const mensagem = erro instanceof Error ? erro.message : String(erro);
-    return { ok: false, erros: [`catalogo invalido: ${mensagem}`] };
+    return { ok: false, erros: [`catalogo invalido: ${formatarErro(erro)}`] };
   }
 }
 
@@ -254,8 +273,7 @@ function validarCatalogo(json: unknown): ResultadoCatalogo {
   try {
     hash = hashCatalogo(json);
   } catch (erro) {
-    const mensagem = erro instanceof Error ? erro.message : String(erro);
-    erros.push(`catalogo invalido: nao foi possivel canonicalizar (${mensagem})`);
+    erros.push(`catalogo invalido: nao foi possivel canonicalizar (${formatarErro(erro)})`);
     return { ok: false, erros };
   }
   const limitacoesGlobais = [...new Set([...lerLimitacoes(json["limitacoes_globais"]), LIMITACAO_GLOBAL_DURACAO_MAXIMA])];
