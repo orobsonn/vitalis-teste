@@ -208,6 +208,8 @@ function lerConvenios(valor: unknown, erros: string[]): ConvenioCatalogo[] {
  * valor presente que não seja um objeto puro, ou um objeto com qualquer membro
  * que não seja texto, acumula erro e impede o catálogo parcial. Nunca descarta
  * um membro em silêncio, para não divergir do hash que inclui o valor bruto.
+ * Cada membro é gravado como propriedade própria de dado, inclusive a chave
+ * `__proto__`, para que o objeto entregue nunca divirja do hash versionado.
  */
 function lerDefinicoes(valor: unknown, erros: string[]): Record<string, string> {
   if (valor === undefined) {
@@ -221,7 +223,15 @@ function lerDefinicoes(valor: unknown, erros: string[]): Record<string, string> 
   for (const chave of Object.keys(valor)) {
     const item = valor[chave];
     if (typeof item === "string") {
-      definicoes[chave] = item;
+      // `definicoes[chave] = item` acionaria o setter herdado
+      // `Object.prototype.__proto__` para a chave `__proto__`, criando um objeto
+      // sem a propriedade própria e divergindo em silêncio do hash.
+      Object.defineProperty(definicoes, chave, {
+        value: item,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
     } else {
       erros.push(`definicoes.${chave} deve ser um texto`);
     }
