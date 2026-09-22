@@ -114,6 +114,13 @@ function lerProcedimentos(valor: unknown, erros: string[]): ProcedimentoCatalogo
       erros.push(`procedimentos[${indice}].valor_referencia deve ser um número não negativo`);
       return;
     }
+    // §4.5/#ac-8: o valor precisa ser representável em centavos. O hash versiona
+    // o número bruto, então aceitar uma fração de centavo e arredondá-la em
+    // silêncio faria o procedimento entregue divergir da versão que o rotula.
+    if (Number(referencia.toFixed(2)) !== referencia) {
+      erros.push(`procedimentos[${indice}].valor_referencia deve ser representável em centavos`);
+      return;
+    }
     const centavos = Math.round(referencia * 100);
     if (!Number.isSafeInteger(centavos)) {
       erros.push(`procedimentos[${indice}].valor_referencia excede o inteiro seguro em centavos`);
