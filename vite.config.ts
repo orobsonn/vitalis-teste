@@ -15,6 +15,5 @@ export default defineConfig({
   plugins: [react(), cloudflare(), tailwindcss()],
   test: {
     include: ["tests/**/*.test.ts"],
-    passWithNoTests: true,
   },
 });
