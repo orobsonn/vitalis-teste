@@ -13,43 +13,43 @@ import { COLUNAS_GUIA, type ColunaGuia } from "./contratos";
 export const LIMITACAO_GLOBAL_DURACAO_MAXIMA = "duracao_maxima_autorizacao_nao_verificavel";
 
 export interface ProcedimentoCatalogo {
-  codigo: string;
-  descricao: string;
-  valorReferenciaCentavos: number;
+  readonly codigo: string;
+  readonly descricao: string;
+  readonly valorReferenciaCentavos: number;
 }
 
 export interface ConvenioCatalogo {
-  nome: string;
-  camposObrigatorios: ColunaGuia[];
-  validadeMaximaDias: number;
-  limiteSessoes: number;
-  procedimentosCobertos: string[];
-  prazoEnvioDias: number;
-  observacao: string;
+  readonly nome: string;
+  readonly camposObrigatorios: readonly ColunaGuia[];
+  readonly validadeMaximaDias: number;
+  readonly limiteSessoes: number;
+  readonly procedimentosCobertos: readonly string[];
+  readonly prazoEnvioDias: number;
+  readonly observacao: string;
 }
 
 export interface Catalogo {
-  versao: string;
-  hash: string;
-  regrasVersao: string;
-  convenios: ConvenioCatalogo[];
-  procedimentos: ProcedimentoCatalogo[];
-  limitacoesGlobais: string[];
-  definicoes: Record<string, string>;
+  readonly versao: string;
+  readonly hash: string;
+  readonly regrasVersao: string;
+  readonly convenios: readonly ConvenioCatalogo[];
+  readonly procedimentos: readonly ProcedimentoCatalogo[];
+  readonly limitacoesGlobais: readonly string[];
+  readonly definicoes: Readonly<Record<string, string>>;
 }
 
 export type ResultadoCatalogo = { ok: true; catalogo: Catalogo } | { ok: false; erros: string[] };
 
 export interface ConsultaRegra {
-  cobertura: "coberto" | "nao_coberto" | "indefinido";
-  procedimento: ProcedimentoCatalogo | null;
-  camposObrigatorios: ColunaGuia[];
-  validadeMaximaDias: number;
-  limiteSessoes: number;
-  prazoEnvioDias: number;
-  observacao: string;
-  limitacoes: string[];
-  regrasVersao: string;
+  readonly cobertura: "coberto" | "nao_coberto" | "indefinido";
+  readonly procedimento: ProcedimentoCatalogo | null;
+  readonly camposObrigatorios: readonly ColunaGuia[];
+  readonly validadeMaximaDias: number;
+  readonly limiteSessoes: number;
+  readonly prazoEnvioDias: number;
+  readonly observacao: string;
+  readonly limitacoes: readonly string[];
+  readonly regrasVersao: string;
 }
 
 export function normalizarChave(texto: string): string {
@@ -230,6 +230,22 @@ function formatarErro(erro: unknown): string {
   return "erro nao inspecionavel";
 }
 
+/**
+ * Congela recursivamente um valor JSON puro já validado (o snapshot do catálogo
+ * é livre de ciclos), garantindo que a árvore devolvida por `carregarCatalogo`
+ * não possa divergir em silêncio do `hash`/`regrasVersao` que a rotulam.
+ * `Object.freeze` sozinho é raso; por isso o helper percorre cada objeto e array.
+ */
+function congelarProfundamente<T>(valor: T): T {
+  if (valor !== null && typeof valor === "object") {
+    for (const chave of Object.keys(valor as Record<string, unknown>)) {
+      congelarProfundamente((valor as Record<string, unknown>)[chave]);
+    }
+    Object.freeze(valor);
+  }
+  return valor;
+}
+
 /** Valida a estrutura e devolve o catálogo versionado, ou os erros encontrados. */
 export function carregarCatalogo(json: unknown): ResultadoCatalogo {
   try {
@@ -290,7 +306,7 @@ function validarCatalogo(json: unknown): ResultadoCatalogo {
 
   return {
     ok: true,
-    catalogo: {
+    catalogo: congelarProfundamente({
       versao: versao as string,
       hash,
       regrasVersao: `${versao as string}#${hash}`,
@@ -298,7 +314,7 @@ function validarCatalogo(json: unknown): ResultadoCatalogo {
       procedimentos,
       limitacoesGlobais,
       definicoes: lerDefinicoes(json["definicoes"]),
-    },
+    }),
   };
 }
 
