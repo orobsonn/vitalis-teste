@@ -63,3 +63,29 @@ export type {
   CodigoErroExtracao,
   ResultadoValidacaoExtracao,
 } from "./validacao";
+
+export {
+  JANELA_PADRAO_MS,
+  LIMITE_PADRAO_CHAMADAS,
+  criarQuotaDeChamadas,
+} from "./quota";
+export type {
+  ObservadorContadores,
+  OpcoesQuotaDeChamadas,
+  QuotaDeChamadas,
+} from "./quota";
+
+export {
+  CHAVES_PERMITIDAS,
+  CLASSIFICACOES_ESTAVEIS,
+  COMPRIMENTO_MAXIMO_CACHE_PREFIXO,
+  criarRegistradorRedigido,
+} from "./observabilidade";
+export type {
+  CamposPermitidos,
+  ChavePermitida,
+  ClassificacaoEstavel,
+  EventoRedigido,
+  OpcoesRegistradorRedigido,
+  RegistradorRedigido,
+} from "./observabilidade";
