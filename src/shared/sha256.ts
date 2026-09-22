@@ -30,7 +30,10 @@ export function codificarUtf8(texto: string): Uint8Array {
   const bytes: number[] = [];
   for (const caractere of texto) {
     const ponto = caractere.codePointAt(0) ?? 0;
-    if (ponto < 0x80) {
+    if (ponto >= 0xd800 && ponto <= 0xdfff) {
+      // Surrogate isolado (UTF-16 inválido): substitui por U+FFFD, como TextEncoder.
+      bytes.push(0xef, 0xbf, 0xbd);
+    } else if (ponto < 0x80) {
       bytes.push(ponto);
     } else if (ponto < 0x800) {
       bytes.push(0xc0 | (ponto >> 6), 0x80 | (ponto & 0x3f));

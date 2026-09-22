@@ -31,6 +31,7 @@ interface RegistroCsv {
   campos: string[];
   textoCru: string;
   numeroLinha: number;
+  aspasAbertas: boolean;
 }
 
 function dividirRegistros(entrada: string): RegistroCsv[] {
@@ -49,11 +50,11 @@ function dividirRegistros(entrada: string): RegistroCsv[] {
     campo = "";
   };
 
-  const concluirRegistro = (): void => {
+  const concluirRegistro = (aspasAbertas: boolean): void => {
     concluirCampo();
     const linhaEmBranco = campos.length === 1 && campos[0] === "" && textoCru === "";
     if (!linhaEmBranco) {
-      registros.push({ campos, textoCru, numeroLinha: linhaInicial });
+      registros.push({ campos, textoCru, numeroLinha: linhaInicial, aspasAbertas });
     }
     campos = [];
     textoCru = "";
@@ -97,7 +98,7 @@ function dividirRegistros(entrada: string): RegistroCsv[] {
       continue;
     }
     if (caractere === "\r" || caractere === "\n") {
-      concluirRegistro();
+      concluirRegistro(false);
       indice += caractere === "\r" && texto[indice + 1] === "\n" ? 2 : 1;
       numeroLinha += 1;
       linhaInicial = numeroLinha;
@@ -108,7 +109,7 @@ function dividirRegistros(entrada: string): RegistroCsv[] {
     indice += 1;
   }
 
-  concluirRegistro();
+  concluirRegistro(emAspas);
   return registros;
 }
 
@@ -120,6 +121,13 @@ function montarOriginal(campos: readonly string[]): GuiaOriginal {
   return original;
 }
 
+function cabecalhoEsperado(cabecalho: readonly string[]): boolean {
+  return (
+    cabecalho.length === COLUNAS_GUIA.length &&
+    COLUNAS_GUIA.every((coluna, posicao) => cabecalho[posicao] === coluna)
+  );
+}
+
 export function parseGuiasCsv(texto: string): ResultadoCsv {
   const registros = dividirRegistros(texto);
   const [primeiro, ...demais] = registros;
@@ -128,7 +136,24 @@ export function parseGuiasCsv(texto: string): ResultadoCsv {
   const guias: LinhaGuiaCsv[] = [];
   const falhas: FalhaCsv[] = [];
 
+  if (!cabecalhoEsperado(cabecalho)) {
+    falhas.push({
+      numero: primeiro ? primeiro.numeroLinha : 1,
+      motivo: `cabecalho_invalido: esperado ${COLUNAS_GUIA.join(",")}`,
+      linhaOriginal: primeiro ? primeiro.textoCru : "",
+    });
+    return { cabecalho, guias, falhas };
+  }
+
   for (const registro of demais) {
+    if (registro.aspasAbertas) {
+      falhas.push({
+        numero: registro.numeroLinha,
+        motivo: "aspas_nao_terminadas: campo entre aspas sem fechamento até o fim do arquivo",
+        linhaOriginal: registro.textoCru,
+      });
+      continue;
+    }
     if (registro.campos.length !== COLUNAS_GUIA.length) {
       falhas.push({
         numero: registro.numeroLinha,

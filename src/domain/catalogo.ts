@@ -61,7 +61,9 @@ function ehObjeto(valor: unknown): valor is Record<string, unknown> {
 
 /** Digest SHA-256 do JSON canônico (chaves ordenadas recursivamente, UTF-8). */
 export function hashCatalogo(json: unknown): string {
-  return sha256Hex(textoCanonico(json));
+  // Um primitivo string no topo é o próprio texto canônico: os vetores
+  // congelados hasheiam os bytes crus da string, não a forma JSON citada.
+  return sha256Hex(typeof json === "string" ? json : textoCanonico(json));
 }
 
 function lerProcedimentos(valor: unknown, erros: string[]): ProcedimentoCatalogo[] {
@@ -148,7 +150,7 @@ function lerConvenios(valor: unknown, erros: string[]): ConvenioCatalogo[] {
 
     convenios.push({
       nome: nome as string,
-      camposObrigatorios: [...(obrigatorios as string[])],
+      camposObrigatorios: [...new Set(obrigatorios as string[])],
       validadeMaximaDias: validade as number,
       limiteSessoes: limite as number,
       procedimentosCobertos: [...(cobertos as string[])],
@@ -199,7 +201,14 @@ export function carregarCatalogo(json: unknown): ResultadoCatalogo {
     return { ok: false, erros };
   }
 
-  const hash = hashCatalogo(json);
+  let hash: string;
+  try {
+    hash = hashCatalogo(json);
+  } catch (erro) {
+    const mensagem = erro instanceof Error ? erro.message : String(erro);
+    erros.push(`catalogo invalido: nao foi possivel canonicalizar (${mensagem})`);
+    return { ok: false, erros };
+  }
   const limitacoesGlobais = [...new Set([...lerLimitacoes(json["limitacoes_globais"]), LIMITACAO_GLOBAL_DURACAO_MAXIMA])];
 
   return {

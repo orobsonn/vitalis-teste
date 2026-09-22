@@ -35,11 +35,11 @@ function validar(ano: number, mes: number, dia: number): DataCivil | null {
 /** Interpreta `DD/MM/AAAA` ou `AAAA-MM-DD`, rejeitando datas fora do calendário. */
 export function parseDataCivil(texto: string): DataCivil | null {
   const limpo = texto.trim();
-  const brasileira = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(limpo);
+  const brasileira = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(limpo);
   if (brasileira) {
     return validar(Number(brasileira[3]), Number(brasileira[2]), Number(brasileira[1]));
   }
-  const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(limpo);
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(limpo);
   if (iso) {
     return validar(Number(iso[1]), Number(iso[2]), Number(iso[3]));
   }
