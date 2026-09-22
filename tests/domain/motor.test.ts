@@ -164,6 +164,21 @@ const CATALOGO_JSON = {
   ],
 };
 
+// §4.8 define `procedimento_descricao_divergente` sem precondição de
+// preenchimento ("descrição difere da do catálogo, comparação normalizada;
+// preserva as duas versões"), mas §4.6/#ac-21 fixa a matriz única: "obrigatório
+// e vazio ⇒ só `campo_obrigatorio_ausente`". Quando o convênio declara
+// `procedimento_descricao` como obrigatório, a matriz §4.6/#ac-21 tem
+// precedência para a célula vazia; §4.8 vale em todo o resto (não exigido e
+// vazio, ou preenchido e divergente).
+const CATALOGO_DESCRICAO_OBRIGATORIA_JSON = {
+  ...CATALOGO_JSON,
+  convenios: CATALOGO_JSON.convenios.map((convenio) => ({
+    ...convenio,
+    campos_obrigatorios: [...convenio.campos_obrigatorios, "procedimento_descricao"],
+  })),
+};
+
 const ORIENTACAO_VENCIDA =
   "Atualize a autorização: a validade termina antes da data do atendimento.";
 const ORIENTACAO_SESSAO =
@@ -175,6 +190,22 @@ function catalogo(): Catalogo {
     throw new Error(`catálogo sintético deveria ser válido: ${resultado.erros.join("; ")}`);
   }
   return resultado.catalogo;
+}
+
+function catalogoDescricaoObrigatoria(): Catalogo {
+  const resultado = api.carregarCatalogo(CATALOGO_DESCRICAO_OBRIGATORIA_JSON);
+  if (!resultado.ok) {
+    throw new Error(`catálogo sintético deveria ser válido: ${resultado.erros.join("; ")}`);
+  }
+  return resultado.catalogo;
+}
+
+function verificarComDescricaoObrigatoria(
+  overrides: Partial<Record<Coluna, string>> = {},
+): { guia: GuiaNormalizada; resultado: ResultadoVerificacao } {
+  const guia = api.normalizarGuia(linhaBase(overrides));
+  const resultado = api.verificarGuia(guia, catalogoDescricaoObrigatoria());
+  return { guia, resultado };
 }
 
 function linhaBase(overrides: Partial<Record<Coluna, string>> = {}): LinhaGuiaCsv {
@@ -242,6 +273,13 @@ describe("verificarGuia — fronteiras inclusivas", () => {
     const prazoIgual = verificar({ data_lancamento: "2026-09-09" });
     expect(semPendencia(prazoIgual.resultado)).toEqual([]);
     expect(prazoIgual.resultado.decisao).toBe("OK");
+    // A convenção de dias corridos é política do exercício: em todo cálculo de
+    // prazo verificável a limitação aparece exatamente uma vez, nunca duplicada.
+    expect(
+      prazoIgual.resultado.limitacoes.filter(
+        (item) => item === "prazo_como_politica_do_exercicio",
+      ),
+    ).toHaveLength(1);
 
     // Guia inédita segue exatamente as regras, sem consulta por ID.
     expect(validadeIgual.guia.id).toBe("SYN-MOTOR-0001");
@@ -296,6 +334,17 @@ describe("verificarGuia — fronteiras inclusivas", () => {
     expect(pendencia!.regra.length).toBeGreaterThan(0);
     expect(pendencia!.evidencia.length).toBeGreaterThan(0);
     expect(resultado.decisao).toBe("PENDENTE");
+    expect(
+      resultado.limitacoes.filter((item) => item === "prazo_como_politica_do_exercicio"),
+    ).toHaveLength(1);
+    // A regra atribui a convenção de dias corridos à política do exercício,
+    // não a uma regra adicional fornecida pelo convênio.
+    const regraNormalizada = pendencia!.regra
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase();
+    expect(regraNormalizada).toContain("politica do exercicio");
+    expect(regraNormalizada).toContain("dias corridos");
   });
 });
 
@@ -325,6 +374,143 @@ describe("verificarGuia — alertas e incoerências", () => {
     const texto = JSON.stringify(pendencia);
     expect(texto).toContain("Descrição divergente");
     expect(texto).toContain("Sessão de fisioterapia musculoesquelética");
+  });
+
+  it("descrição vazia ou apenas com espaços em procedimento catalogado também diverge e preserva as duas versões", () => {
+    expect(typeof api.verificarGuia).toBe("function");
+
+    const descricaoCatalogo = "Sessão de fisioterapia musculoesquelética";
+    const casos: Array<{ rotulo: string; descricao: string }> = [
+      { rotulo: "vazia", descricao: "" },
+      { rotulo: "somente espaços", descricao: "   " },
+    ];
+
+    for (const caso of casos) {
+      const { guia, resultado } = verificar({ procedimento_descricao: caso.descricao });
+
+      // O procedimento está catalogado: a ausência de texto não pode pular a
+      // comparação com a descrição do catálogo.
+      expect(guia.procedimentoCodigo).toBe("50000470");
+      expect(resultado.decisao).toBe("PENDENTE");
+
+      const divergencias = resultado.motivos.filter(
+        (item) => item.codigo === "procedimento_descricao_divergente",
+      );
+      expect(divergencias).toHaveLength(1);
+
+      const pendencia = divergencias[0]!;
+      expect(pendencia.severidade).toBe("pendencia");
+      expect(pendencia.campos).toEqual([
+        "procedimento_codigo",
+        "procedimento_descricao",
+      ]);
+
+      // A evidência preserva as duas versões: o valor cru da guia (vazio ou
+      // apenas espaços) e a descrição do catálogo.
+      expect(pendencia.evidencia).toContain("Guia:");
+      expect(pendencia.evidencia).toContain(`Guia: "${caso.descricao}"`);
+      expect(pendencia.evidencia).toContain(descricaoCatalogo);
+    }
+  });
+
+  it("descrição obrigatória e vazia emite só campo_obrigatorio_ausente, e preenchida divergente ainda diverge", () => {
+    expect(typeof api.verificarGuia).toBe("function");
+
+    // §4.6/#ac-21: "obrigatório e vazio ⇒ só `campo_obrigatorio_ausente`".
+    // A matriz única vence sobre §4.8 quando a descrição é exigida e está vazia.
+    const vazia = verificarComDescricaoObrigatoria({ procedimento_descricao: "" });
+    expect(vazia.guia.procedimentoCodigo).toBe("50000470");
+    expect(vazia.resultado.decisao).toBe("PENDENTE");
+
+    const ausencias = vazia.resultado.motivos.filter(
+      (item) => item.codigo === "campo_obrigatorio_ausente",
+    );
+    expect(ausencias).toHaveLength(1);
+    expect(ausencias[0]!.campos).toContain("procedimento_descricao");
+
+    // A mesma célula vazia não pode gerar também a divergência (dedup §4.6/#ac-21).
+    expect(
+      vazia.resultado.motivos.filter(
+        (item) => item.codigo === "procedimento_descricao_divergente",
+      ),
+    ).toHaveLength(0);
+
+    // §4.8 continua valendo para o campo obrigatório preenchido e divergente:
+    // a comparação normalizada roda e nenhuma ausência é inventada.
+    const divergente = verificarComDescricaoObrigatoria({
+      procedimento_descricao: "Descrição divergente",
+    });
+    expect(divergente.resultado.decisao).toBe("PENDENTE");
+    expect(
+      divergente.resultado.motivos.filter(
+        (item) => item.codigo === "procedimento_descricao_divergente",
+      ),
+    ).toHaveLength(1);
+    expect(
+      divergente.resultado.motivos.filter(
+        (item) =>
+          item.codigo === "campo_obrigatorio_ausente" &&
+          item.campos.includes("procedimento_descricao"),
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("descrição divergente independe do convênio: procedimento catalogado ainda compara sem convênio utilizável", () => {
+    expect(typeof api.verificarGuia).toBe("function");
+
+    // §4.8: a comparação normalizada da descrição depende apenas de o
+    // procedimento estar catalogado. #ac-24/#ac-26 exigem preservar
+    // inconsistências independentes; convênio ausente/desconhecido não pode
+    // suprimir o motivo adicional.
+    const descricaoCatalogo = "Sessão de fisioterapia musculoesquelética";
+    const descricaoGuia = "Descrição divergente";
+    const casos: Array<{
+      rotulo: string;
+      overrides: Partial<Record<Coluna, string>>;
+      codigoConvenio: string;
+    }> = [
+      {
+        rotulo: "convênio vazio",
+        overrides: { convenio: "" },
+        codigoConvenio: "convenio_ausente",
+      },
+      {
+        rotulo: "convênio não catalogado",
+        overrides: { convenio: "Inexistente" },
+        codigoConvenio: "convenio_nao_catalogado",
+      },
+    ];
+
+    for (const caso of casos) {
+      const { guia, resultado } = verificar({
+        ...caso.overrides,
+        procedimento_descricao: descricaoGuia,
+      });
+
+      // Só o convênio ficou inutilizável; o procedimento segue catalogado.
+      expect(guia.procedimentoCodigo).toBe("50000470");
+      expect(resultado.decisao).toBe("PENDENTE");
+
+      const divergencias = resultado.motivos.filter(
+        (item) => item.codigo === "procedimento_descricao_divergente",
+      );
+      expect(divergencias).toHaveLength(1);
+
+      const pendencia = divergencias[0]!;
+      expect(pendencia.severidade).toBe("pendencia");
+      expect(pendencia.campos).toEqual(
+        expect.arrayContaining(["procedimento_codigo", "procedimento_descricao"]),
+      );
+      // A evidência preserva as duas versões: o texto cru da guia e o do catálogo.
+      expect(pendencia.evidencia).toContain(descricaoGuia);
+      expect(pendencia.evidencia).toContain(descricaoCatalogo);
+
+      // O motivo do convênio é preservado: o novo motivo é adicional, não substitui.
+      expect(motivo(resultado, caso.codigoConvenio)).toBeDefined();
+
+      // A limitação preexistente de cobertura continua quando o convênio não é utilizável.
+      expect(resultado.limitacoes).toContain("cobertura_indefinida");
+    }
   });
 
   it("lançamento anterior ao atendimento gera cronologia_incoerente", () => {

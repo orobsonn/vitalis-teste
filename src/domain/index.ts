@@ -16,6 +16,7 @@ export {
   consultarRegra,
   hashCatalogo,
   LIMITACAO_GLOBAL_DURACAO_MAXIMA,
+  LIMITACAO_SOMA_NAO_VERIFICAVEL,
   normalizarChave,
 } from "./catalogo";
 export type {
