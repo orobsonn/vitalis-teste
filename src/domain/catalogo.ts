@@ -190,8 +190,19 @@ function lerConvenios(valor: unknown, erros: string[]): ConvenioCatalogo[] {
   return convenios;
 }
 
-function lerDefinicoes(valor: unknown): Record<string, string> {
+/**
+ * Lê `definicoes` de forma estrita: a chave ausente é válida e resulta em `{}`,
+ * com membros textuais copiados como estão (inclusive textos em branco); um
+ * valor presente que não seja um objeto puro, ou um objeto com qualquer membro
+ * que não seja texto, acumula erro e impede o catálogo parcial. Nunca descarta
+ * um membro em silêncio, para não divergir do hash que inclui o valor bruto.
+ */
+function lerDefinicoes(valor: unknown, erros: string[]): Record<string, string> {
+  if (valor === undefined) {
+    return {};
+  }
   if (!ehObjeto(valor)) {
+    erros.push("definicoes deve ser um objeto de textos");
     return {};
   }
   const definicoes: Record<string, string> = {};
@@ -199,6 +210,8 @@ function lerDefinicoes(valor: unknown): Record<string, string> {
     const item = valor[chave];
     if (typeof item === "string") {
       definicoes[chave] = item;
+    } else {
+      erros.push(`definicoes.${chave} deve ser um texto`);
     }
   }
   return definicoes;
@@ -290,6 +303,10 @@ function validarCatalogo(json: unknown): ResultadoCatalogo {
   // §4.5: a validação das limitações precisa acontecer antes do portão de
   // erros para que seus problemas façam parte do `{ok:false, erros}` devolvido.
   const limitacoes = lerLimitacoes(json["limitacoes_globais"], erros);
+  // §4.5: assim como as limitações, as definições são validadas antes do
+  // portão de erros para que um valor inválido faça parte do `{ok:false, erros}`
+  // devolvido, sem produzir um catálogo parcial divergente do hash.
+  const definicoes = lerDefinicoes(json["definicoes"], erros);
 
   const codigosDeProcedimento = new Set<string>();
   for (const procedimento of procedimentos) {
@@ -334,7 +351,7 @@ function validarCatalogo(json: unknown): ResultadoCatalogo {
       convenios,
       procedimentos,
       limitacoesGlobais,
-      definicoes: lerDefinicoes(json["definicoes"]),
+      definicoes,
     }),
   };
 }
