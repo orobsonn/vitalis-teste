@@ -67,7 +67,33 @@ function ehIndiceDeArray(nome: string, comprimento: number): boolean {
   return Number.isInteger(numero) && numero >= 0 && numero < comprimento && String(numero) === nome;
 }
 
+/**
+ * Lê o comprimento do array a partir do próprio descritor `length`, sem tocar
+ * `valor.length` (que num Proxy dispara o trap `get`). Só aceita a forma de um
+ * array real: propriedade própria, de dados, não acessora, não enumerável e com
+ * inteiro não negativo seguro. Qualquer trap hostil propaga para a fronteira de
+ * `criarSnapshotJson`, que normaliza a falha em `ErroCanonicalizacao`.
+ */
+function comprimentoDeArray(valor: object): number {
+  const descritor = Object.getOwnPropertyDescriptor(valor, "length");
+  if (!descritor) {
+    throw new ErroCanonicalizacao("array sem propriedade própria length");
+  }
+  if (descritor.enumerable) {
+    throw new ErroCanonicalizacao("array com length enumerável não é JSON");
+  }
+  if (descritor.get !== undefined || descritor.set !== undefined) {
+    throw new ErroCanonicalizacao("array com length acessor não é JSON");
+  }
+  const comprimento = descritor.value;
+  if (typeof comprimento !== "number" || !Number.isSafeInteger(comprimento) || comprimento < 0) {
+    throw new ErroCanonicalizacao("array sem comprimento inteiro não negativo");
+  }
+  return comprimento;
+}
+
 function copiarArray(valor: unknown[], visitados: Set<object>): unknown[] {
+  const comprimento = comprimentoDeArray(valor);
   for (const nome of Reflect.ownKeys(valor)) {
     if (typeof nome === "symbol") {
       throw new ErroCanonicalizacao("chave símbolo não é um valor JSON");
@@ -75,7 +101,7 @@ function copiarArray(valor: unknown[], visitados: Set<object>): unknown[] {
     if (nome === "length") {
       continue;
     }
-    if (!ehIndiceDeArray(nome, valor.length)) {
+    if (!ehIndiceDeArray(nome, comprimento)) {
       throw new ErroCanonicalizacao(`array possui propriedade não indexada "${nome}"`);
     }
     const descritor = Object.getOwnPropertyDescriptor(valor, nome);
@@ -83,8 +109,8 @@ function copiarArray(valor: unknown[], visitados: Set<object>): unknown[] {
       throw new ErroCanonicalizacao(`array possui propriedade não enumerável "${nome}"`);
     }
   }
-  const copia = new Array<unknown>(valor.length);
-  for (let indice = 0; indice < valor.length; indice += 1) {
+  const copia = new Array<unknown>(comprimento);
+  for (let indice = 0; indice < comprimento; indice += 1) {
     const descritor = Object.getOwnPropertyDescriptor(valor, indice);
     if (!descritor) {
       throw new ErroCanonicalizacao(`array esparso no índice ${indice}`);
@@ -160,13 +186,44 @@ function copiarSnapshot(valor: unknown, visitados: Set<object>): unknown {
   }
 }
 
+/** Mensagem constante para falhas de entrada, sem inspecionar o valor lançado. */
+const MENSAGEM_ENTRADA_INVALIDA = "entrada não é um valor JSON canônico";
+
+/**
+ * Checa a marca de `ErroCanonicalizacao` sem deixar um valor hostil lançar — por
+ * exemplo, um Proxy com trap `getPrototypeOf` hostil faria o próprio `instanceof`
+ * propagar uma exceção estrangeira.
+ */
+function ehErroCanonicalizacao(erro: unknown): boolean {
+  try {
+    return erro instanceof ErroCanonicalizacao;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Copia a entrada para dados JSON puros exatamente uma vez, rejeitando qualquer
  * parte não JSON (undefined, funções, símbolos, bigints, números não finitos,
  * objetos com protótipo estranho, arrays esparsos/com propriedades extras,
  * acessores e ciclos). Cada parte válida é lida uma única vez, de modo que a
  * validação, o hash e o catálogo derivem do mesmo snapshot imutável.
+ *
+ * A fronteira sancionada é dado JSON. Entradas respaldadas por Proxy passam
+ * pelos traps reflexivos (`ownKeys`, `getPrototypeOf`, `getOwnPropertyDescriptor`)
+ * dentro deste `try`, de forma que qualquer falha deles vira o `ErroCanonicalizacao`
+ * tipado em vez de escapar como erro estrangeiro. Um Proxy deliberadamente
+ * inconstante pode ainda devolver snapshots diferentes em chamadas separadas — o
+ * JavaScript padrão não permite detectar um Proxy; por isso `carregarCatalogo`
+ * tira o snapshot uma única vez e deriva regras e `regrasVersao` da mesma cópia.
  */
 export function criarSnapshotJson(valor: unknown): unknown {
-  return copiarSnapshot(valor, new Set<object>());
+  try {
+    return copiarSnapshot(valor, new Set<object>());
+  } catch (erro) {
+    if (ehErroCanonicalizacao(erro)) {
+      throw erro;
+    }
+    throw new ErroCanonicalizacao(MENSAGEM_ENTRADA_INVALIDA);
+  }
 }
