@@ -16,7 +16,16 @@
  * - `cache_prefixo` é normalizado para minúsculas, aceita apenas hex `[0-9a-f]`
  *   e é truncado a 12 caracteres — o sufixo do hash nunca vaza.
  * - `duracao_ms`, `tentativas` e `itens` só passam como `number` finito.
- * - `evento` vem do primeiro argumento, nunca de `campos.evento`.
+ * - `evento` vem do primeiro argumento, nunca de `campos.evento`, e precisa ser
+ *   um **nome de operação estável** (`FORMATO_EVENTO_ESTAVEL`, até
+ *   `COMPRIMENTO_MAXIMO_EVENTO` caracteres): texto livre, mensagem do provedor,
+ *   objeto ou string fora do formato descarta o evento inteiro antes de
+ *   registrar. Não é canal de dados — é o nome controlado pelo desenvolvedor.
+ * - `estado` só atravessa se pertencer ao conjunto fechado `ESTADOS_CHECAGEM`
+ *   de §3.6 (`nao_aplicavel`, `completa`, `incompleta`).
+ * - Cada campo é lido apenas como **propriedade própria de dados** via
+ *   `Object.getOwnPropertyDescriptor`: propriedades herdadas e accessors/getters
+ *   não são avaliados nem atravessam.
  */
 
 import type { ObservadorContadores } from "./quota";
@@ -45,6 +54,16 @@ export const CLASSIFICACOES_ESTAVEIS = [
 
 /** Código estável pertencente ao conjunto fechado de §3.10. */
 export type ClassificacaoEstavel = (typeof CLASSIFICACOES_ESTAVEIS)[number];
+
+/** Estados fechados da checagem textual aceitos em `estado` (§3.6). */
+export const ESTADOS_CHECAGEM = [
+  "nao_aplicavel",
+  "completa",
+  "incompleta",
+] as const;
+
+/** Estado de checagem textual pertencente ao conjunto fechado de §3.6. */
+export type EstadoChecagem = (typeof ESTADOS_CHECAGEM)[number];
 
 /** Chave permitida no registro redigido (§3.10). */
 export type ChavePermitida = (typeof CHAVES_PERMITIDAS)[number];
@@ -79,32 +98,85 @@ export interface OpcoesRegistradorRedigido {
 /** Comprimento máximo do prefixo hex observável de `cache_prefixo` (§3.10). */
 export const COMPRIMENTO_MAXIMO_CACHE_PREFIXO = 12;
 
+/** Comprimento máximo do nome de evento aceito pelo registrador (§3.10). */
+export const COMPRIMENTO_MAXIMO_EVENTO = 64;
+
+/**
+ * Formato de nome de evento estável: identificador em minúsculas iniciado por
+ * letra, com dígitos e `_` como separador. Texto livre (espaços, maiúsculas,
+ * acentos, pontuação ou mensagem crua do provedor) não atravessa.
+ */
+export const FORMATO_EVENTO_ESTAVEL = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
+
 const CONJUNTO_CLASSIFICACOES: ReadonlySet<string> = new Set(
   CLASSIFICACOES_ESTAVEIS,
 );
+
+const CONJUNTO_ESTADOS: ReadonlySet<string> = new Set(ESTADOS_CHECAGEM);
 
 const CHAVE_HEXADECIMAL = /^[0-9a-f]+$/;
 
 const CAMPOS_NUMERICOS = ["duracao_ms", "tentativas", "itens"] as const;
 
 /**
+ * Lê um campo como **propriedade própria de dados**. `getOwnPropertyDescriptor`
+ * só enxerga propriedades próprias (herdadas são ignoradas) e accessors/getters
+ * não têm `value`, portanto nunca são avaliados nem atravessam. Fonte que não é
+ * objeto é tratada como vazia.
+ */
+function lerCampoProprio(campos: unknown, chave: string): unknown {
+  if (
+    campos === null ||
+    (typeof campos !== "object" && typeof campos !== "function")
+  ) {
+    return undefined;
+  }
+
+  const descritor = Object.getOwnPropertyDescriptor(campos, chave);
+  if (descritor === undefined || !("value" in descritor)) {
+    return undefined;
+  }
+
+  return descritor.value;
+}
+
+/** Aceita somente nome de operação estável de §3.10 (nunca texto livre). */
+function ehNomeDeEventoEstavel(evento: unknown): evento is string {
+  return (
+    typeof evento === "string" &&
+    evento.length > 0 &&
+    evento.length <= COMPRIMENTO_MAXIMO_EVENTO &&
+    FORMATO_EVENTO_ESTAVEL.test(evento)
+  );
+}
+
+/**
  * Redige os campos candidatos em um `EventoRedigido`. Cada chave é avaliada
  * isoladamente contra a allowlist e o tipo esperado; nada é copiado em bloco.
+ * Devolve `undefined` quando o `evento` não é um nome estável — nesse caso o
+ * evento inteiro é descartado antes de registrar.
  */
-function redigir(evento: string, campos: CamposPermitidos): EventoRedigido {
+function redigir(
+  evento: unknown,
+  campos: unknown,
+): EventoRedigido | undefined {
+  if (!ehNomeDeEventoEstavel(evento)) {
+    return undefined;
+  }
+
   const redigido: EventoRedigido = { evento };
 
-  const estado = campos.estado;
-  if (typeof estado === "string") {
+  const estado = lerCampoProprio(campos, "estado");
+  if (typeof estado === "string" && CONJUNTO_ESTADOS.has(estado)) {
     redigido.estado = estado;
   }
 
-  const codigo = campos.codigo;
+  const codigo = lerCampoProprio(campos, "codigo");
   if (typeof codigo === "string" && CONJUNTO_CLASSIFICACOES.has(codigo)) {
     redigido.codigo = codigo;
   }
 
-  const prefixo = campos.cache_prefixo;
+  const prefixo = lerCampoProprio(campos, "cache_prefixo");
   if (typeof prefixo === "string") {
     const normalizado = prefixo.toLowerCase();
     if (CHAVE_HEXADECIMAL.test(normalizado)) {
@@ -116,7 +188,7 @@ function redigir(evento: string, campos: CamposPermitidos): EventoRedigido {
   }
 
   for (const chave of CAMPOS_NUMERICOS) {
-    const valor = campos[chave];
+    const valor = lerCampoProprio(campos, chave);
     if (typeof valor === "number" && Number.isFinite(valor)) {
       redigido[chave] = valor;
     }
@@ -137,7 +209,12 @@ export function criarRegistradorRedigido(
 
   return {
     info(evento: string, campos: CamposPermitidos): void {
-      destino(redigir(evento, campos));
+      const redigido = redigir(evento, campos);
+      if (redigido === undefined) {
+        return;
+      }
+
+      destino(redigido);
     },
   };
 }
