@@ -136,6 +136,15 @@ export function parseGuiasCsv(texto: string): ResultadoCsv {
   const guias: LinhaGuiaCsv[] = [];
   const falhas: FalhaCsv[] = [];
 
+  if (primeiro && primeiro.aspasAbertas) {
+    falhas.push({
+      numero: primeiro.numeroLinha,
+      motivo: "aspas_nao_terminadas: campo entre aspas sem fechamento até o fim do arquivo",
+      linhaOriginal: primeiro.textoCru,
+    });
+    return { cabecalho, guias, falhas };
+  }
+
   if (!cabecalhoEsperado(cabecalho)) {
     falhas.push({
       numero: primeiro ? primeiro.numeroLinha : 1,
