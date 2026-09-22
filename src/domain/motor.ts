@@ -234,10 +234,7 @@ export function verificarGuia(
         `O procedimento ${procedimento.codigo} não está na cobertura do convênio ${convenio.nome}.`,
       );
     }
-    if (
-      guia.procedimentoDescricao.trim() !== "" &&
-      normalizarChave(guia.procedimentoDescricao) !== normalizarChave(procedimento.descricao)
-    ) {
+    if (normalizarChave(guia.procedimentoDescricao) !== normalizarChave(procedimento.descricao)) {
       criarMotivo(
         "procedimento_descricao_divergente",
         "pendencia",
