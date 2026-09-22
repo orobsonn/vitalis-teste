@@ -36,6 +36,14 @@ const BASE_CANONICA = "http://canonical.invalid";
  * parser de URL nao normaliza; por isso o caminho decodificado e resolvido
  * contra uma base fixa antes da classificacao. Assim `/x/%2e%2e%2fapi/x` vira
  * `/api/x` e nao escapa do namespace reservado.
+ *
+ * A resolucao e feita como caminho, nunca como referencia relativa: quando o
+ * caminho decodificado comeca com `//`, a API de URL o interpretaria como
+ * *network-path reference* (autoridade/host) e mudaria o pathname —
+ * `/%2ffoo/api/x` viraria `/api/x` e bloquearia indevidamente navegacao
+ * legitima para `//foo/api/x`. Prefixar `/.` mantem o caminho literal
+ * (`new URL("/.//foo/api/x", base).pathname === "//foo/api/x"`) sem alterar a
+ * resolucao normal de `.`/`..` (`/x/../api/x` continua `/api/x`).
  */
 function pathnameCanonicalizado(url: string): string | undefined {
   let decodificado: string;
@@ -53,7 +61,12 @@ function pathnameCanonicalizado(url: string): string | undefined {
     const semDelimitadores = decodificado.replace(/[?#]/g, (caractere) =>
       encodeURIComponent(caractere),
     );
-    return new URL(semDelimitadores, BASE_CANONICA).pathname;
+    // Evita que um caminho iniciado por `//` seja lido como network-path
+    // reference (host), o que mascararia o caminho HTTP real.
+    const comoCaminho = semDelimitadores.startsWith("//")
+      ? `/.${semDelimitadores}`
+      : semDelimitadores;
+    return new URL(comoCaminho, BASE_CANONICA).pathname;
   } catch {
     return undefined;
   }
