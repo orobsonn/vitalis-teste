@@ -821,6 +821,74 @@
         "ok": false,
         "erro": "evidencia_invalida"
       }
+    },
+    {
+      "nome": "evidencia-sem-letras-nem-digitos",
+      "texto": "Registro interno: ......",
+      "resposta": {
+        "sinais": [
+          {
+            "tipo": "nota_administrativa",
+            "evidencia": "......"
+          }
+        ],
+        "situacao": {
+          "autorizacao": "nenhuma",
+          "modalidade": "nenhuma",
+          "procedimento": "nenhuma",
+          "reagendamento": "nenhum"
+        },
+        "ambiguidades": []
+      },
+      "esperado": {
+        "ok": false,
+        "erro": "evidencia_invalida"
+      }
+    },
+    {
+      "nome": "evidencia-alnum-insuficiente",
+      "texto": "Código informado: 1.....",
+      "resposta": {
+        "sinais": [
+          {
+            "tipo": "nota_administrativa",
+            "evidencia": "1....."
+          }
+        ],
+        "situacao": {
+          "autorizacao": "nenhuma",
+          "modalidade": "nenhuma",
+          "procedimento": "nenhuma",
+          "reagendamento": "nenhum"
+        },
+        "ambiguidades": []
+      },
+      "esperado": {
+        "ok": false,
+        "erro": "evidencia_invalida"
+      }
+    },
+    {
+      "nome": "aceito-evidencia-minima",
+      "texto": "Protocolo 1234ab registrado.",
+      "resposta": {
+        "sinais": [
+          {
+            "tipo": "nota_administrativa",
+            "evidencia": "1234ab"
+          }
+        ],
+        "situacao": {
+          "autorizacao": "nenhuma",
+          "modalidade": "nenhuma",
+          "procedimento": "nenhuma",
+          "reagendamento": "nenhum"
+        },
+        "ambiguidades": []
+      },
+      "esperado": {
+        "ok": true
+      }
     }
   ],
   "adversariais": [
