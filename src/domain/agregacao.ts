@@ -12,11 +12,9 @@
  * resultado independente da ordem de entrada.
  */
 
-import { LIMITACAO_GLOBAL_DURACAO_MAXIMA } from "./catalogo";
+import { LIMITACAO_GLOBAL_DURACAO_MAXIMA, LIMITACAO_SOMA_NAO_VERIFICAVEL } from "./catalogo";
 import type { GuiaNormalizada } from "./normalizacao";
 import type { ResultadoVerificacao } from "./motor";
-
-export const LIMITACAO_SOMA_NAO_VERIFICAVEL = "soma_de_valores_nao_verificavel";
 
 export interface AgregacaoCorpus {
   ocorrencias: number;
@@ -73,14 +71,23 @@ export function agregarVerificacoes(
 
   // §4.5/#ac-18 e §4.9: as limitações globais validadas do catálogo chegam ao
   // agregado na ordem declarada, sem duplicatas, e a obrigatória entra apenas se
-  // ausente. `soma_de_valores_nao_verificavel` só é declarada no estouro real.
+  // ausente. A deduplicação usa um `Set` auxiliar, preservando a ordem declarada
+  // em O(n). O nome reservado à agregação é ignorado defensivamente ao copiar o
+  // catálogo, de modo que `soma_de_valores_nao_verificavel` só aparece quando o
+  // estouro é real.
   const limitacoesGlobais: string[] = [];
+  const limitacoesVistas = new Set<string>();
   const acrescentarLimitacao = (limitacao: string): void => {
-    if (!limitacoesGlobais.includes(limitacao)) {
-      limitacoesGlobais.push(limitacao);
+    if (limitacoesVistas.has(limitacao)) {
+      return;
     }
+    limitacoesVistas.add(limitacao);
+    limitacoesGlobais.push(limitacao);
   };
   for (const limitacao of limitacoesGlobaisDoCatalogo ?? []) {
+    if (limitacao === LIMITACAO_SOMA_NAO_VERIFICAVEL) {
+      continue;
+    }
     acrescentarLimitacao(limitacao);
   }
   acrescentarLimitacao(LIMITACAO_GLOBAL_DURACAO_MAXIMA);

@@ -12,6 +12,13 @@ import { COLUNAS_GUIA, type ColunaGuia } from "./contratos";
 
 export const LIMITACAO_GLOBAL_DURACAO_MAXIMA = "duracao_maxima_autorizacao_nao_verificavel";
 
+/**
+ * Limitação emitida apenas quando a soma da agregação estoura o inteiro seguro.
+ * É definida aqui (e não em `agregacao.ts`) para que o catálogo possa reservar o
+ * nome sem criar uma importação circular; a agregação importa deste módulo.
+ */
+export const LIMITACAO_SOMA_NAO_VERIFICAVEL = "soma_de_valores_nao_verificavel";
+
 export interface ProcedimentoCatalogo {
   readonly codigo: string;
   readonly descricao: string;
@@ -246,7 +253,8 @@ function lerDefinicoes(valor: unknown, erros: string[]): Record<string, string> 
 /**
  * Lê `limitacoes_globais` de forma estrita: a chave ausente é válida e não
  * acrescenta limitações próprias; um valor não-array, um membro que não seja
- * texto não vazio (após `trim`) ou um membro repetido acumula erro e impede o
+ * texto não vazio (após `trim`), um membro repetido ou o nome reservado à
+ * agregação (`soma_de_valores_nao_verificavel`) acumula erro e impede o
  * catálogo parcial. Nunca filtra em silêncio nem substitui o valor rejeitado.
  */
 function lerLimitacoes(valor: unknown, erros: string[]): string[] {
@@ -262,6 +270,16 @@ function lerLimitacoes(valor: unknown, erros: string[]): string[] {
   valor.forEach((item, indice) => {
     if (typeof item !== "string" || item.trim() === "") {
       erros.push(`limitacoes_globais[${indice}] deve ser um texto não vazio`);
+      return;
+    }
+    // §4.5/#ac-8: `soma_de_valores_nao_verificavel` é estado derivado de um
+    // estouro real da agregação, nunca uma limitação declarada pelo catálogo.
+    // Reservar o nome impede que o catálogo exponha a limitação de estouro sem
+    // que nenhum estouro exista.
+    if (item === LIMITACAO_SOMA_NAO_VERIFICAVEL) {
+      erros.push(
+        `limitacoes_globais[${indice}] usa o nome reservado "${LIMITACAO_SOMA_NAO_VERIFICAVEL}"`,
+      );
       return;
     }
     // §4.5/#ac-8: o hash versiona `item` duas vezes, mas a lista entregue
