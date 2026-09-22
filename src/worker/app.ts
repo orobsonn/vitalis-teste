@@ -24,6 +24,19 @@ function pertenceANamespaceReservado(pathname: string): boolean {
   );
 }
 
+/**
+ * Representacao canonicalizada (percent-decoded) do pathname usada apenas para
+ * classificar namespaces reservados. Retorna `undefined` quando o encoding e
+ * invalido para que a classificacao falhe fechado (404 JSON, sem assets).
+ */
+function pathnameCanonicalizado(url: string): string | undefined {
+  try {
+    return decodeURIComponent(new URL(url).pathname);
+  } catch {
+    return undefined;
+  }
+}
+
 function pedeJson(c: Context<{ Bindings: Env }>): boolean {
   const accept = c.req.header("accept");
   return typeof accept === "string" && accept.toLowerCase().includes("application/json");
@@ -45,14 +58,24 @@ function notFoundJson(c: Context<{ Bindings: Env }>): Response {
 export function createApp(env: Env): Hono<{ Bindings: Env }> {
   const app = new Hono<{ Bindings: Env }>();
 
+  // Guard global de metodo registrado antes de qualquer rota: o Hono converte
+  // HEAD em dispatch GET, entao `app.get("/health")` seria selecionado por
+  // `HEAD /health`. Aqui o metodo original e inspecionado antes do roteamento.
+  app.use("*", async (c, next) => {
+    if (c.req.method !== "GET") {
+      return notFoundJson(c);
+    }
+    await next();
+  });
+
   app.get("/health", (c) =>
     c.json({ status: "ok", service: SERVICO }, 200),
   );
 
   app.all("*", async (c) => {
-    const pathname = new URL(c.req.url).pathname;
+    const pathname = pathnameCanonicalizado(c.req.url);
 
-    if (c.req.method !== "GET") {
+    if (c.req.method !== "GET" || pathname === undefined) {
       return notFoundJson(c);
     }
 
