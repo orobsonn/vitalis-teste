@@ -29,7 +29,9 @@ const BASE_CANONICA = "http://canonical.invalid";
 
 /**
  * Limite de passes adicionais de decodificacao. Eles servem apenas para
- * CLASSIFICAR; a delegacao continua repassando o Request original.
+ * CLASSIFICAR; a delegacao continua repassando o Request original. Se o limite
+ * for atingido com escape percentual ainda remanescente, a classificacao falha
+ * fechado (ver `pathnameNavegavel`).
  */
 const PASSES_EXTRAS_MAXIMOS = 3;
 
@@ -91,6 +93,13 @@ function caminhoReservadoOuInseguro(caminho: string): boolean {
  * JSON sem tocar assets. Um escape invalido revelado por um passe extra
  * (`/rota%25x` -> `/rota%x`) interrompe a analise como NAO reservado, para nao
  * falhar fechado sobre navegacao legitima.
+ *
+ * Se o limite de passes for esgotado com escape percentual ainda remanescente,
+ * a classificacao falha fechado: um prefixo reservado apenas um nivel mais
+ * profundo (`/%2525252561pi/x`) nao pode ser provado inocente, entao o request
+ * vira 404 JSON em vez de alcancar assets. Sem esse corte, o `break` devolveria
+ * um caminho ainda codificado como se fosse navegacao legitima, vazando o
+ * namespace reservado para o fallback SPA.
  */
 function pathnameNavegavel(url: string): string | undefined {
   let caminho: string;
@@ -105,8 +114,11 @@ function pathnameNavegavel(url: string): string | undefined {
     if (caminhoReservadoOuInseguro(caminho)) {
       return undefined;
     }
-    if (!caminho.includes("%") || passe === PASSES_EXTRAS_MAXIMOS) {
+    if (!caminho.includes("%")) {
       break;
+    }
+    if (passe === PASSES_EXTRAS_MAXIMOS) {
+      return undefined;
     }
     try {
       caminho = decodeURIComponent(caminho);
