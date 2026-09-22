@@ -21,6 +21,10 @@
     {
       "binding": "OAUTH_KV",
       "id": "00000000000000000000000000000000"
+    },
+    {
+      "binding": "CACHE_SEMANTICO",
+      "id": "00000000000000000000000000000000"
     }
   ],
   "worker_loaders": [
