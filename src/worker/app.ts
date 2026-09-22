@@ -34,6 +34,20 @@ const CARACTERE_DE_CONTROLE = /[\u0000-\u001f\u007f]/;
 const ESCAPE_VALIDO = /%([0-9A-Fa-f]{2})/g;
 
 /**
+ * Guarda de recurso: maior pathname JA DECODIFICADO que a classificacao aceita.
+ *
+ * `pathnameNavegavel` reavalia `caminhoReservadoOuInseguro` (regex, `includes`
+ * e `new URL`) sobre o pathname inteiro a cada passe de decodificacao. Sem esse
+ * teto, uma entrada patologica com milhares de camadas de `%25` custaria
+ * O(N^2) antes do roteamento, para um unico GET nao autenticado. Limitando o
+ * caminho analisado a 1024 caracteres, o pior caso fica em ~(1024^2)/4
+ * operacoes, trivial para uma requisicao. Nenhuma rota de navegacao legitima
+ * chega perto desse tamanho; acima do teto a classificacao falha fechado
+ * (404 JSON sem tocar assets).
+ */
+const LIMITE_DE_CAMINHO_ANALISADO = 1024;
+
+/**
  * Decodificacao tolerante de UM passe: cada sequencia `%XX` valida e decodificada
  * byte a byte e os escapes invalidos (`%zz`, `%x`) permanecem literais. Diferente
  * de `decodeURIComponent`, nunca lanca, entao um escape invalido nao interrompe a
@@ -113,6 +127,15 @@ function caminhoReservadoOuInseguro(caminho: string): boolean {
  * (`/rota%2525252525x` chega a forma estavel `/rota%x` e delega). Um prefixo
  * reservado escondido sob qualquer numero de camadas de `%25` ainda e revelado
  * e bloqueado antes de alcancar assets.
+ *
+ * O numero de passes e limitado por um orcamento DERIVADO DO COMPRIMENTO
+ * (`comprimento / 2`), nao por uma constante arbitraria: cada passe bem-sucedido
+ * encurta a string em pelo menos 2 caracteres (`%XX` -> 1 caractere), entao esse
+ * orcamento basta, por construcao, para atingir a forma estavel (no maximo 2
+ * caracteres, sem escape valido possivel) de qualquer entrada aceita. Somado ao
+ * `LIMITE_DE_CAMINHO_ANALISADO`, ele limita o custo total da classificacao a
+ * algo trivial (~(1024^2)/4 operacoes) mesmo para entradas patologicas. Se o
+ * orcamento for esgotado com `%` remanescente, falha fechado (`undefined`).
  */
 function pathnameNavegavel(url: string): string | undefined {
   let caminho: string;
@@ -123,6 +146,17 @@ function pathnameNavegavel(url: string): string | undefined {
     return undefined;
   }
 
+  // Guarda de recurso: rejeita entradas patologicamente longas antes de iterar.
+  // Navegacao real e ordens de magnitude menor que isso.
+  if (caminho.length > LIMITE_DE_CAMINHO_ANALISADO) {
+    return undefined;
+  }
+
+  // Orcamento derivado do comprimento (ver docstring): cada passe com progresso
+  // encurta a string em >= 2 caracteres, entao `comprimento / 2` (+1 de folga)
+  // basta para chegar a forma estavel de qualquer entrada aceita.
+  let passesRestantes = Math.floor(caminho.length / 2) + 1;
+
   while (true) {
     if (caminhoReservadoOuInseguro(caminho)) {
       return undefined;
@@ -130,6 +164,11 @@ function pathnameNavegavel(url: string): string | undefined {
     if (!caminho.includes("%")) {
       break;
     }
+    if (passesRestantes === 0) {
+      // Orcamento esgotado com `%` remanescente: falha fechado.
+      return undefined;
+    }
+    passesRestantes -= 1;
     const proximo = decodificarTolerante(caminho);
     if (proximo === caminho) {
       // Nenhum escape valido restante: nenhum progresso, forma estavel.
