@@ -12,6 +12,13 @@ import { COLUNAS_GUIA, type ColunaGuia } from "./contratos";
 
 export const LIMITACAO_GLOBAL_DURACAO_MAXIMA = "duracao_maxima_autorizacao_nao_verificavel";
 
+/**
+ * Limitação emitida apenas quando a soma da agregação estoura o inteiro seguro.
+ * É definida aqui (e não em `agregacao.ts`) para que o catálogo possa reservar o
+ * nome sem criar uma importação circular; a agregação importa deste módulo.
+ */
+export const LIMITACAO_SOMA_NAO_VERIFICAVEL = "soma_de_valores_nao_verificavel";
+
 export interface ProcedimentoCatalogo {
   readonly codigo: string;
   readonly descricao: string;
@@ -114,6 +121,13 @@ function lerProcedimentos(valor: unknown, erros: string[]): ProcedimentoCatalogo
       erros.push(`procedimentos[${indice}].valor_referencia deve ser um número não negativo`);
       return;
     }
+    // §4.5/#ac-8: o valor precisa ser representável em centavos. O hash versiona
+    // o número bruto, então aceitar uma fração de centavo e arredondá-la em
+    // silêncio faria o procedimento entregue divergir da versão que o rotula.
+    if (Number(referencia.toFixed(2)) !== referencia) {
+      erros.push(`procedimentos[${indice}].valor_referencia deve ser representável em centavos`);
+      return;
+    }
     const centavos = Math.round(referencia * 100);
     if (!Number.isSafeInteger(centavos)) {
       erros.push(`procedimentos[${indice}].valor_referencia excede o inteiro seguro em centavos`);
@@ -155,6 +169,11 @@ function lerConvenios(valor: unknown, erros: string[]): ConvenioCatalogo[] {
       problemas.push("campos_obrigatorios deve ser uma lista de textos");
     } else if (!obrigatorios.every((campo) => ehColunaGuia(campo as string))) {
       problemas.push("campos_obrigatorios só pode conter colunas conhecidas da guia");
+    } else if (new Set(obrigatorios).size !== obrigatorios.length) {
+      // §4.5/#ac-8: o hash versiona cada ocorrência bruta, mas a lista entregue
+      // expõe uma só se deduplicarmos em silêncio. Um membro repetido torna o
+      // catálogo ambíguo e precisa ser rejeitado, sem catálogo parcial.
+      problemas.push("campos_obrigatorios não pode conter duplicatas");
     }
     if (!ehInteiroNaoNegativo(validade)) {
       problemas.push("validade_maxima_autorizacao_dias deve ser um inteiro não negativo");
@@ -164,6 +183,10 @@ function lerConvenios(valor: unknown, erros: string[]): ConvenioCatalogo[] {
     }
     if (!Array.isArray(cobertos) || !cobertos.every((codigo) => typeof codigo === "string")) {
       problemas.push("procedimentos_cobertos deve ser uma lista de textos");
+    } else if (new Set(cobertos).size !== cobertos.length) {
+      // §4.5/#ac-8: o hash versiona cada ocorrência bruta, mas a lista entregue
+      // expõe uma só se deduplicarmos em silêncio; rejeita sem catálogo parcial.
+      problemas.push("procedimentos_cobertos não pode conter duplicatas");
     }
     if (!ehInteiroNaoNegativo(prazo)) {
       problemas.push("prazo_envio_dias deve ser um inteiro não negativo");
@@ -179,7 +202,7 @@ function lerConvenios(valor: unknown, erros: string[]): ConvenioCatalogo[] {
 
     convenios.push({
       nome: nome as string,
-      camposObrigatorios: [...new Set(obrigatorios as ColunaGuia[])],
+      camposObrigatorios: [...(obrigatorios as ColunaGuia[])],
       validadeMaximaDias: validade as number,
       limiteSessoes: limite as number,
       procedimentosCobertos: [...(cobertos as string[])],
@@ -190,25 +213,85 @@ function lerConvenios(valor: unknown, erros: string[]): ConvenioCatalogo[] {
   return convenios;
 }
 
-function lerDefinicoes(valor: unknown): Record<string, string> {
+/**
+ * Lê `definicoes` de forma estrita: a chave ausente é válida e resulta em `{}`,
+ * com membros textuais copiados como estão (inclusive textos em branco); um
+ * valor presente que não seja um objeto puro, ou um objeto com qualquer membro
+ * que não seja texto, acumula erro e impede o catálogo parcial. Nunca descarta
+ * um membro em silêncio, para não divergir do hash que inclui o valor bruto.
+ * Cada membro é gravado como propriedade própria de dado, inclusive a chave
+ * `__proto__`, para que o objeto entregue nunca divirja do hash versionado.
+ */
+function lerDefinicoes(valor: unknown, erros: string[]): Record<string, string> {
+  if (valor === undefined) {
+    return {};
+  }
   if (!ehObjeto(valor)) {
+    erros.push("definicoes deve ser um objeto de textos");
     return {};
   }
   const definicoes: Record<string, string> = {};
   for (const chave of Object.keys(valor)) {
     const item = valor[chave];
     if (typeof item === "string") {
-      definicoes[chave] = item;
+      // `definicoes[chave] = item` acionaria o setter herdado
+      // `Object.prototype.__proto__` para a chave `__proto__`, criando um objeto
+      // sem a propriedade própria e divergindo em silêncio do hash.
+      Object.defineProperty(definicoes, chave, {
+        value: item,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    } else {
+      erros.push(`definicoes.${chave} deve ser um texto`);
     }
   }
   return definicoes;
 }
 
-function lerLimitacoes(valor: unknown): string[] {
-  if (!Array.isArray(valor)) {
+/**
+ * Lê `limitacoes_globais` de forma estrita: a chave ausente é válida e não
+ * acrescenta limitações próprias; um valor não-array, um membro que não seja
+ * texto não vazio (após `trim`), um membro repetido ou o nome reservado à
+ * agregação (`soma_de_valores_nao_verificavel`) acumula erro e impede o
+ * catálogo parcial. Nunca filtra em silêncio nem substitui o valor rejeitado.
+ */
+function lerLimitacoes(valor: unknown, erros: string[]): string[] {
+  if (valor === undefined) {
     return [];
   }
-  return valor.filter((item): item is string => typeof item === "string" && item.trim() !== "");
+  if (!Array.isArray(valor)) {
+    erros.push("limitacoes_globais deve ser uma lista de textos não vazios");
+    return [];
+  }
+  const limitacoes: string[] = [];
+  const vistas = new Set<string>();
+  valor.forEach((item, indice) => {
+    if (typeof item !== "string" || item.trim() === "") {
+      erros.push(`limitacoes_globais[${indice}] deve ser um texto não vazio`);
+      return;
+    }
+    // §4.5/#ac-8: `soma_de_valores_nao_verificavel` é estado derivado de um
+    // estouro real da agregação, nunca uma limitação declarada pelo catálogo.
+    // Reservar o nome impede que o catálogo exponha a limitação de estouro sem
+    // que nenhum estouro exista.
+    if (item === LIMITACAO_SOMA_NAO_VERIFICAVEL) {
+      erros.push(
+        `limitacoes_globais[${indice}] usa o nome reservado "${LIMITACAO_SOMA_NAO_VERIFICAVEL}"`,
+      );
+      return;
+    }
+    // §4.5/#ac-8: o hash versiona `item` duas vezes, mas a lista entregue
+    // expõe uma só se deduplicarmos em silêncio; rejeita sem catálogo parcial.
+    if (vistas.has(item)) {
+      erros.push("limitacoes_globais não pode conter duplicatas");
+      return;
+    }
+    vistas.add(item);
+    limitacoes.push(item);
+  });
+  return limitacoes;
 }
 
 /**
@@ -269,6 +352,13 @@ function validarCatalogo(json: unknown): ResultadoCatalogo {
 
   const procedimentos = lerProcedimentos(json["procedimentos"], erros);
   const convenios = lerConvenios(json["convenios"], erros);
+  // §4.5: a validação das limitações precisa acontecer antes do portão de
+  // erros para que seus problemas façam parte do `{ok:false, erros}` devolvido.
+  const limitacoes = lerLimitacoes(json["limitacoes_globais"], erros);
+  // §4.5: assim como as limitações, as definições são validadas antes do
+  // portão de erros para que um valor inválido faça parte do `{ok:false, erros}`
+  // devolvido, sem produzir um catálogo parcial divergente do hash.
+  const definicoes = lerDefinicoes(json["definicoes"], erros);
 
   const codigosDeProcedimento = new Set<string>();
   for (const procedimento of procedimentos) {
@@ -302,7 +392,12 @@ function validarCatalogo(json: unknown): ResultadoCatalogo {
     erros.push(`catalogo invalido: nao foi possivel canonicalizar (${formatarErro(erro)})`);
     return { ok: false, erros };
   }
-  const limitacoesGlobais = [...new Set([...lerLimitacoes(json["limitacoes_globais"]), LIMITACAO_GLOBAL_DURACAO_MAXIMA])];
+  // §4.5/#ac-8: lista validada preservada intacta; a limitação obrigatória é
+  // acrescentada apenas quando não declarada na fonte, para aparecer exatamente
+  // uma vez sem duplicar artificialmente.
+  const limitacoesGlobais = limitacoes.includes(LIMITACAO_GLOBAL_DURACAO_MAXIMA)
+    ? [...limitacoes]
+    : [...limitacoes, LIMITACAO_GLOBAL_DURACAO_MAXIMA];
 
   return {
     ok: true,
@@ -313,7 +408,7 @@ function validarCatalogo(json: unknown): ResultadoCatalogo {
       convenios,
       procedimentos,
       limitacoesGlobais,
-      definicoes: lerDefinicoes(json["definicoes"]),
+      definicoes,
     }),
   };
 }
@@ -355,7 +450,7 @@ export function consultarRegra(
     limiteSessoes: convenio ? convenio.limiteSessoes : 0,
     prazoEnvioDias: convenio ? convenio.prazoEnvioDias : 0,
     observacao: convenio ? convenio.observacao : "",
-    limitacoes: [],
+    limitacoes: [...catalogo.limitacoesGlobais],
     regrasVersao: catalogo.regrasVersao,
   };
 }
