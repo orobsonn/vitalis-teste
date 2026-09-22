@@ -28,41 +28,34 @@ function pertenceANamespaceReservado(pathname: string): boolean {
 const BASE_CANONICA = "http://canonical.invalid";
 
 /**
- * Representacao canonicalizada (percent-decoded) do pathname usada apenas para
- * classificar namespaces reservados. Retorna `undefined` quando o encoding e
- * invalido para que a classificacao falhe fechado (404 JSON, sem assets).
- *
- * A decodificacao pode revelar separadores (`%2f`) e travessia (`%2e%2e`) que o
- * parser de URL nao normaliza; por isso o caminho decodificado e resolvido
- * contra uma base fixa antes da classificacao. Assim `/x/%2e%2e%2fapi/x` vira
- * `/api/x` e nao escapa do namespace reservado.
+ * Limite de passes adicionais de decodificacao. Eles servem apenas para
+ * CLASSIFICAR; a delegacao continua repassando o Request original.
+ */
+const PASSES_EXTRAS_MAXIMOS = 3;
+
+/** Caracteres de controle que podem truncar o prefixo em runtimes intermediarios. */
+const CARACTERE_DE_CONTROLE = /[\u0000-\u001f\u007f]/;
+
+/**
+ * Resolve o caminho ja decodificado contra `BASE_CANONICA` aplicando somente a
+ * normalizacao de segmentos `.`/`..`, para revelar travessia percent-encoded
+ * (`/x/%2e%2e%2fapi/x` -> `/api/x`).
  *
  * A resolucao e feita como caminho, nunca como referencia relativa: quando o
- * caminho decodificado comeca com `//`, a API de URL o interpretaria como
- * *network-path reference* (autoridade/host) e mudaria o pathname —
- * `/%2ffoo/api/x` viraria `/api/x` e bloquearia indevidamente navegacao
- * legitima para `//foo/api/x`. Prefixar `/.` mantem o caminho literal
- * (`new URL("/.//foo/api/x", base).pathname === "//foo/api/x"`) sem alterar a
- * resolucao normal de `.`/`..` (`/x/../api/x` continua `/api/x`).
+ * caminho comeca com `//`, a API de URL o interpretaria como *network-path
+ * reference* (autoridade/host) e mudaria o pathname — `/%2ffoo/api/x` viraria
+ * `/api/x` e bloquearia indevidamente navegacao legitima para `//foo/api/x`.
+ * Prefixar `/.` mantem o caminho literal (`new URL("/.//foo/api/x", base).pathname
+ * === "//foo/api/x"`) sem alterar a resolucao normal de `.`/`..` (`/x/../api/x`
+ * continua `/api/x`). `?` e `#` decodificados sao caracteres de caminho (na URL
+ * original vinham percent-encoded), entao sao re-encoded para nao truncarem o
+ * caminho ao resolvermos `.`/`..`.
  */
-function pathnameCanonicalizado(url: string): string | undefined {
-  let decodificado: string;
-
+function resolverComoCaminho(caminho: string): string | undefined {
   try {
-    decodificado = decodeURIComponent(new URL(url).pathname);
-  } catch {
-    return undefined;
-  }
-
-  try {
-    // `?` e `#` decodificados sao caracteres de caminho (na URL original
-    // vinham percent-encoded), entao sao re-encoded para nao truncarem o
-    // caminho ao resolvermos `.`/`..`.
-    const semDelimitadores = decodificado.replace(/[?#]/g, (caractere) =>
+    const semDelimitadores = caminho.replace(/[?#]/g, (caractere) =>
       encodeURIComponent(caractere),
     );
-    // Evita que um caminho iniciado por `//` seja lido como network-path
-    // reference (host), o que mascararia o caminho HTTP real.
     const comoCaminho = semDelimitadores.startsWith("//")
       ? `/.${semDelimitadores}`
       : semDelimitadores;
@@ -70,6 +63,59 @@ function pathnameCanonicalizado(url: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * `true` quando o candidato ja decodificado precisa falhar fechado: contem
+ * barra invertida (que a semantica WHATWG de URL trata como separador e usaria
+ * para ofuscar o namespace, ex.: `/%5capi/x` -> `/\api/x`), contem caractere de
+ * controle, ou pertence ao namespace reservado — lexicalmente (`/api/..`) ou
+ * apos resolver `.`/`..` (`/x/%2e%2e%2fapi/x`).
+ */
+function caminhoReservadoOuInseguro(caminho: string): boolean {
+  if (caminho.includes("\\") || CARACTERE_DE_CONTROLE.test(caminho)) {
+    return true;
+  }
+  if (pertenceANamespaceReservado(caminho)) {
+    return true;
+  }
+  const resolvido = resolverComoCaminho(caminho);
+  return resolvido !== undefined && pertenceANamespaceReservado(resolvido);
+}
+
+/**
+ * Classificacao deterministica e fail-closed do pathname. Decodifica o pathname
+ * e o reavalia em passes extras limitados (dupla/tripla codificacao, ex.:
+ * `/%2561pi/x` -> `/%61pi/x` -> `/api/x`). Retorna o caminho decodificado quando
+ * o request pode seguir como navegacao; `undefined` quando ele deve virar 404
+ * JSON sem tocar assets. Um escape invalido revelado por um passe extra
+ * (`/rota%25x` -> `/rota%x`) interrompe a analise como NAO reservado, para nao
+ * falhar fechado sobre navegacao legitima.
+ */
+function pathnameNavegavel(url: string): string | undefined {
+  let caminho: string;
+
+  try {
+    caminho = decodeURIComponent(new URL(url).pathname);
+  } catch {
+    return undefined;
+  }
+
+  for (let passe = 0; passe <= PASSES_EXTRAS_MAXIMOS; passe += 1) {
+    if (caminhoReservadoOuInseguro(caminho)) {
+      return undefined;
+    }
+    if (!caminho.includes("%") || passe === PASSES_EXTRAS_MAXIMOS) {
+      break;
+    }
+    try {
+      caminho = decodeURIComponent(caminho);
+    } catch {
+      break;
+    }
+  }
+
+  return caminho;
 }
 
 function pedeJson(c: Context<{ Bindings: Env }>): boolean {
@@ -108,13 +154,7 @@ export function createApp(env: Env): Hono<{ Bindings: Env }> {
   );
 
   app.all("*", async (c) => {
-    const pathname = pathnameCanonicalizado(c.req.url);
-
-    if (c.req.method !== "GET" || pathname === undefined) {
-      return notFoundJson(c);
-    }
-
-    if (pertenceANamespaceReservado(pathname)) {
+    if (c.req.method !== "GET" || pathnameNavegavel(c.req.url) === undefined) {
       return notFoundJson(c);
     }
 
