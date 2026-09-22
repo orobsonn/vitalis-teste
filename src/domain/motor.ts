@@ -234,10 +234,17 @@ export function verificarGuia(
         `O procedimento ${procedimento.codigo} não está na cobertura do convênio ${convenio.nome}.`,
       );
     }
-    // §4.6/#ac-21: uma descrição obrigatória e vazia é coberta apenas por
-    // `campo_obrigatorio_ausente` (emitido no passo 3). §4.8 governa os demais
-    // casos — vazia não obrigatória ou preenchida divergente seguem comparadas.
+  }
+
+  // §4.8/#ac-24/#ac-26: a divergência de descrição depende apenas de o
+  // procedimento estar catalogado, sem exigir convênio utilizável — uma
+  // inconsistência independente não pode ser suprimida por convênio ausente ou
+  // desconhecido. Precedência (§4.6/#ac-21): só um convênio CONHECIDO que exige
+  // `procedimento_descricao` com a célula vazia após `trim` suprime a
+  // divergência; nesse caso resta apenas `campo_obrigatorio_ausente` (passo 3).
+  if (procedimento) {
     const descricaoVaziaObrigatoria =
+      convenio !== null &&
       convenio.camposObrigatorios.includes("procedimento_descricao") &&
       cru(guia, "procedimento_descricao").trim() === "";
     if (
