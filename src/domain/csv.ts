@@ -32,6 +32,7 @@ interface RegistroCsv {
   textoCru: string;
   numeroLinha: number;
   aspasAbertas: boolean;
+  malformado: boolean;
 }
 
 function dividirRegistros(entrada: string): RegistroCsv[] {
@@ -41,6 +42,8 @@ function dividirRegistros(entrada: string): RegistroCsv[] {
   let campo = "";
   let textoCru = "";
   let emAspas = false;
+  let aposAspas = false;
+  let malformado = false;
   let numeroLinha = 1;
   let linhaInicial = 1;
   let indice = 0;
@@ -48,16 +51,20 @@ function dividirRegistros(entrada: string): RegistroCsv[] {
   const concluirCampo = (): void => {
     campos.push(campo);
     campo = "";
+    aposAspas = false;
   };
 
-  const concluirRegistro = (aspasAbertas: boolean): void => {
+  const concluirRegistro = (): void => {
     concluirCampo();
     const linhaEmBranco = campos.length === 1 && campos[0] === "" && textoCru === "";
     if (!linhaEmBranco) {
-      registros.push({ campos, textoCru, numeroLinha: linhaInicial, aspasAbertas });
+      registros.push({ campos, textoCru, numeroLinha: linhaInicial, aspasAbertas: emAspas, malformado });
     }
     campos = [];
     textoCru = "";
+    emAspas = false;
+    aposAspas = false;
+    malformado = false;
   };
 
   while (indice < texto.length) {
@@ -72,6 +79,7 @@ function dividirRegistros(entrada: string): RegistroCsv[] {
           continue;
         }
         emAspas = false;
+        aposAspas = true;
         textoCru += caractere;
         indice += 1;
         continue;
@@ -85,8 +93,36 @@ function dividirRegistros(entrada: string): RegistroCsv[] {
       continue;
     }
 
-    if (caractere === '"' && campo === "") {
-      emAspas = true;
+    if (aposAspas) {
+      if (caractere === ",") {
+        concluirCampo();
+        textoCru += caractere;
+        indice += 1;
+        continue;
+      }
+      if (caractere === "\r" || caractere === "\n") {
+        concluirRegistro();
+        indice += caractere === "\r" && texto[indice + 1] === "\n" ? 2 : 1;
+        numeroLinha += 1;
+        linhaInicial = numeroLinha;
+        continue;
+      }
+      malformado = true;
+      campo += caractere;
+      textoCru += caractere;
+      indice += 1;
+      continue;
+    }
+
+    if (caractere === '"') {
+      if (campo === "") {
+        emAspas = true;
+        textoCru += caractere;
+        indice += 1;
+        continue;
+      }
+      malformado = true;
+      campo += caractere;
       textoCru += caractere;
       indice += 1;
       continue;
@@ -98,7 +134,7 @@ function dividirRegistros(entrada: string): RegistroCsv[] {
       continue;
     }
     if (caractere === "\r" || caractere === "\n") {
-      concluirRegistro(false);
+      concluirRegistro();
       indice += caractere === "\r" && texto[indice + 1] === "\n" ? 2 : 1;
       numeroLinha += 1;
       linhaInicial = numeroLinha;
@@ -109,7 +145,7 @@ function dividirRegistros(entrada: string): RegistroCsv[] {
     indice += 1;
   }
 
-  concluirRegistro(emAspas);
+  concluirRegistro();
   return registros;
 }
 
@@ -159,6 +195,14 @@ export function parseGuiasCsv(texto: string): ResultadoCsv {
       falhas.push({
         numero: registro.numeroLinha,
         motivo: "aspas_nao_terminadas: campo entre aspas sem fechamento até o fim do arquivo",
+        linhaOriginal: registro.textoCru,
+      });
+      continue;
+    }
+    if (registro.malformado) {
+      falhas.push({
+        numero: registro.numeroLinha,
+        motivo: "aspas_malformadas: sintaxe de aspas inválida no campo",
         linhaOriginal: registro.textoCru,
       });
       continue;

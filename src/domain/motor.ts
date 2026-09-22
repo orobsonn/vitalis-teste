@@ -246,7 +246,7 @@ export function verificarGuia(
   // 3. Campos obrigatórios do convênio ausentes (um motivo por campo).
   if (convenio) {
     const ausentes = convenio.camposObrigatorios
-      .filter((campo) => cru(guia, campo as ColunaGuia).trim() === "")
+      .filter((campo) => cru(guia, campo).trim() === "")
       .sort();
     for (const campo of ausentes) {
       criarMotivo(

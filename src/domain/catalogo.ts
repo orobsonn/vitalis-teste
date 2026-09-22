@@ -8,6 +8,7 @@
 
 import { textoCanonico } from "../shared/json-canonico";
 import { sha256Hex } from "../shared/sha256";
+import { COLUNAS_GUIA, type ColunaGuia } from "./contratos";
 
 export const LIMITACAO_GLOBAL_DURACAO_MAXIMA = "duracao_maxima_autorizacao_nao_verificavel";
 
@@ -19,7 +20,7 @@ export interface ProcedimentoCatalogo {
 
 export interface ConvenioCatalogo {
   nome: string;
-  camposObrigatorios: string[];
+  camposObrigatorios: ColunaGuia[];
   validadeMaximaDias: number;
   limiteSessoes: number;
   procedimentosCobertos: string[];
@@ -42,7 +43,7 @@ export type ResultadoCatalogo = { ok: true; catalogo: Catalogo } | { ok: false; 
 export interface ConsultaRegra {
   cobertura: "coberto" | "nao_coberto" | "indefinido";
   procedimento: ProcedimentoCatalogo | null;
-  camposObrigatorios: string[];
+  camposObrigatorios: ColunaGuia[];
   validadeMaximaDias: number;
   limiteSessoes: number;
   prazoEnvioDias: number;
@@ -59,11 +60,18 @@ function ehObjeto(valor: unknown): valor is Record<string, unknown> {
   return typeof valor === "object" && valor !== null && !Array.isArray(valor);
 }
 
+function ehColunaGuia(valor: string): valor is ColunaGuia {
+  return (COLUNAS_GUIA as readonly string[]).includes(valor);
+}
+
+/** Dias, limites e posições do catálogo são inteiros não negativos. */
+function ehInteiroNaoNegativo(valor: unknown): valor is number {
+  return typeof valor === "number" && Number.isSafeInteger(valor) && valor >= 0;
+}
+
 /** Digest SHA-256 do JSON canônico (chaves ordenadas recursivamente, UTF-8). */
 export function hashCatalogo(json: unknown): string {
-  // Um primitivo string no topo é o próprio texto canônico: os vetores
-  // congelados hasheiam os bytes crus da string, não a forma JSON citada.
-  return sha256Hex(typeof json === "string" ? json : textoCanonico(json));
+  return sha256Hex(textoCanonico(json));
 }
 
 function lerProcedimentos(valor: unknown, erros: string[]): ProcedimentoCatalogo[] {
@@ -92,10 +100,15 @@ function lerProcedimentos(valor: unknown, erros: string[]): ProcedimentoCatalogo
       erros.push(`procedimentos[${indice}].valor_referencia deve ser um número não negativo`);
       return;
     }
+    const centavos = Math.round(referencia * 100);
+    if (!Number.isSafeInteger(centavos)) {
+      erros.push(`procedimentos[${indice}].valor_referencia excede o inteiro seguro em centavos`);
+      return;
+    }
     procedimentos.push({
       codigo,
       descricao,
-      valorReferenciaCentavos: Math.round(referencia * 100),
+      valorReferenciaCentavos: centavos,
     });
   });
   return procedimentos;
@@ -126,18 +139,20 @@ function lerConvenios(valor: unknown, erros: string[]): ConvenioCatalogo[] {
     }
     if (!Array.isArray(obrigatorios) || !obrigatorios.every((campo) => typeof campo === "string")) {
       problemas.push("campos_obrigatorios deve ser uma lista de textos");
+    } else if (!obrigatorios.every((campo) => ehColunaGuia(campo as string))) {
+      problemas.push("campos_obrigatorios só pode conter colunas conhecidas da guia");
     }
-    if (typeof validade !== "number" || !Number.isFinite(validade) || validade < 0) {
-      problemas.push("validade_maxima_autorizacao_dias deve ser um número não negativo");
+    if (!ehInteiroNaoNegativo(validade)) {
+      problemas.push("validade_maxima_autorizacao_dias deve ser um inteiro não negativo");
     }
-    if (typeof limite !== "number" || !Number.isFinite(limite) || limite < 0) {
-      problemas.push("limite_sessoes_por_autorizacao deve ser um número não negativo");
+    if (!ehInteiroNaoNegativo(limite)) {
+      problemas.push("limite_sessoes_por_autorizacao deve ser um inteiro não negativo");
     }
     if (!Array.isArray(cobertos) || !cobertos.every((codigo) => typeof codigo === "string")) {
       problemas.push("procedimentos_cobertos deve ser uma lista de textos");
     }
-    if (typeof prazo !== "number" || !Number.isFinite(prazo) || prazo < 0) {
-      problemas.push("prazo_envio_dias deve ser um número não negativo");
+    if (!ehInteiroNaoNegativo(prazo)) {
+      problemas.push("prazo_envio_dias deve ser um inteiro não negativo");
     }
     if (typeof observacao !== "string") {
       problemas.push("observacao deve ser um texto");
@@ -150,7 +165,7 @@ function lerConvenios(valor: unknown, erros: string[]): ConvenioCatalogo[] {
 
     convenios.push({
       nome: nome as string,
-      camposObrigatorios: [...new Set(obrigatorios as string[])],
+      camposObrigatorios: [...new Set(obrigatorios as ColunaGuia[])],
       validadeMaximaDias: validade as number,
       limiteSessoes: limite as number,
       procedimentosCobertos: [...(cobertos as string[])],
@@ -196,6 +211,27 @@ export function carregarCatalogo(json: unknown): ResultadoCatalogo {
 
   const procedimentos = lerProcedimentos(json["procedimentos"], erros);
   const convenios = lerConvenios(json["convenios"], erros);
+
+  const codigosDeProcedimento = new Set<string>();
+  for (const procedimento of procedimentos) {
+    if (codigosDeProcedimento.has(procedimento.codigo)) {
+      erros.push(`procedimentos: codigo duplicado "${procedimento.codigo}"`);
+    }
+    codigosDeProcedimento.add(procedimento.codigo);
+  }
+  const nomesDeConvenio = new Set<string>();
+  for (const convenio of convenios) {
+    const chave = normalizarChave(convenio.nome);
+    if (nomesDeConvenio.has(chave)) {
+      erros.push(`convenios: nome normalizado duplicado "${chave}"`);
+    }
+    nomesDeConvenio.add(chave);
+    for (const codigo of convenio.procedimentosCobertos) {
+      if (!codigosDeProcedimento.has(codigo)) {
+        erros.push(`convenios: procedimento coberto ausente "${codigo}"`);
+      }
+    }
+  }
 
   if (erros.length > 0) {
     return { ok: false, erros };

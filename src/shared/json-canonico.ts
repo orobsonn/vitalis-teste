@@ -1,8 +1,7 @@
 /**
  * Serialização JSON canônica: chaves de objeto ordenadas recursivamente e
  * nenhum espaço insignificante. Strings são citadas em qualquer posição, como
- * no JSON padrão; o chamador decide se um primitivo string de topo é o próprio
- * texto canônico (ver `hashCatalogo`).
+ * no JSON padrão.
  */
 
 /** Profundidade máxima tolerada para não estourar a pilha em aninhamento patológico. */
