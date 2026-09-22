@@ -313,11 +313,35 @@ export function parseGuiasCsv(texto: string): ResultadoCsv {
   }
 
   if (!cabecalhoEsperado(cabecalho)) {
-    falhas.push({
-      numero: primeiro ? primeiro.numeroLinha : 1,
-      motivo: `cabecalho_invalido: esperado ${COLUNAS_GUIA.join(",")}`,
-      linhaOriginal: primeiro ? primeiro.textoCru : "",
-    });
+    const motivoCabecalhoInvalido = `cabecalho_invalido: esperado ${COLUNAS_GUIA.join(",")}`;
+    const quebraCabecalho = primeiro ? localizarPrimeiraQuebra(primeiro.textoCru) : null;
+
+    if (primeiro && quebraCabecalho) {
+      // §4.2/#ac-5 e PRD #23/#28: a falha de cabeçalho inválido pertence à
+      // primeira linha física do registro; se ele tiver quebra interna citada,
+      // o restante é reexaminado fisicamente para que a continuação também
+      // receba um desfecho próprio, nunca fundida na falha da linha 1.
+      falhas.push({
+        numero: primeiro.numeroLinha,
+        motivo: motivoCabecalhoInvalido,
+        linhaOriginal: primeiro.textoCru.slice(0, quebraCabecalho.indice),
+      });
+      const resto = primeiro.textoCru.slice(
+        quebraCabecalho.indice + quebraCabecalho.comprimento,
+      );
+      processarRegistros(
+        dividirRegistros(resto, primeiro.numeroLinha + 1),
+        guias,
+        falhas,
+        false,
+      );
+    } else {
+      falhas.push({
+        numero: primeiro ? primeiro.numeroLinha : 1,
+        motivo: motivoCabecalhoInvalido,
+        linhaOriginal: primeiro ? primeiro.textoCru : "",
+      });
+    }
     // §4.2/#ac-5 e PRD #23/#28: sem cabeçalho válido nada é promovido a guia,
     // mas cada linha física restante precisa de um desfecho explícito, inclusive
     // a ressincronização de um registro que ocupe várias linhas físicas.
