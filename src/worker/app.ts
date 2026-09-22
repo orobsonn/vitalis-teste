@@ -27,16 +27,28 @@ function pertenceANamespaceReservado(pathname: string): boolean {
 /** Base fixa usada apenas para resolver segmentos de travessia (`.`/`..`). */
 const BASE_CANONICA = "http://canonical.invalid";
 
-/**
- * Limite de passes adicionais de decodificacao. Eles servem apenas para
- * CLASSIFICAR; a delegacao continua repassando o Request original. Se o limite
- * for atingido com escape percentual ainda remanescente, a classificacao falha
- * fechado (ver `pathnameNavegavel`).
- */
-const PASSES_EXTRAS_MAXIMOS = 3;
-
 /** Caracteres de controle que podem truncar o prefixo em runtimes intermediarios. */
 const CARACTERE_DE_CONTROLE = /[\u0000-\u001f\u007f]/;
+
+/** Escape percentual de um unico byte (`%XX` com dois digitos hexadecimais). */
+const ESCAPE_VALIDO = /%([0-9A-Fa-f]{2})/g;
+
+/**
+ * Decodificacao tolerante de UM passe: cada sequencia `%XX` valida e decodificada
+ * byte a byte e os escapes invalidos (`%zz`, `%x`) permanecem literais. Diferente
+ * de `decodeURIComponent`, nunca lanca, entao um escape invalido nao interrompe a
+ * analise nem mascara um prefixo reservado valido presente no mesmo candidato
+ * (ex.: `/%61pi/%zz` -> `/api/%zz`, que continua reservado).
+ *
+ * Quando nenhum escape valido resta, o resultado e identico a entrada: essa
+ * ausencia de progresso e o sinal deterministico de parada (ver
+ * `pathnameNavegavel`).
+ */
+function decodificarTolerante(caminho: string): string {
+  return caminho.replace(ESCAPE_VALIDO, (_, hexadecimal: string) =>
+    String.fromCharCode(Number.parseInt(hexadecimal, 16)),
+  );
+}
 
 /**
  * Resolve o caminho ja decodificado contra `BASE_CANONICA` aplicando somente a
@@ -87,19 +99,20 @@ function caminhoReservadoOuInseguro(caminho: string): boolean {
 
 /**
  * Classificacao deterministica e fail-closed do pathname. Decodifica o pathname
- * e o reavalia em passes extras limitados (dupla/tripla codificacao, ex.:
- * `/%2561pi/x` -> `/%61pi/x` -> `/api/x`). Retorna o caminho decodificado quando
- * o request pode seguir como navegacao; `undefined` quando ele deve virar 404
- * JSON sem tocar assets. Um escape invalido revelado por um passe extra
- * (`/rota%25x` -> `/rota%x`) interrompe a analise como NAO reservado, para nao
- * falhar fechado sobre navegacao legitima.
+ * inicial com `decodeURIComponent` — se ele lanca, falha fechado (ex.: `/%zz`).
+ * Em seguida reavalia o candidato em passes enquanto ele mudar e ainda contiver
+ * `%` (dupla/tripla/… codificacao, ex.: `/%2561pi/x` -> `/%61pi/x` -> `/api/x`),
+ * checando o namespace reservado e a inseguranca em CADA candidato. Retorna o
+ * caminho decodificado quando o request pode seguir como navegacao; `undefined`
+ * quando ele deve virar 404 JSON sem tocar assets.
  *
- * Se o limite de passes for esgotado com escape percentual ainda remanescente,
- * a classificacao falha fechado: um prefixo reservado apenas um nivel mais
- * profundo (`/%2525252561pi/x`) nao pode ser provado inocente, entao o request
- * vira 404 JSON em vez de alcancar assets. Sem esse corte, o `break` devolveria
- * um caminho ainda codificado como se fosse navegacao legitima, vazando o
- * namespace reservado para o fallback SPA.
+ * A iteracao usa PROGRESSO, nao um orcamento fixo de passes: cada passe valido
+ * encurta estritamente a string e um passe sem escape valido a encerra. Assim um
+ * escape invalido revelado por um passe extra (`/rota%25x` -> `/rota%x`) encerra
+ * a analise como NAO reservado, sem over-blocking por profundidade de `%25`
+ * (`/rota%2525252525x` chega a forma estavel `/rota%x` e delega). Um prefixo
+ * reservado escondido sob qualquer numero de camadas de `%25` ainda e revelado
+ * e bloqueado antes de alcancar assets.
  */
 function pathnameNavegavel(url: string): string | undefined {
   let caminho: string;
@@ -110,21 +123,19 @@ function pathnameNavegavel(url: string): string | undefined {
     return undefined;
   }
 
-  for (let passe = 0; passe <= PASSES_EXTRAS_MAXIMOS; passe += 1) {
+  while (true) {
     if (caminhoReservadoOuInseguro(caminho)) {
       return undefined;
     }
     if (!caminho.includes("%")) {
       break;
     }
-    if (passe === PASSES_EXTRAS_MAXIMOS) {
-      return undefined;
-    }
-    try {
-      caminho = decodeURIComponent(caminho);
-    } catch {
+    const proximo = decodificarTolerante(caminho);
+    if (proximo === caminho) {
+      // Nenhum escape valido restante: nenhum progresso, forma estavel.
       break;
     }
+    caminho = proximo;
   }
 
   return caminho;
