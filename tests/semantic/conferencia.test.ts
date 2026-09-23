@@ -162,10 +162,14 @@
 //     limites SEMÂNTICOS trimados (1000 observação, 200 contexto) continuam
 //     sendo os únicos limites de entrada — 4097 crus com 1000 trimados e um
 //     convênio de ~1009 crus com 9 trimados seguem enviados (não se restaura o
-//     teto cru pequeno da 3ª rodada, que recusava entradas válidas). §3.6 mantém
-//     a precedência do vazio: uma observação vazia após `trim` continua
-//     `nao_aplicavel` mesmo sendo só espaços — por isso não há caso de
-//     só-espaços acima do teto.
+//     teto cru pequeno da 3ª rodada, que recusava entradas válidas). O teto roda
+//     ANTES de qualquer `trim()` e ANTES do ramo de observação vazia: uma
+//     observação acima do teto — inclusive uma composta SÓ de espaços — produz
+//     `incompleta` com `observacao_acima_do_limite`, e um contexto acima do teto
+//     produz `incompleta` MESMO quando a observação fica vazia após `trim`. No
+//     limite ou abaixo dele, nada muda: a observação vazia após `trim` continua
+//     `nao_aplicavel` (§3.6) e os limites SEMÂNTICOS trimados (1000/200)
+//     continuam sendo os únicos limites de entrada.
 // 12. Rejeição de ABUSO produz resultado LIMITADO (revisão de segurança):
 //     quando convênio/procedimento excedem o teto de bytes, o motor
 //     determinístico NÃO pode receber o campo cru para interpolar em
@@ -177,19 +181,22 @@
 //     representação LIMITADA, sem expor o valor acima do teto, mantendo
 //     intactos cache, quota e provedor (zero leituras e zero chamadas).
 //
-// 13. Precedência do vazio também entrega representação LIMITADA (revisão de
-//     segurança, MEDIUM): uma observação vazia após `trim` sai pelo motor puro
-//     (`nao_aplicavel`, §3.6) ANTES das checagens de abuso — mas, se o caminho
-//     vazio passar a guia CRUA ao motor, o campo gigante de
-//     convênio/procedimento ainda é interpolado em `motivos[].evidencia`
+// 13. O teto de abuso precede trim E o ramo vazio — representação LIMITADA
+//     (revisão de segurança MEDIUM + reconciliação da 7ª rodada): o teto de
+//     abuso roda ANTES de qualquer `trim()` e ANTES do ramo de observação vazia,
+//     para TODOS os três campos (observação, convênio, procedimento).
+//     Consequência aprovada: um contexto acima do teto com observação vazia
+//     após `trim` (inclusive só-espaços) NÃO sai mais pelo motor puro
+//     `nao_aplicavel`; produz `PENDENTE`/`incompleta` +
+//     `checagem_textual_incompleta`, sem inferência e sem efeitos faturáveis. Se
+//     o caminho recusado passasse a guia CRUA ao motor, o campo gigante de
+//     convênio/procedimento ainda seria interpolado em `motivos[].evidencia`
 //     (`O convênio "<campo>" não consta no catálogo.`), devolvendo o corpo
-//     rejeitado ao cliente. O vazio precisa PRESERVAR `nao_aplicavel`, a
-//     ausência de inferência e os zero efeitos colaterais (cache/quota/
-//     provedor) e, ao MESMO tempo, entregar ao motor a representação LIMITADA
-//     (marcador fixo): o corpo rejeitado nunca é interpolado. O marcador é não
-//     vazio e não catalogado, então `convenio_nao_catalogado`/
-//     `procedimento_nao_catalogado` continuam e nenhum falso `*_ausente`
-//     aparece.
+//     rejeitado ao cliente. A correção preserva os códigos determinísticos
+//     (`convenio_nao_catalogado`/`procedimento_nao_catalogado`, sem falso
+//     `*_ausente`) com uma representação LIMITADA (marcador fixo): o corpo
+//     rejeitado nunca é interpolado nem exposto. Abaixo do teto, a precedência
+//     do vazio (§3.6) continua: observação só-espaços segue `nao_aplicavel`.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import regrasRaw from "../../docs/fontes/regras_convenio.json?raw";
@@ -1766,7 +1773,8 @@ describe("lt-retentativa-timeout-e-limites — reforço: teto absoluto de ABUSO 
   // `trim`); em vez disso há um teto ABSOLUTO de abuso alinhado ao limite de
   // corpo HTTP aprovado. `LIMITE_TEXTO_BRUTO_BYTES = 64 * 1024` (65536) BYTES
   // UTF-8 medidos no texto CRU de CADA campo do payload do provedor
-  // (observação, convênio, procedimento) antes de trim/cache/hash/envio. Acima
+  // (observação, convênio, procedimento) antes de trim/cache/hash/envio e ANTES
+  // do ramo de observação vazia (§3.6). Acima
   // dele: `incompleta` sem chamada ao modelo e sem leitura de cache. Na
   // observação a limitação é `observacao_acima_do_limite`; em convênio/
   // procedimento não há código novo (só `checagem_textual_incompleta`, como no
@@ -2044,14 +2052,16 @@ describe("lt-retentativa-timeout-e-limites — reforço: teto absoluto de ABUSO 
     const api = exigirSemantica();
     const catalogo = catalogoValido();
 
-    // §3.6 mantém a precedência do vazio: uma observação só-espaços sai pelo
-    // motor puro (`nao_aplicavel`) ANTES das checagens de abuso. Mesmo assim, o
-    // caminho vazio NÃO pode passar a guia CRUA ao motor: um convênio/
-    // procedimento acima do teto seria interpolado em `motivos[].evidencia` e
-    // devolveria o corpo rejeitado. Sentinela genuinamente grande: 200000
-    // espaços + `X` ≈ 200001 BYTES UTF-8 crus (bem acima de 64 KiB), mas
-    // comprimento TRIMADO 1. Construído por `repeat`, sem concatenar strings
-    // gigantes.
+    // Reconciliação da 7ª rodada: o teto de abuso roda ANTES de qualquer `trim()`
+    // e ANTES do ramo de observação vazia, para os três campos. Então um contexto
+    // acima do teto com observação vazia após `trim` NÃO sai mais pelo motor puro
+    // `nao_aplicavel`: produz `PENDENTE`/`incompleta` + `checagem_textual_incompleta`,
+    // sem inferência e sem efeitos faturáveis. E o caminho recusado NÃO pode
+    // passar a guia CRUA ao motor: um convênio/procedimento acima do teto seria
+    // interpolado em `motivos[].evidencia` e devolveria o corpo rejeitado.
+    // Sentinela genuinamente grande: 200000 espaços + `X` ≈ 200001 BYTES UTF-8
+    // crus (bem acima de 64 KiB), mas comprimento TRIMADO 1. Construído por
+    // `repeat`, sem concatenar strings gigantes.
     const gigante = " ".repeat(200_000) + "X";
     expect(new TextEncoder().encode(gigante).length).toBeGreaterThan(64 * 1024);
     expect(gigante.trim()).toHaveLength(1);
@@ -2088,9 +2098,12 @@ describe("lt-retentativa-timeout-e-limites — reforço: teto absoluto de ABUSO 
         quota: quota.quota,
       });
 
-      // §3.6 preservado: vazio após `trim` continua `nao_aplicavel`, sem
-      // inferência e sem qualquer efeito colateral faturável.
-      expect(resultado.checagem_textual, caso.rotulo).toBe("nao_aplicavel");
+      // O teto precede cache, quota e modelo; a observação vazia NÃO resgata a
+      // recusa: `incompleta` com a limitação textual, sem inferência e sem
+      // qualquer efeito colateral faturável.
+      expect(resultado.decisao, caso.rotulo).toBe("PENDENTE");
+      expect(resultado.checagem_textual, caso.rotulo).toBe("incompleta");
+      expect(resultado.limitacoes, caso.rotulo).toContain("checagem_textual_incompleta");
       expect(resultado.inferencia_textual, caso.rotulo).toBeNull();
       expect(interpretador.chamadas, caso.rotulo).toHaveLength(0);
       expect(kv.leituras, caso.rotulo).toBe(0);
@@ -2109,6 +2122,69 @@ describe("lt-retentativa-timeout-e-limites — reforço: teto absoluto de ABUSO 
       expect(serializado, caso.rotulo).not.toContain(gigante);
       expect(serializado, caso.rotulo).not.toContain(gigante.slice(0, 1024));
     }
+  });
+
+  it("observação composta só de espaços acima do teto bruto é recusada antes do trim e do ramo vazio", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // 70000 espaços: 70000 BYTES UTF-8 crus (> 65536) e VAZIA após `trim`. Se o
+    // ramo vazio (ou o trim) precedesse o teto, sairia `nao_aplicavel`; com o
+    // teto ANTES do `trim` e do ramo vazio, é recusada como abuso. Construído
+    // por `repeat`.
+    const observacaoSoEspacos = " ".repeat(70000);
+    expect(new TextEncoder().encode(observacaoSoEspacos).length).toBeGreaterThan(
+      LIMITE_TEXTO_BRUTO_BYTES,
+    );
+    expect(observacaoSoEspacos.trim()).toHaveLength(0);
+
+    const guia = guiaSintetica({ observacao_recepcao: observacaoSoEspacos });
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(resultado.limitacoes).toContain("observacao_acima_do_limite");
+    expect(resultado.limitacoes).toContain("checagem_textual_incompleta");
+    expect(resultado.inferencia_textual).toBeNull();
+    // Nenhum efeito faturável: zero modelo, zero leitura/gravação, zero quota.
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(kv.leituras).toBe(0);
+    expect(kv.gravacoes).toBe(0);
+    expect(quota.consumidas).toBe(0);
+  });
+
+  it("observação abaixo do teto com espaços nas pontas continua sendo enviada", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // 4000 espaços + TEXTO_ADMIN + 4000 espaços: ~8035 BYTES UTF-8 crus (abaixo
+    // de 64 KiB) e `trim()` igual a TEXTO_ADMIN (abaixo do limite semântico de
+    // 1000). Abaixo do teto, nada muda: o texto cru é enviado ao modelo.
+    const observacao = " ".repeat(4000) + TEXTO_ADMIN + " ".repeat(4000);
+    expect(new TextEncoder().encode(observacao).length).toBeLessThanOrEqual(
+      LIMITE_TEXTO_BRUTO_BYTES,
+    );
+    expect(observacao.trim()).toBe(TEXTO_ADMIN);
+
+    const guia = guiaSintetica({ observacao_recepcao: observacao });
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_ADMIN)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+    });
+
+    expect(interpretador.chamadas).toHaveLength(1);
+    expect(resultado.limitacoes).not.toContain("observacao_acima_do_limite");
   });
 });
 
