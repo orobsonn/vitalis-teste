@@ -428,8 +428,8 @@ export async function conferirGuia(
           {
             estado: "incompleta",
             sinais: null,
-            modelo: contexto.modelo,
-            prompt_versao: contexto.promptVersao,
+            modelo: resposta.modelo,
+            prompt_versao: resposta.promptVersao,
           },
           { estado: "incompleta" },
         );
