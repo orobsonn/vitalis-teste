@@ -100,6 +100,9 @@ export function criarQuotaDeChamadas(
   const limite = normalizarLimite(opcoes.limite);
   const janelaMs = normalizarJanelaMs(opcoes.janelaMs);
   const agora = typeof opcoes.agora === "function" ? opcoes.agora : Date.now;
+  // Referência capturada uma única vez: marcador e notificação usam a mesma
+  // fonte, então mutar `opcoes` depois não diverge o marcador do comportamento.
+  const observador = opcoes.observador;
 
   let inicioJanela: number | undefined;
   let consumidas = 0;
@@ -107,9 +110,8 @@ export function criarQuotaDeChamadas(
   // Capacidade explícita: só existe quando há observador para auto-notificar a
   // recusa. Sem observador a chave fica ausente (não `undefined` explícito), o
   // que permite à orquestração distinguir "a quota já conta" de "conte você".
-  const marcadorObservador = opcoes.observador
-    ? { notificaRecusaNoObservador: true }
-    : {};
+  const marcadorObservador =
+    observador !== undefined ? { notificaRecusaNoObservador: true } : {};
 
   return {
     ...marcadorObservador,
@@ -122,7 +124,7 @@ export function criarQuotaDeChamadas(
       }
 
       if (consumidas >= limite) {
-        opcoes.observador?.registrarRecusaQuota();
+        observador?.registrarRecusaQuota();
         return false;
       }
 
