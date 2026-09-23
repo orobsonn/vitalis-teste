@@ -373,6 +373,50 @@ function notificarObservador(
 }
 
 /**
+ * Leitura guardada de um campo do envelope NÃO CONFIÁVEL do provedor: só uma
+ * propriedade PRÓPRIA de DADO cujo `value` seja string é aceita. `null`,
+ * primitivos, um descritor de acessor (getter/setter), um `Proxy` ou qualquer
+ * exceção de `Object.getOwnPropertyDescriptor` fecham como `null` SEM avaliar
+ * o acessor — a fronteira é a resposta do provedor, não o objeto interno.
+ */
+function lerCampoEnvelope(origem: unknown, chave: string): string | null {
+  if (typeof origem !== "object" || origem === null) {
+    return null;
+  }
+  try {
+    const descritor = Object.getOwnPropertyDescriptor(origem, chave);
+    if (!descritor || !("value" in descritor)) {
+      return null;
+    }
+    return typeof descritor.value === "string" ? descritor.value : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Snapshot do envelope não confiável do provedor: exige `texto`, `modelo` e
+ * `promptVersao` como strings em propriedades próprias de DADO. Qualquer campo
+ * ausente, não-string ou acessor hostil devolve `null`, e o chamador fecha como
+ * schema inválido — nenhum acesso direto ao envelope sujo chega a lançar.
+ */
+function lerEnvelopeResposta(bruto: unknown): RespostaBruta | null {
+  const texto = lerCampoEnvelope(bruto, "texto");
+  if (texto === null) {
+    return null;
+  }
+  const modelo = lerCampoEnvelope(bruto, "modelo");
+  if (modelo === null) {
+    return null;
+  }
+  const promptVersao = lerCampoEnvelope(bruto, "promptVersao");
+  if (promptVersao === null) {
+    return null;
+  }
+  return { texto, modelo, promptVersao };
+}
+
+/**
  * A resposta só é aceita quando o provedor confirma a identidade configurada
  * (`modelo` e versão efetiva do prompt); uma resposta de outra identidade é
  * tratada como `configuracao` (sem código estável) e nunca é cacheada.
@@ -762,7 +806,29 @@ export async function conferirGuia(
     const tentativa = await tentarExtracao(interpretador, entrada, timeoutMs);
 
     if (tentativa.tipo === "ok") {
-      const resposta = tentativa.resposta;
+      // Envelope NÃO CONFIÁVEL: snapshot guardado ANTES de qualquer acesso a
+      // `texto`/`modelo`/`promptVersao`. `null`, primitivo, campo não-string ou
+      // acessor hostil vira `null` e fecha como schema inválido
+      // (PENDENTE/incompleta, sem retentativa e sem gravação de cache), em vez
+      // de rejeitar a Promise. A tentativa ocorreu, então a identidade de
+      // inferência é a CONFIGURADA, nunca lida de um envelope sujo.
+      const resposta = lerEnvelopeResposta(tentativa.resposta);
+      if (!resposta) {
+        emitir(registrador, "extracao_falhou", {
+          estado: "incompleta",
+          codigo: "schema_invalido",
+          tentativas,
+        });
+        return concluir(
+          {
+            estado: "incompleta",
+            sinais: null,
+            modelo: contexto.modelo,
+            prompt_versao: contexto.promptVersao,
+          },
+          { estado: "incompleta", codigo: "schema_invalido" },
+        );
+      }
 
       // Identidade efetiva do provedor: só a configurada é aceita. Mismatch
       // fecha sem gravar cache, sem retentar e sem relabelar como padrão.
