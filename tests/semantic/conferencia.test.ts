@@ -282,6 +282,23 @@
 //     instale um protótipo controlado. Os quatro casos abaixo provam que cada
 //     valor malformado/hostil RESOLVE a conferência (nunca rejeita a Promise) e
 //     não amplia o resultado nem persiste cache.
+// 20. Snapshot do motor valida os INVARIANTES DE NORMALIZAÇÃO (reforço
+//     ADVERSARY HIGH + SECURITY MEDIUM): além dos tipos primitivos, o snapshot
+//     precisa validar as garantias que `src/domain/normalizacao.ts` e
+//     `src/domain/datas.ts` asseguram, de modo que uma guia com `problemas`,
+//     datas ou números fora do domínio NÃO possa (a) rejeitar a conferência —
+//     um `codigo` fora do vocabulário fechado `data_invalida | valor_ilegivel |
+//     campo_numerico_invalido`, ou incompatível com o `campo`, faz o motor
+//     indexar `TEXTOS[codigo]` e lançar `TypeError`; (b) amplificar o resultado
+//     — uma lista sem cardinalidade/uniquidade transforma cada entrada repetida
+//     em um novo motivo, multiplicando memória/resposta; (c) desviar a decisão
+//     determinística — datas não calendário-real/fracionárias/fora da faixa
+//     suportada, sessões e limites fora de 1..10000, ou centavos negativos/
+//     fracionários/não seguros passam a influenciar limites, cronologia e
+//     somas. A correção aprovada valida esses invariantes no snapshot e fecha
+//     pelo caminho determinístico (`PENDENTE`/`incompleta`, `inferencia_textual`
+//     nula, zero chamadas ao interpretador, zero gravações de cache e resultado
+//     limitado) para toda violação.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import regrasRaw from "../../docs/fontes/regras_convenio.json?raw";
@@ -4011,5 +4028,176 @@ describe("lt-conferencia-vazio-cache-e-falhas — reforço: snapshot do motor va
     expect(JSON.stringify(resultado).length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
     expect(kv.gravacoes).toBe(0);
     expect(({} as Record<string, unknown>).poluido).toBeUndefined();
+  });
+});
+
+describe("lt-conferencia-vazio-cache-e-falhas — reforço: invariantes de normalização são validadas no snapshot", () => {
+  // A fronteira exercitada é o SNAPSHOT de dados entregue ao motor. O snapshot
+  // já valida tipos primitivos e teto por string, mas ainda aceita valores que
+  // o normalizador NUNCA produziria. `src/domain/normalizacao.ts` garante:
+  //   - vocabulário FECHADO de códigos: `data_invalida`, `valor_ilegivel`,
+  //     `campo_numerico_invalido`;
+  //   - compatibilidade `(codigo, campo)`: `data_invalida` só para
+  //     `data_atendimento`/`autorizacao_validade`/`data_lancamento`,
+  //     `campo_numerico_invalido` só para `autorizacao_sessoes_limite`/
+  //     `sessao_numero_na_autorizacao` e `valor_ilegivel` só para `valor`;
+  //   - no máximo UM problema por `(codigo, campo)` (cardinalidade/uniquidade);
+  //   - datas `DataCivil` com `ano`/`mes`/`dia` INTEIROS, calendário-real (mês
+  //     1..12, dia dentro do mês) e dentro da faixa de 4 dígitos suportada por
+  //     `parseDataCivil`;
+  //   - números como `null` ou inteiros seguros: sessões/limites em 1..10000
+  //     (`inteiroDaGuia`) e centavos não negativos e seguros (`valorParaCentavos`).
+  // Sem essa validação (a) um código desconhecido/incompatível faz o motor
+  // indexar `TEXTOS[codigo]` e lançar — `conferirGuia` REJEITA; (b) uma lista
+  // duplicada/acima do máximo multiplica motivos e amplia a resposta; e (c)
+  // datas/números fora do domínio desviam limites, cronologia e somas. A
+  // correção aprovada fecha essas violações pelo caminho determinístico
+  // (`PENDENTE`/`incompleta`, `inferencia_textual` nula, zero chamadas, zero
+  // gravações e resultado limitado). Cada caso faz `await` em `conferirGuia`,
+  // então uma rejeição (motor lançando) já falha o teste.
+  const HOSTIL_PROBLEMA = "Q".repeat(40_000);
+  const PREFIXO_PROBLEMA = 1024;
+
+  interface FakesConferencia {
+    resultado: ResultadoVerificacao;
+    interpretador: InterpretadorFake;
+    kv: KvFake;
+    quota: QuotaFake;
+  }
+
+  async function conferirGuiaComFakes(guia: GuiaNormalizada): Promise<FakesConferencia> {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+    return { resultado, interpretador, kv, quota };
+  }
+
+  /** Guia sintética válida com os overrides hostis próprios de DADO. */
+  function guiaHostil(overrides: Record<string, unknown>): GuiaNormalizada {
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    for (const chave of Object.keys(overrides)) {
+      (guia as unknown as Record<string, unknown>)[chave] = overrides[chave];
+    }
+    return guia;
+  }
+
+  function exigirFalhaFechada(
+    resultado: ResultadoVerificacao,
+    interpretador: InterpretadorFake,
+    kv: KvFake,
+    hostil?: string,
+  ): void {
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(resultado.inferencia_textual).toBeNull();
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(kv.gravacoes).toBe(0);
+    const serializado = JSON.stringify(resultado);
+    expect(serializado.length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+    if (hostil !== undefined) {
+      expect(serializado).not.toContain(hostil);
+      expect(serializado).not.toContain(hostil.slice(0, PREFIXO_PROBLEMA));
+    }
+  }
+
+  it("código de problema desconhecido falha fechada sem rejeitar", async () => {
+    const guia = guiaHostil({
+      problemas: [{ campo: "valor", codigo: "codigo_desconhecido", valorOriginal: "x" }],
+    });
+
+    const { resultado, interpretador, kv } = await conferirGuiaComFakes(guia);
+
+    exigirFalhaFechada(resultado, interpretador, kv);
+  });
+
+  it("código de problema incompatível com o campo falha fechada", async () => {
+    // `valor_ilegivel` é um código REAL, mas o normalizador só o emite para o
+    // campo `valor`; `convenio` nunca recebe problema de normalização.
+    const guia = guiaHostil({
+      problemas: [{ campo: "convenio", codigo: "valor_ilegivel", valorOriginal: "x" }],
+    });
+
+    const { resultado, interpretador, kv } = await conferirGuiaComFakes(guia);
+
+    exigirFalhaFechada(resultado, interpretador, kv);
+  });
+
+  it("lista de problemas duplicada falha fechada sem amplificar", async () => {
+    // Mesmo `(codigo, campo)` repetido: o normalizador emite no máximo um por
+    // par. Hoje cada cópia vira um motivo separado, duplicando a evidência.
+    const guia = guiaHostil({
+      problemas: [
+        { campo: "valor", codigo: "valor_ilegivel", valorOriginal: HOSTIL_PROBLEMA },
+        { campo: "valor", codigo: "valor_ilegivel", valorOriginal: HOSTIL_PROBLEMA },
+      ],
+    });
+
+    const { resultado, interpretador, kv } = await conferirGuiaComFakes(guia);
+
+    exigirFalhaFechada(resultado, interpretador, kv, HOSTIL_PROBLEMA);
+  });
+
+  it("lista de problemas acima do máximo falha fechada sem amplificar", async () => {
+    // O normalizador só pode emitir um problema por campo verificável (no
+    // máximo 6). 500 cópias já são mais do que a lista legítima e hoje cada uma
+    // amplifica a resposta com o corpo hostil.
+    const problemas = Array.from({ length: 500 }, () => ({
+      campo: "valor",
+      codigo: "valor_ilegivel",
+      valorOriginal: HOSTIL_PROBLEMA,
+    }));
+    const guia = guiaHostil({ problemas });
+
+    const { resultado, interpretador, kv } = await conferirGuiaComFakes(guia);
+
+    exigirFalhaFechada(resultado, interpretador, kv, HOSTIL_PROBLEMA);
+  });
+
+  it("data impossível no calendário falha fechada", async () => {
+    // `parseDataCivil` rejeita mês fora de 1..12 e dia fora do mês real.
+    const guia = guiaHostil({ dataAtendimento: { ano: 2026, mes: 99, dia: 99 } });
+
+    const { resultado, interpretador, kv } = await conferirGuiaComFakes(guia);
+
+    exigirFalhaFechada(resultado, interpretador, kv);
+  });
+
+  it("data fracionária ou fora da faixa falha fechada", async () => {
+    // Componentes não inteiros e ano fora dos 4 dígitos suportados.
+    const fracionaria = guiaHostil({ dataLancamento: { ano: 2026.5, mes: 8, dia: 10.5 } });
+    const foraDaFaixa = guiaHostil({
+      dataAtendimento: { ano: 20260, mes: 8, dia: 10 },
+    });
+
+    const primeira = await conferirGuiaComFakes(fracionaria);
+    exigirFalhaFechada(primeira.resultado, primeira.interpretador, primeira.kv);
+
+    const segunda = await conferirGuiaComFakes(foraDaFaixa);
+    exigirFalhaFechada(segunda.resultado, segunda.interpretador, segunda.kv);
+  });
+
+  it("número fora do domínio de normalização falha fechada", async () => {
+    // Sessões/limites: inteiro 1..10000; centavos: inteiro seguro não negativo.
+    const dominios: Array<Record<string, unknown>> = [
+      { sessaoNumero: -1 },
+      { autorizacaoSessoesLimite: 0 },
+      { valorCentavos: -1 },
+      { valorCentavos: 1.5 },
+      { valorCentavos: Number.MAX_SAFE_INTEGER + 1 },
+    ];
+
+    for (const override of dominios) {
+      const { resultado, interpretador, kv } = await conferirGuiaComFakes(
+        guiaHostil(override),
+      );
+      exigirFalhaFechada(resultado, interpretador, kv);
+    }
   });
 });
