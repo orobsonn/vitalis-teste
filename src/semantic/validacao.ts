@@ -10,7 +10,7 @@
 
 import { z } from "zod";
 
-import { TIPOS_AMBIGUIDADE, TIPOS_SINAL } from "./contratos";
+import { TIPOS_AMBIGUIDADE, TIPOS_SINAL, VALORES_SITUACAO } from "./contratos";
 import type { SinaisObservacao } from "./contratos";
 
 /** Cardinalidade máxima de sinais por extração. */
@@ -51,10 +51,10 @@ const AMBIGUIDADE_SCHEMA = z.strictObject({
 });
 
 const SITUACAO_SCHEMA = z.strictObject({
-  autorizacao: z.enum(["nenhuma", "nova_nao_cadastrada", "verbal_sem_numero"]),
-  modalidade: z.enum(["nenhuma", "particular_decidido", "somente_pergunta"]),
-  procedimento: z.enum(["nenhuma", "realizado_divergente"]),
-  reagendamento: z.enum(["nenhum", "mencionado"]),
+  autorizacao: z.enum(VALORES_SITUACAO.autorizacao),
+  modalidade: z.enum(VALORES_SITUACAO.modalidade),
+  procedimento: z.enum(VALORES_SITUACAO.procedimento),
+  reagendamento: z.enum(VALORES_SITUACAO.reagendamento),
 });
 
 const EXTRACAO_SCHEMA = z.strictObject({
@@ -92,12 +92,56 @@ function evidenciaEhLiteral(evidencia: string, textoObservacao: string): boolean
 
   // Aceita se QUALQUER ocorrência contígua estiver alinhada a palavras;
   // uma ocorrência embutida em outra palavra não impede uma posterior alinhada.
+  // A fronteira é julgada sobre o code point completo: um par surrogate
+  // (fora do BMP) precisa ser reunido antes de testar `\p{L}`/`\p{N}`.
   while (indice >= 0) {
-    const antes = indice > 0 ? textoNormalizado.charAt(indice - 1) : "";
-    const depois =
-      indice + evidenciaNormalizada.length < textoNormalizado.length
-        ? textoNormalizado.charAt(indice + evidenciaNormalizada.length)
-        : "";
+    const fimEvidencia = indice + evidenciaNormalizada.length;
+
+    // Uma ocorrência que começa ou termina no meio de um par surrogate corta um
+    // code point astral: não é uma evidência literal realmente contígua, então
+    // descarta a ocorrência e segue para a próxima (fail-closed no fim do laço).
+    const iniciaNoMeioDoPar =
+      indice > 0 &&
+      textoNormalizado.charCodeAt(indice - 1) >= 0xd800 &&
+      textoNormalizado.charCodeAt(indice - 1) <= 0xdbff &&
+      textoNormalizado.charCodeAt(indice) >= 0xdc00 &&
+      textoNormalizado.charCodeAt(indice) <= 0xdfff;
+    const terminaNoMeioDoPar =
+      fimEvidencia > 0 &&
+      textoNormalizado.charCodeAt(fimEvidencia - 1) >= 0xd800 &&
+      textoNormalizado.charCodeAt(fimEvidencia - 1) <= 0xdbff &&
+      textoNormalizado.charCodeAt(fimEvidencia) >= 0xdc00 &&
+      textoNormalizado.charCodeAt(fimEvidencia) <= 0xdfff;
+
+    if (iniciaNoMeioDoPar || terminaNoMeioDoPar) {
+      indice = textoNormalizado.indexOf(evidenciaNormalizada, indice + 1);
+      continue;
+    }
+
+    let antes = "";
+    if (indice > 0) {
+      const inicio =
+        indice >= 2 &&
+        textoNormalizado.charCodeAt(indice - 1) >= 0xdc00 &&
+        textoNormalizado.charCodeAt(indice - 1) <= 0xdfff &&
+        textoNormalizado.charCodeAt(indice - 2) >= 0xd800 &&
+        textoNormalizado.charCodeAt(indice - 2) <= 0xdbff
+          ? indice - 2
+          : indice - 1;
+      antes = textoNormalizado.slice(inicio, indice);
+    }
+    let depois = "";
+    if (fimEvidencia < textoNormalizado.length) {
+      const fim =
+        textoNormalizado.charCodeAt(fimEvidencia) >= 0xd800 &&
+        textoNormalizado.charCodeAt(fimEvidencia) <= 0xdbff &&
+        fimEvidencia + 1 < textoNormalizado.length &&
+        textoNormalizado.charCodeAt(fimEvidencia + 1) >= 0xdc00 &&
+        textoNormalizado.charCodeAt(fimEvidencia + 1) <= 0xdfff
+          ? fimEvidencia + 2
+          : fimEvidencia + 1;
+      depois = textoNormalizado.slice(fimEvidencia, fim);
+    }
     if (!CARACTERE_ALFANUMERICO.test(antes) && !CARACTERE_ALFANUMERICO.test(depois)) {
       return true;
     }

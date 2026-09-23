@@ -13,6 +13,7 @@ import type { DataCivil } from "./datas";
 import { compararData, dataParaIso, somarDias } from "./datas";
 import { formatarCentavos } from "./dinheiro";
 import type { GuiaNormalizada } from "./normalizacao";
+import { aplicarPoliticasTextuais, type TextualValidado } from "./policies/textuais";
 
 export type SeveridadeMotivo = "pendencia" | "alerta";
 
@@ -25,6 +26,11 @@ export interface Motivo {
   orientacao: string;
 }
 
+export interface InferenciaTextual {
+  modelo: string;
+  prompt_versao: string;
+}
+
 export interface ResultadoVerificacao {
   decisao: "OK" | "PENDENTE";
   motivos: Motivo[];
@@ -33,6 +39,7 @@ export interface ResultadoVerificacao {
   checagem_textual: "completa" | "incompleta" | "nao_aplicavel";
   referencia_temporal: string | null;
   regras_versao: string;
+  inferencia_textual: InferenciaTextual | null;
 }
 
 /** Ordem fixa de pipeline dos motivos; garante saída determinística. */
@@ -53,6 +60,14 @@ const ORDEM_CODIGOS: readonly string[] = [
   "prazo_envio_excedido",
   "cronologia_incoerente",
   "valor_divergente_da_referencia",
+  // Códigos textuais (§3.5/§3.6): entram em posição fixa, após todos os
+  // estruturados, na mesma ordem em que `aplicarPoliticasTextuais` os produz.
+  "autorizacao_nova_nao_cadastrada",
+  "autorizacao_verbal_sem_numero",
+  "modalidade_particular_contraditoria",
+  "procedimento_realizado_divergente",
+  "conferencia_humana_especifica",
+  "checagem_textual_incompleta",
 ];
 
 interface TextoCanonico {
@@ -150,7 +165,7 @@ function cru(guia: GuiaNormalizada, campo: ColunaGuia): string {
 export function verificarGuia(
   guia: GuiaNormalizada,
   catalogo: Catalogo,
-  opcoes?: { referenciaTemporal?: DataCivil },
+  opcoes?: { referenciaTemporal?: DataCivil; textual?: TextualValidado | null },
 ): ResultadoVerificacao {
   const motivos: Motivo[] = [];
   const limitacoes: string[] = [];
@@ -380,6 +395,25 @@ export function verificarGuia(
     );
   }
 
+  // 10. Políticas textuais (§3.5/§3.6): só quando há extração textual validada.
+  // Sem a opção, o resultado permanece exatamente o atual (`nao_aplicavel`).
+  let checagemTextual: ResultadoVerificacao["checagem_textual"] = "nao_aplicavel";
+  let inferenciaTextual: InferenciaTextual | null = null;
+  if (opcoes?.textual) {
+    const politicas = aplicarPoliticasTextuais(opcoes.textual);
+    for (const motivo of politicas.motivos) {
+      motivos.push(motivo);
+    }
+    for (const limitacao of politicas.limitacoes) {
+      adicionarLimitacao(limitacao);
+    }
+    checagemTextual = politicas.estado;
+    inferenciaTextual =
+      opcoes.textual.modelo && opcoes.textual.prompt_versao
+        ? { modelo: opcoes.textual.modelo, prompt_versao: opcoes.textual.prompt_versao }
+        : null;
+  }
+
   motivos.sort((primeiro, segundo) => {
     const ordemPrimeiro = ORDEM_CODIGOS.indexOf(primeiro.codigo);
     const ordemSegundo = ORDEM_CODIGOS.indexOf(segundo.codigo);
@@ -412,8 +446,9 @@ export function verificarGuia(
     motivos,
     orientacoes,
     limitacoes,
-    checagem_textual: "nao_aplicavel",
+    checagem_textual: checagemTextual,
     referencia_temporal: referencia ? dataParaIso(referencia) : null,
     regras_versao: catalogo.regrasVersao,
+    inferencia_textual: inferenciaTextual,
   };
 }
