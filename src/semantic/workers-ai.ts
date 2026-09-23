@@ -23,7 +23,10 @@
  * é recusado com `ErroTetoDeAbuso`, SEM serializar o payload gigante e SEM
  * disparar inferência. Não é um limite semântico de entrada — esses continuam
  * nos contratos próprios — e nada de retentativa, timeout, cache ou quota aqui:
- * essas políticas permanecem na orquestração.
+ * essas políticas permanecem na orquestração. Os três campos crus são lidos UMA
+ * ÚNICA VEZ em um snapshot local; guarda de abuso e montagem da requisição
+ * operam exclusivamente sobre esse snapshot, de modo que um acessor dinâmico não
+ * pode apresentar um valor curto à guarda e outro acima do teto à serialização.
  *
  * Teto de COMPRIMENTO da identidade configurada: o adaptador — e SOMENTE o
  * adaptador — recusa, já na construção, uma identidade textual acima de 200
@@ -204,7 +207,9 @@ function textoDaResposta(resultado: unknown): string {
  * Aplica o teto de abuso por campo cru antes de serializar e antes de chamar o
  * provedor (fronteira inclusiva); entrada acima do teto falha com
  * `ErroTetoDeAbuso` sem nenhuma chamada ao binding, deixando ao chamador a
- * classificação como `limite_excedido`.
+ * classificação como `limite_excedido`. Os três campos crus são capturados uma
+ * única vez em um snapshot local, usado tanto pela guarda quanto pela montagem
+ * da requisição, para que uma leitura não determinística não contorne o teto.
  *
  * `opcoes.modelo` é lida uma única vez (snapshot) e, antes de normalizar, uma
  * identidade textual acima de 200 caracteres (valor CRU, sem `trim`) é recusada
@@ -232,9 +237,15 @@ export function criarInterpretadorWorkersAi(
 
   return {
     async extrair(entradaObservacao: EntradaObservacao): Promise<RespostaBruta> {
-      garantirEntradaDentroDoTetoDeAbuso(entradaObservacao);
+      const entradaCrua: EntradaObservacao = {
+        observacao_recepcao: entradaObservacao.observacao_recepcao,
+        convenio: entradaObservacao.convenio,
+        procedimento_codigo: entradaObservacao.procedimento_codigo,
+      };
 
-      const resultado = await ai.run(modelo, montarRequisicao(entradaObservacao));
+      garantirEntradaDentroDoTetoDeAbuso(entradaCrua);
+
+      const resultado = await ai.run(modelo, montarRequisicao(entradaCrua));
 
       return {
         texto: textoDaResposta(resultado),
