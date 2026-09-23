@@ -187,51 +187,215 @@ function acimaDoTetoDeAbuso(texto: string): boolean {
 const MARCADOR_TETO_ABUSO = "[campo_acima_do_teto_de_abuso]";
 
 /**
- * Snapshot LIMITADO da guia a partir dos TRÊS campos já CAPTURADOS uma única
- * vez (`observacao`/`convenio`/`procedimento`). Cada campo acima do teto de
- * abuso é trocado pelo marcador fixo, tanto no campo de topo
- * (`observacaoRecepcao`/`convenio`/`procedimentoCodigo`) quanto na célula
- * `original` correspondente. Todas as demais propriedades são copiadas por
- * DESCRITOR (`Object.getOwnPropertyDescriptors`, que NÃO avalia acessores) e as
- * três propriedades semânticas são sobrescritas por propriedades de DADO com
- * os valores capturados — nenhum getter hostil é reavaliado (anti-TOCTOU).
- * Esta é a ÚNICA representação entregue ao motor em TODOS os caminhos. O
- * marcador é não vazio e não catalogado, então `convenio_nao_catalogado` e
- * `procedimento_nao_catalogado` continuam e nenhum falso `*_ausente` aparece.
+ * Aplica o teto ABSOLUTO de abuso a UM campo capturado: o texto cru acima do
+ * teto vira o marcador fixo, de modo que nem o campo de topo nem a célula
+ * `original` carreguem o corpo rejeitado (amplificação de memória/resposta).
+ */
+function limitarCampo(texto: string): string {
+  return acimaDoTetoDeAbuso(texto) ? MARCADOR_TETO_ABUSO : texto;
+}
+
+/** Descritor PRÓPRIO de DADO reutilizável: nenhum acessor é retido. */
+function comoDado(value: unknown): PropertyDescriptor {
+  return { value, writable: true, enumerable: true, configurable: true };
+}
+
+/**
+ * Os três campos semânticos capturados UMA única vez (§3.7). Cada valor é uma
+ * string PRIMITIVA (a validação é do chamador): um objeto com
+ * `length`/`trim`/`toJSON` divergentes enganaria os testes de vazio/teto
+ * (que só usam `length`/`trim`/`ToString`) enquanto `JSON.stringify` do payload
+ * do provedor invocaria `toJSON` e enviaria um corpo gigante.
+ */
+interface CamposCapturados {
+  observacao: string;
+  convenio: string;
+  procedimento: string;
+}
+
+/**
+ * Captura ÚNICA dos três campos semânticos: uma leitura `[[Get]]` por campo (um
+ * getter hostil é lido EXATAMENTE uma vez, nunca relido — anti-TOCTOU). Um
+ * getter que LANCE invalida a captura inteira (`null`): a conferência fecha
+ * fechada em vez de rejeitar a Promise.
+ */
+function capturarCampos(guia: GuiaNormalizada): CamposCapturados | null {
+  try {
+    const observacao = guia.observacaoRecepcao;
+    const convenio = guia.convenio;
+    const procedimento = guia.procedimentoCodigo;
+    return { observacao, convenio, procedimento };
+  } catch {
+    return null;
+  }
+}
+
+const CELULAS_SEMANTICAS_ORIGINAL: readonly string[] = [
+  "observacao_recepcao",
+  "convenio",
+  "procedimento_codigo",
+];
+
+/**
+ * Reconstrói `original` como objeto SIMPLES de dados: só os descritores
+ * PRÓPRIOS de DADO de `guia.original` são copiados (um acessor nunca é
+ * avaliado) e as três células CAPTURADAS são sempre sobrepostas. Um `original`
+ * que seja ACESSOR fecha fechado (`null`): é um campo consumido pelo motor e
+ * avaliá-lo aqui reabriria um getter hostil. Um `original` ausente ou
+ * não-objeto é tratado como ausente e reconstruído a partir do trio capturado.
+ */
+function reconstruirOriginal(
+  descritorOriginal: PropertyDescriptor | undefined,
+  observacao: string,
+  convenio: string,
+  procedimento: string,
+): Record<string, unknown> | null {
+  const base: Record<string, unknown> = {};
+  if (descritorOriginal) {
+    if (!("value" in descritorOriginal)) {
+      return null;
+    }
+    const fonte = descritorOriginal.value;
+    if (typeof fonte === "object" && fonte !== null) {
+      let descritoresFonte: Record<string, PropertyDescriptor>;
+      try {
+        descritoresFonte = Object.getOwnPropertyDescriptors(fonte);
+      } catch {
+        return null;
+      }
+      for (const chave of Object.keys(descritoresFonte)) {
+        if (CELULAS_SEMANTICAS_ORIGINAL.includes(chave)) {
+          continue;
+        }
+        const descritor = descritoresFonte[chave];
+        if (!descritor || !("value" in descritor)) {
+          // Acessor numa célula consumida pelo motor: nunca avaliado nem retido.
+          return null;
+        }
+        base[chave] = descritor.value;
+      }
+    }
+  }
+  base.observacao_recepcao = observacao;
+  base.convenio = convenio;
+  base.procedimento_codigo = procedimento;
+  return base;
+}
+
+/**
+ * Snapshot LIMITADO e PURO DE DADOS da guia a partir dos TRÊS campos já
+ * CAPTURADOS uma única vez. Os três campos semânticos recebem os valores
+ * capturados (com o teto de abuso aplicado); TODAS as demais propriedades
+ * próprias só são retidas quando são descritores PRÓPRIOS de DADO. Nenhum
+ * acessor é avaliado nem retido: um acessor em QUALQUER campo consumido pelo
+ * motor (`procedimentoDescricao`, `original`, etc.) fecha fechado (`null`)
+ * para o chamador. A reflexão é guardada (um `Proxy` hostil pode lançar em
+ * `ownKeys`/`getOwnPropertyDescriptor`). Não há espalhamento sobre a guia
+ * hostil (`{ ...guia }`/`{ ...guia.original }`). Esta é a ÚNICA representação
+ * entregue ao motor em TODOS os caminhos. O marcador é não vazio e não
+ * catalogado, então `convenio_nao_catalogado` e `procedimento_nao_catalogado`
+ * continuam e nenhum falso `*_ausente` aparece.
  */
 function guiaComCamposLimitados(
   guia: GuiaNormalizada,
   observacao: string,
   convenio: string,
   procedimento: string,
-): GuiaNormalizada {
-  const observacaoFinal = acimaDoTetoDeAbuso(observacao) ? MARCADOR_TETO_ABUSO : observacao;
-  const convenioFinal = acimaDoTetoDeAbuso(convenio) ? MARCADOR_TETO_ABUSO : convenio;
-  const procedimentoFinal = acimaDoTetoDeAbuso(procedimento)
-    ? MARCADOR_TETO_ABUSO
-    : procedimento;
+): GuiaNormalizada | null {
+  const observacaoFinal = limitarCampo(observacao);
+  const convenioFinal = limitarCampo(convenio);
+  const procedimentoFinal = limitarCampo(procedimento);
 
-  // Cópia das demais propriedades próprias por descritor (nunca avalia getters)
-  // e sobrescrita dos três campos semânticos por dados capturados.
-  const descritores: Record<string, PropertyDescriptor> = {
-    ...Object.getOwnPropertyDescriptors(guia),
-  };
-  const comoDado = (value: unknown): PropertyDescriptor => ({
-    value,
-    writable: true,
-    enumerable: true,
-    configurable: true,
-  });
-  descritores.observacaoRecepcao = comoDado(observacaoFinal);
-  descritores.convenio = comoDado(convenioFinal);
-  descritores.procedimentoCodigo = comoDado(procedimentoFinal);
-  descritores.original = comoDado({
-    ...guia.original,
+  let descritores: Record<string, PropertyDescriptor>;
+  try {
+    descritores = Object.getOwnPropertyDescriptors(guia);
+  } catch {
+    return null;
+  }
+
+  const saida: Record<string, PropertyDescriptor> = {};
+  for (const chave of Object.keys(descritores)) {
+    if (
+      chave === "observacaoRecepcao" ||
+      chave === "convenio" ||
+      chave === "procedimentoCodigo" ||
+      chave === "original"
+    ) {
+      continue;
+    }
+    const descritor = descritores[chave];
+    if (!descritor || !("value" in descritor)) {
+      return null;
+    }
+    saida[chave] = comoDado(descritor.value);
+  }
+
+  const original = reconstruirOriginal(
+    descritores.original,
+    observacaoFinal,
+    convenioFinal,
+    procedimentoFinal,
+  );
+  if (original === null) {
+    return null;
+  }
+
+  saida.observacaoRecepcao = comoDado(observacaoFinal);
+  saida.convenio = comoDado(convenioFinal);
+  saida.procedimentoCodigo = comoDado(procedimentoFinal);
+  saida.original = comoDado(original);
+
+  try {
+    return Object.defineProperties({}, saida) as GuiaNormalizada;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Guia MÍNIMA e LIMITADA do caminho de falha fechada do snapshot (reflexão
+ * hostil ou acessor em campo consumido pelo motor): apenas os três campos
+ * capturados (com o teto de abuso aplicado) e um `original` com essas mesmas
+ * três células. Os demais campos ficam vazios/neutros, de modo que o motor
+ * determinístico roda e emite os códigos padrão (`checagem_textual_incompleta`)
+ * sem carregar nenhum valor hostil.
+ */
+function guiaMinima(
+  observacao: string,
+  convenio: string,
+  procedimento: string,
+): GuiaNormalizada {
+  const observacaoFinal = limitarCampo(observacao);
+  const convenioFinal = limitarCampo(convenio);
+  const procedimentoFinal = limitarCampo(procedimento);
+  const original = {
     observacao_recepcao: observacaoFinal,
     convenio: convenioFinal,
     procedimento_codigo: procedimentoFinal,
-  });
-  return Object.defineProperties({}, descritores) as GuiaNormalizada;
+  } as unknown as GuiaNormalizada["original"];
+  return {
+    id: "",
+    original,
+    linhaOriginal: "",
+    unidade: "",
+    dataAtendimento: null,
+    paciente: "",
+    convenio: convenioFinal,
+    carteirinha: "",
+    cid: "",
+    procedimentoCodigo: procedimentoFinal,
+    procedimentoDescricao: "",
+    numeroAutorizacao: "",
+    autorizacaoValidade: null,
+    autorizacaoSessoesLimite: null,
+    sessaoNumero: null,
+    profissional: "",
+    profissionalRegistro: "",
+    valorCentavos: null,
+    observacaoRecepcao: observacaoFinal,
+    dataLancamento: null,
+    problemas: [],
+  };
 }
 
 /**
@@ -577,22 +741,33 @@ export async function conferirGuia(
   catalogo: Catalogo,
   opcoes: OpcoesConferencia = {},
 ): Promise<ResultadoVerificacao> {
-  // Snapshot ÚNICO dos três campos semânticos (§3.7): cada campo é capturado
-  // como propriedade PRÓPRIA de DADO no INÍCIO, antes de qualquer teste, teto,
-  // limite ou construção. Um objeto com getters mutáveis não pode devolver um
-  // valor CURTO nos tetos e um GIGANTE numa leitura posterior (TOCTOU): todo
-  // consumidor — teste de vazio, tetos de abuso, `entrada`/chave/cache, limites
-  // semânticos e o motor — usa exclusivamente estes valores, e `guiaLimitada` é
-  // a ÚNICA representação entregue ao motor em TODOS os caminhos.
-  const campoObservacao = guia.observacaoRecepcao;
-  const campoConvenio = guia.convenio;
-  const campoProcedimento = guia.procedimentoCodigo;
-  const guiaLimitada = guiaComCamposLimitados(
-    guia,
-    campoObservacao,
-    campoConvenio,
-    campoProcedimento,
-  );
+  // Captura ÚNICA e GUARDADA dos três campos semânticos (§3.7): cada campo é
+  // lido EXATAMENTE uma vez via `[[Get]]` (um getter hostil é lido uma vez,
+  // nunca relido — anti-TOCTOU) e um getter que LANCE vira captura inválida.
+  // Cada valor precisa ser uma string PRIMITIVA: um objeto com
+  // `length`/`trim`/`toJSON` divergentes passaria pelo vazio/teto (que só usam
+  // `length`/`trim`/`ToString`) enquanto `JSON.stringify` do payload do
+  // provedor invocaria `toJSON` e enviaria um corpo gigante.
+  const capturado = capturarCampos(guia);
+  const campoObservacao =
+    capturado !== null && typeof capturado.observacao === "string" ? capturado.observacao : "";
+  const campoConvenio =
+    capturado !== null && typeof capturado.convenio === "string" ? capturado.convenio : "";
+  const campoProcedimento =
+    capturado !== null && typeof capturado.procedimento === "string" ? capturado.procedimento : "";
+  const capturaValida =
+    capturado !== null &&
+    typeof capturado.observacao === "string" &&
+    typeof capturado.convenio === "string" &&
+    typeof capturado.procedimento === "string";
+
+  // Snapshot PURO DE DADOS entregue ao motor: `null` significa falha fechada
+  // determinística (reflexão hostil ou acessor em campo consumido). `??` só
+  // avalia `guiaMinima` quando o snapshot falhou.
+  const snapshot = capturaValida
+    ? guiaComCamposLimitados(guia, campoObservacao, campoConvenio, campoProcedimento)
+    : null;
+  const guiaLimitada = snapshot ?? guiaMinima(campoObservacao, campoConvenio, campoProcedimento);
 
   const referenciaTemporal = opcoes.referenciaTemporal;
   const registrador = opcoes.registrador;
@@ -633,6 +808,19 @@ export async function conferirGuia(
     }
     return resultado;
   };
+
+  // 0. Falha fechada do snapshot PRECEDE cache, quota e provedor: captura
+  // inválida (um dos três campos capturados não é string primitiva, ou um
+  // getter lançou) OU snapshot hostil (reflexão que lançou, acessor em campo
+  // consumido pelo motor). A MESMA forma de falha de configuração/validação é
+  // reutilizada (`PENDENTE`/`incompleta`, `inferencia_textual` nula), a guia
+  // mínima sustenta o motor determinístico e nenhum valor hostil é ecoado.
+  if (!capturaValida || snapshot === null) {
+    return concluir(
+      { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
+      { estado: "incompleta" },
+    );
+  }
 
   // 1. Observação vazia após `trim` PRECEDE os tetos de abuso (§3.6/#ac-1/
   // #uj-4). Uma observação vazia após `trim` sai pelo motor puro
