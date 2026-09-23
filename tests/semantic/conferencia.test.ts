@@ -149,18 +149,23 @@
 //     EXATAMENTE uma vez e entrega `completa`.
 //
 // 11. Teto ABSOLUTO de ABUSO em BYTES UTF-8 (reconciliação das visões
-//     anteriores): `LIMITE_TEXTO_BRUTO_BYTES = 64 * 1024` (65536) é um teto de
-//     abuso sobre o texto CRU da observação, medido em BYTES UTF-8 (nunca em
-//     unidades UTF-16 de `String.length`) ANTES de trim/cache/hash/envio. Acima
-//     dele a conferência falha fechada: `incompleta` +
-//     `observacao_acima_do_limite`, SEM chamada ao modelo, SEM leitura de cache
-//     e SEM hash. No limite ou abaixo, nada muda: o texto cru é preservado na
-//     chave e no payload e o limite SEMÂNTICO trimado de 1000 caracteres
-//     continua sendo o único limite de entrada — 4097 crus com 1000 trimados
-//     seguem enviados (não se restaura o teto cru pequeno da 3ª rodada, que
-//     recusava entradas válidas). §3.6 mantém a precedência do vazio: uma
-//     observação vazia após `trim` continua `nao_aplicavel` mesmo sendo só
-//     espaços — por isso não há caso de só-espaços acima do teto.
+//     anteriores), aplicado POR CAMPO CRU enviado ao provedor (observação,
+//     convênio e procedimento): `LIMITE_TEXTO_BRUTO_BYTES = 64 * 1024` (65536)
+//     é um teto de abuso sobre o texto CRU de CADA campo, medido em BYTES UTF-8
+//     (nunca em unidades UTF-16 de `String.length`) ANTES de trim/cache/hash/
+//     envio. Acima dele a conferência falha fechada sem nenhuma chamada ao
+//     modelo e sem nenhuma leitura de cache; a observação acima do teto carrega
+//     `observacao_acima_do_limite`, enquanto convênio/procedimento acima do teto
+//     NÃO introduzem código novo de limitação (espelham o transbordo de contexto
+//     pós-trim: `incompleta` + `checagem_textual_incompleta` apenas). No limite
+//     ou abaixo, nada muda: o texto cru é preservado na chave e no payload e os
+//     limites SEMÂNTICOS trimados (1000 observação, 200 contexto) continuam
+//     sendo os únicos limites de entrada — 4097 crus com 1000 trimados e um
+//     convênio de ~1009 crus com 9 trimados seguem enviados (não se restaura o
+//     teto cru pequeno da 3ª rodada, que recusava entradas válidas). §3.6 mantém
+//     a precedência do vazio: uma observação vazia após `trim` continua
+//     `nao_aplicavel` mesmo sendo só espaços — por isso não há caso de
+//     só-espaços acima do teto.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import regrasRaw from "../../docs/fontes/regras_convenio.json?raw";
@@ -1736,12 +1741,15 @@ describe("lt-retentativa-timeout-e-limites — reforço: teto absoluto de ABUSO 
   // 3ª rodada (que recusava entradas válidas como 4097 crus com 1000 após
   // `trim`); em vez disso há um teto ABSOLUTO de abuso alinhado ao limite de
   // corpo HTTP aprovado. `LIMITE_TEXTO_BRUTO_BYTES = 64 * 1024` (65536) BYTES
-  // UTF-8 medidos no texto CRU antes de trim/cache/hash/envio. Acima dele:
-  // `incompleta` + `observacao_acima_do_limite`, SEM chamada ao modelo, SEM
-  // leitura de cache e SEM hash. No limite ou abaixo, nada muda: o texto cru é
-  // preservado na chave/payload e o limite SEMÂNTICO trimado de 1000 caracteres
-  // continua sendo o único limite de entrada. A medição é em BYTES UTF-8, nunca
-  // em unidades UTF-16 de `String.length`: `á` custa 2 bytes.
+  // UTF-8 medidos no texto CRU de CADA campo do payload do provedor
+  // (observação, convênio, procedimento) antes de trim/cache/hash/envio. Acima
+  // dele: `incompleta` sem chamada ao modelo e sem leitura de cache. Na
+  // observação a limitação é `observacao_acima_do_limite`; em convênio/
+  // procedimento não há código novo (só `checagem_textual_incompleta`, como no
+  // transbordo pós-trim de 200). No limite ou abaixo, nada muda: o texto cru é
+  // preservado na chave/payload e os limites SEMÂNTICOS trimados (1000/200)
+  // continuam sendo os únicos limites de entrada. A medição é em BYTES UTF-8,
+  // nunca em unidades UTF-16 de `String.length`: `á` custa 2 bytes.
   const LIMITE_TEXTO_BRUTO_BYTES = 64 * 1024;
 
   it("padding de espaços acima do teto absoluto não lê cache, não chama o modelo e produz incompleta", async () => {
@@ -1847,6 +1855,96 @@ describe("lt-retentativa-timeout-e-limites — reforço: teto absoluto de ABUSO 
     });
 
     expect(interpretador.chamadas).toHaveLength(1);
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(resultado.limitacoes).not.toContain("observacao_acima_do_limite");
+  });
+
+  it("convênio com padding de espaços acima do teto de abuso falha fechada sem nova limitação de contexto", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // 65537 espaços + `X`: 65538 BYTES UTF-8 crus no campo de convênio, mas
+    // comprimento TRIMADO 1 (passaria o limite semântico de 200). O payload do
+    // provedor serializa convênio e procedimento além da observação, então o
+    // mesmo teto de abuso mede CADA campo cru.
+    const convenioCru = " ".repeat(LIMITE_TEXTO_BRUTO_BYTES + 1) + "X";
+    expect(new TextEncoder().encode(convenioCru)).toHaveLength(LIMITE_TEXTO_BRUTO_BYTES + 2);
+    expect(convenioCru.trim()).toHaveLength(1);
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_ADMIN, convenio: convenioCru });
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_ADMIN)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    // O teto precede cache e modelo: nada é lido e nada é enviado.
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(kv.leituras).toBe(0);
+    expect(resultado.inferencia_textual).toBeNull();
+    // Transbordo de contexto NÃO introduz código novo: só a incompletude textual.
+    expect(resultado.limitacoes).toContain("checagem_textual_incompleta");
+    expect(resultado.limitacoes).not.toContain("observacao_acima_do_limite");
+  });
+
+  it("procedimento com padding de espaços acima do teto de abuso falha fechada sem nova limitação de contexto", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // 65537 espaços + `9`: 65538 BYTES UTF-8 crus no campo de procedimento, com
+    // comprimento TRIMADO 1.
+    const procedimentoCru = " ".repeat(LIMITE_TEXTO_BRUTO_BYTES + 1) + "9";
+    expect(new TextEncoder().encode(procedimentoCru)).toHaveLength(LIMITE_TEXTO_BRUTO_BYTES + 2);
+    expect(procedimentoCru.trim()).toHaveLength(1);
+
+    const guia = guiaSintetica({
+      observacao_recepcao: TEXTO_ADMIN,
+      procedimento_codigo: procedimentoCru,
+    });
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_ADMIN)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(kv.leituras).toBe(0);
+    expect(resultado.inferencia_textual).toBeNull();
+    expect(resultado.limitacoes).toContain("checagem_textual_incompleta");
+    expect(resultado.limitacoes).not.toContain("observacao_acima_do_limite");
+  });
+
+  it("convênio com padding abaixo do teto continua sendo enviado (não restaura o teto cru pequeno)", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // ~1009 BYTES UTF-8 crus, mas 9 após `trim` ("Vitalcard"): MUITO abaixo do
+    // teto de abuso. O teto apenas limita o abuso; NÃO restaura o teto cru
+    // pequeno removido na 3ª rodada (que recusava entradas válidas).
+    const convenioCru = " ".repeat(1000) + "Vitalcard";
+    expect(convenioCru).toHaveLength(1009);
+    expect(convenioCru.trim()).toBe("Vitalcard");
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_ADMIN, convenio: convenioCru });
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_ADMIN)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+    });
+
+    // Abaixo do teto: o convênio CRU é enviado ao provedor exatamente uma vez.
+    expect(interpretador.chamadas).toHaveLength(1);
+    expect(interpretador.chamadas[0]?.convenio).toBe(convenioCru);
     expect(resultado.checagem_textual).toBe("completa");
     expect(resultado.limitacoes).not.toContain("observacao_acima_do_limite");
   });
