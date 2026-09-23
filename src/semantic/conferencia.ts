@@ -41,7 +41,11 @@ import type {
   RespostaBruta,
   SinaisObservacao,
 } from "./contratos";
-import type { ClassificacaoEstavel, RegistradorRedigido } from "./observabilidade";
+import type {
+  CamposPermitidos,
+  ClassificacaoEstavel,
+  RegistradorRedigido,
+} from "./observabilidade";
 import { PROMPT_HASH, versaoEfetivaDoPrompt } from "./prompt";
 import { criarQuotaDeChamadas } from "./quota";
 import type { ObservadorContadores, QuotaDeChamadas } from "./quota";
@@ -220,6 +224,47 @@ function contextoDaConfiguracao(modelo: string): ContextoChaveCacheSemantica {
 }
 
 /**
+ * Emissão best-effort de um evento redigido: TODA a emissão da conferência
+ * passa por aqui. Um `RegistradorRedigido` hostil que lance em `info` nunca
+ * rejeita a Promise de `conferirGuia` — a exceção é engolida e o evento (ou a
+ * falha) permanece descrito pelo `ResultadoVerificacao` devolvido. O nome e os
+ * campos de cada evento continuam idênticos; muda apenas o modo de falha.
+ */
+function emitir(
+  registrador: RegistradorRedigido | undefined,
+  evento: string,
+  campos: CamposPermitidos,
+): void {
+  try {
+    registrador?.info(evento, campos);
+  } catch {
+    // Logging best-effort: falha do destino nunca vira falha da conferência.
+  }
+}
+
+/**
+ * Notificação best-effort do observador de contadores: TODA notificação da
+ * conferência passa por aqui. Um `ObservadorContadores` hostil que lance nunca
+ * rejeita a Promise de `conferirGuia` — a exceção é engolida e nenhuma decisão
+ * muda (chamadas ao modelo, consumo de quota, leitura/gravação de cache e
+ * resultado permanecem idênticos); só a telemetria falha em silêncio. Nunca
+ * `console.*`.
+ */
+function notificarObservador(
+  observador: ObservadorContadores | undefined,
+  notificar: (observador: ObservadorContadores) => void,
+): void {
+  if (!observador) {
+    return;
+  }
+  try {
+    notificar(observador);
+  } catch {
+    // Telemetria best-effort: falha do observador nunca vira falha da conferência.
+  }
+}
+
+/**
  * A resposta só é aceita quando o provedor confirma a identidade configurada
  * (`modelo` e versão efetiva do prompt); uma resposta de outra identidade é
  * tratada como `configuracao` (sem código estável) e nunca é cacheada.
@@ -311,7 +356,7 @@ export async function conferirGuia(
   // 1. Observação vazia após `trim`: motor puro, sem cache, quota ou inferência.
   if (guia.observacaoRecepcao.trim() === "") {
     const resultado = verificarGuia(guia, catalogo, { referenciaTemporal });
-    registrador?.info("conferencia_concluida", {
+    emitir(registrador, "conferencia_concluida", {
       estado: "nao_aplicavel",
       duracao_ms: Math.max(0, agora() - inicio),
       tentativas: 0,
@@ -342,14 +387,14 @@ export async function conferirGuia(
     }
     const duracao_ms = Math.max(0, agora() - inicio);
     if (extras.estado === "incompleta") {
-      registrador?.info("conferencia_falhou", {
+      emitir(registrador, "conferencia_falhou", {
         estado: "incompleta",
         ...(extras.codigo ? { codigo: extras.codigo } : {}),
         duracao_ms,
         tentativas,
       });
     } else {
-      registrador?.info("conferencia_concluida", {
+      emitir(registrador, "conferencia_concluida", {
         estado: "completa",
         duracao_ms,
         tentativas,
@@ -409,14 +454,14 @@ export async function conferirGuia(
       sinais = await cache.ler(entrada, contexto);
     } catch {
       sinais = null;
-      registrador?.info("cache_leitura_falhou", {
+      emitir(registrador, "cache_leitura_falhou", {
         estado: "incompleta",
         codigo: "cache_indisponivel",
         cache_prefixo: montarChaveCacheSemantica(entrada, contexto).prefixo,
       });
     }
     if (sinais) {
-      observador?.registrarCacheHit();
+      notificarObservador(observador, (o) => o.registrarCacheHit());
       return concluir(
         {
           estado: "completa",
@@ -446,7 +491,37 @@ export async function conferirGuia(
 
   // 6. Tentativas estritamente sequenciais, com no máximo uma retentativa.
   for (;;) {
-    if (quota && !quota.consumir()) {
+    // Quota consultada sob guarda: um `consumir()` que lance (por exemplo, um
+    // observador hostil injetado na quota) é tratado como recusa fechada e cai
+    // no MESMO caminho de recusa abaixo — a exceção nunca escapa da conferência
+    // nem pula o evento, a contagem e o resultado `incompleta`.
+    let quotaAutorizou = true;
+    if (quota) {
+      try {
+        quotaAutorizou = quota.consumir();
+      } catch {
+        quotaAutorizou = false;
+      }
+    }
+    if (!quotaAutorizou) {
+      // Contagem única da recusa: a orquestração (não a quota injetada) registra
+      // a métrica e emite `quota_recusada` — antes de `registrarChamada()` e de
+      // qualquer envio — e retorna imediatamente, sem segunda contagem.
+      //
+      // LIMITAÇÃO CONHECIDA (propriedade da tarefa da quota, `quota.ts`): a
+      // orquestração conta a recusa por quotas que NÃO se auto-reportam (a quota
+      // padrão compartilhada do isolate não tem observador). Como
+      // `QuotaDeChamadas` expõe apenas `consumir()`, o núcleo não tem como
+      // detectar que uma quota injetada, criada com o MESMO observador, já
+      // reportou a mesma recusa em `consumir()`. Chamadores não devem conectar o
+      // mesmo observador nos dois lados; o alinhamento rigoroso exatamente-uma-
+      // vez pertence à tarefa dona de `src/semantic/quota.ts`.
+      notificarObservador(observador, (o) => o.registrarRecusaQuota());
+      emitir(registrador, "quota_recusada", {
+        estado: "incompleta",
+        codigo: "quota_excedida",
+        tentativas,
+      });
       return concluir(
         tentativas > 0
           ? {
@@ -464,9 +539,9 @@ export async function conferirGuia(
       );
     }
 
-    observador?.registrarChamada();
+    notificarObservador(observador, (o) => o.registrarChamada());
     tentativas += 1;
-    registrador?.info("extracao_iniciada", { tentativas });
+    emitir(registrador, "extracao_iniciada", { tentativas });
 
     const tentativa = await tentarExtracao(interpretador, entrada, timeoutMs);
 
@@ -476,7 +551,7 @@ export async function conferirGuia(
       // Identidade efetiva do provedor: só a configurada é aceita. Mismatch
       // fecha sem gravar cache, sem retentar e sem relabelar como padrão.
       if (!identidadeConfere(resposta, contexto)) {
-        registrador?.info("extracao_falhou", {
+        emitir(registrador, "extracao_falhou", {
           estado: "incompleta",
           tentativas,
         });
@@ -493,7 +568,7 @@ export async function conferirGuia(
 
       // Teto de saída antes do parse.
       if (bytesDoTexto(resposta.texto) > LIMITE_RESPOSTA_BYTES) {
-        registrador?.info("extracao_falhou", {
+        emitir(registrador, "extracao_falhou", {
           estado: "incompleta",
           codigo: "limite_excedido",
           tentativas,
@@ -512,7 +587,7 @@ export async function conferirGuia(
       const validacao = validarExtracao(resposta.texto, entrada.observacao_recepcao);
       if (!validacao.ok) {
         const codigo = codigoDaValidacao(validacao.erro);
-        registrador?.info("extracao_falhou", {
+        emitir(registrador, "extracao_falhou", {
           estado: "incompleta",
           codigo,
           tentativas,
@@ -533,7 +608,7 @@ export async function conferirGuia(
         try {
           await cache.gravar(entrada, contexto, validacao.sinais);
         } catch {
-          registrador?.info("cache_gravacao_falhou", {
+          emitir(registrador, "cache_gravacao_falhou", {
             estado: "incompleta",
             codigo: "cache_indisponivel",
             cache_prefixo: montarChaveCacheSemantica(entrada, contexto).prefixo,
@@ -541,7 +616,7 @@ export async function conferirGuia(
         }
       }
 
-      registrador?.info("extracao_concluida", {
+      emitir(registrador, "extracao_concluida", {
         estado: "completa",
         itens: validacao.sinais.sinais.length,
         tentativas,
@@ -562,7 +637,7 @@ export async function conferirGuia(
         ? "timeout"
         : classificarFalhaComGuarda(classificar, tentativa.erro);
     const codigoFalha = codigoDaClassificacao(classificacao);
-    registrador?.info("extracao_falhou", {
+    emitir(registrador, "extracao_falhou", {
       estado: "incompleta",
       ...(codigoFalha ? { codigo: codigoFalha } : {}),
       tentativas,
