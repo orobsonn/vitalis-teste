@@ -84,6 +84,8 @@ export interface OpcoesConferencia {
   registrador?: RegistradorRedigido;
   /** Observador dos contadores de operação. */
   observador?: ObservadorContadores;
+  /** Modelo fixado por configuração; padrão `MODELO_OBSERVACAO`. */
+  modelo?: string;
   /** Timeout por tentativa em ms; padrão `TIMEOUT_PADRAO_MS`. */
   timeoutMs?: number;
   /** Relógio injetável para durações observáveis; padrão `Date.now`. */
@@ -166,10 +168,20 @@ function codigoDaValidacao(erro: string): ClassificacaoEstavel {
   return "schema_invalido";
 }
 
+/**
+ * Modelo efetivo da configuração: só uma string não vazia após `trim` é
+ * aceita (preservada literalmente, para conferir com a identidade devolvida
+ * pelo provedor); qualquer outra forma (`undefined`, vazia, whitespace ou
+ * não-string) recai no padrão `MODELO_OBSERVACAO`, nunca numa identidade vazia.
+ */
+function normalizarModelo(valor: unknown): string {
+  return typeof valor === "string" && valor.trim() !== "" ? valor : MODELO_OBSERVACAO;
+}
+
 /** Identidade de inferência e de cache, sempre derivada da configuração. */
-function contextoDaConfiguracao(): ContextoChaveCacheSemantica {
+function contextoDaConfiguracao(modelo: string): ContextoChaveCacheSemantica {
   return {
-    modelo: MODELO_OBSERVACAO,
+    modelo,
     promptVersao: versaoEfetivaDoPrompt(),
     promptHash: PROMPT_HASH,
   };
@@ -280,7 +292,7 @@ export async function conferirGuia(
     convenio: guia.convenio,
     procedimento_codigo: guia.procedimentoCodigo,
   };
-  const contexto = contextoDaConfiguracao();
+  const contexto = contextoDaConfiguracao(normalizarModelo(opcoes.modelo));
 
   const concluir = (
     textual: TextualValidado,
