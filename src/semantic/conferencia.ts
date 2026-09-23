@@ -10,11 +10,14 @@
  * - Observação vazia após `trim` sai pelo motor puro (`nao_aplicavel`), sem
  *   cache, sem quota e sem inferência; o texto CRU é preservado na chave e no
  *   payload, e o `trim` serve apenas para vazio e limites.
- * - Limites de entrada (1000 caracteres de observação, 200 de convênio e de
- *   procedimento, após `trim`) são checados antes de qualquer leitura de cache
- *   ou chamada.
- * - Cache miss/hit, quota antes de cada tentativa, timeout real por tentativa
- *   (`setTimeout`), retentativa apenas para falha `transporte` (429/5xx),
+ * - Tetos ABSOLUTOS de caracteres CRUS (observação 4096, convênio/procedimento
+ *   200) são checados antes de `trim`, hash, cache e envio; os limites
+ *   semânticos após `trim` (1000 observação, 200 contexto) permanecem.
+ * - Quota antes de cada tentativa, com uma ÚNICA instância padrão do isolate
+ *   (60/60000 ms) usada quando a quota é omitida ou `null`.
+ * - Cache miss/hit, timeout real por tentativa
+ *   (`setTimeout`), retentativa apenas para falha `transporte` com `status`
+ *   transitório PRÓPRIO do erro (429/5xx),
  *   resposta acima de 16 KiB rejeitada antes do parse e gravação best-effort.
  * - Falha fechada: erro, timeout, configuração ausente, schema/evidência/limite,
  *   quota e observação acima do teto produzem `incompleta` com os achados
@@ -40,6 +43,7 @@ import type {
 } from "./contratos";
 import type { ClassificacaoEstavel, RegistradorRedigido } from "./observabilidade";
 import { PROMPT_HASH, versaoEfetivaDoPrompt } from "./prompt";
+import { criarQuotaDeChamadas } from "./quota";
 import type { ObservadorContadores, QuotaDeChamadas } from "./quota";
 import { validarExtracao } from "./validacao";
 import { MODELO_OBSERVACAO } from "./workers-ai";
@@ -48,12 +52,30 @@ import { MODELO_OBSERVACAO } from "./workers-ai";
 export const LIMITE_OBSERVACAO = 1000;
 /** Teto de caracteres de convênio e de procedimento após `trim` (§3.9). */
 export const LIMITE_CONTEXTO = 200;
+/**
+ * Teto ABSOLUTO de caracteres CRUS da observação (§3.9), avaliado antes de
+ * `trim`, hash, cache e envio. Exclusivo: exatamente 4096 ainda é enviado.
+ */
+export const LIMITE_OBSERVACAO_CRU = 4096;
+/**
+ * Teto ABSOLUTO de caracteres CRUS de convênio e de procedimento, avaliado
+ * antes do `trim`. Exclusivo e sem código/limitação novo: espelha o teto
+ * semântico `LIMITE_CONTEXTO`.
+ */
+export const LIMITE_CONTEXTO_CRU = 200;
 /** Teto, em bytes UTF-8, da resposta serializada do provedor (§3.9). */
 export const LIMITE_RESPOSTA_BYTES = 16 * 1024;
 /** Timeout padrão por tentativa, em milissegundos (§3.9). */
 export const TIMEOUT_PADRAO_MS = 5000;
 /** Número máximo de tentativas por conferência: original + uma retentativa. */
 export const MAXIMO_TENTATIVAS = 2;
+
+/**
+ * Quota padrão do isolate (§3.9): UMA única instância criada no carregamento do
+ * módulo (60 chamadas / 60000 ms) e compartilhada por toda `conferirGuia` que
+ * não receba quota injetada. Nunca é criada por chamada.
+ */
+const QUOTA_PADRAO = criarQuotaDeChamadas();
 
 /** Limitação nomeada da observação acima do teto de entrada (§3.9). */
 export const LIMITACAO_OBSERVACAO_ACIMA_DO_LIMITE = "observacao_acima_do_limite";
@@ -129,6 +151,16 @@ function classificarPadrao(erro: unknown): ClassificacaoFalha {
     return "transporte";
   }
   return "nao_transitorio";
+}
+
+/**
+ * Só o `status` transitório PRÓPRIO do erro (429 ou ≥500) autoriza a
+ * retentativa; usa a mesma leitura guardada de `statusDoErro` (propriedade
+ * própria de dado, sem avaliar acessores arbitrários).
+ */
+function statusTransitorio(erro: unknown): boolean {
+  const status = statusDoErro(erro);
+  return status === 429 || (status !== null && status >= 500);
 }
 
 /** Normaliza o timeout: só número finito positivo; qualquer outra forma usa o padrão. */
@@ -326,7 +358,29 @@ export async function conferirGuia(
     return resultado;
   };
 
-  // 2. Limites de entrada antes de qualquer cache ou chamada.
+  // 2. Tetos ABSOLUTOS de caracteres CRUS, antes de `trim`, hash, cache e de
+  //    qualquer envio. Exclusivos: exatamente o teto segue adiante.
+  if (guia.observacaoRecepcao.length > LIMITE_OBSERVACAO_CRU) {
+    return concluir(
+      { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
+      {
+        estado: "incompleta",
+        limitacoes: [LIMITACAO_OBSERVACAO_ACIMA_DO_LIMITE],
+        codigo: "limite_excedido",
+      },
+    );
+  }
+  if (
+    guia.convenio.length > LIMITE_CONTEXTO_CRU ||
+    guia.procedimentoCodigo.length > LIMITE_CONTEXTO_CRU
+  ) {
+    return concluir(
+      { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
+      { estado: "incompleta", codigo: "limite_excedido" },
+    );
+  }
+
+  // 3. Limites semânticos de entrada (após `trim`), ainda sem cache ou chamada.
   if (guia.observacaoRecepcao.trim().length > LIMITE_OBSERVACAO) {
     return concluir(
       { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
@@ -347,7 +401,7 @@ export async function conferirGuia(
     );
   }
 
-  // 3. Cache semântico: hit válido entrega `completa` sem modelo nem quota.
+  // 4. Cache semântico: hit válido entrega `completa` sem modelo nem quota.
   const cache = opcoes.cache ?? null;
   if (cache) {
     let sinais: SinaisObservacao | null = null;
@@ -375,7 +429,7 @@ export async function conferirGuia(
     }
   }
 
-  // 4. Configuração ausente: sem tentativa e sem identidade de inferência.
+  // 5. Configuração ausente: sem tentativa e sem identidade de inferência.
   const interpretador = opcoes.interpretador ?? null;
   if (!interpretador) {
     return concluir(
@@ -386,9 +440,11 @@ export async function conferirGuia(
 
   const classificar = opcoes.classificarFalha ?? classificarPadrao;
   const timeoutMs = normalizarTimeout(opcoes.timeoutMs);
-  const quota = opcoes.quota ?? null;
+  // Quota: injetada quando presente; ausente OU `null` usa a instância padrão
+  // do isolate (nunca uma nova instância por chamada).
+  const quota = opcoes.quota ?? QUOTA_PADRAO;
 
-  // 5. Tentativas estritamente sequenciais, com no máximo uma retentativa.
+  // 6. Tentativas estritamente sequenciais, com no máximo uma retentativa.
   for (;;) {
     if (quota && !quota.consumir()) {
       return concluir(
@@ -512,7 +568,15 @@ export async function conferirGuia(
       tentativas,
     });
 
-    if (classificacao === "transporte" && tentativas < MAXIMO_TENTATIVAS) {
+    // Retentativa exige a classificação `transporte` E o `status` transitório
+    // PRÓPRIO do erro (429 ou ≥500): o classificador injetado continua
+    // autoritativo na direção negativa, mas não autoriza sozinho a retentativa.
+    if (
+      classificacao === "transporte" &&
+      tentativa.tipo === "erro" &&
+      statusTransitorio(tentativa.erro) &&
+      tentativas < MAXIMO_TENTATIVAS
+    ) {
       continue;
     }
 
