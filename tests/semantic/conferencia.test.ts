@@ -176,6 +176,20 @@
 //     (`PENDENTE`/`incompleta`/`checagem_textual_incompleta`) com uma
 //     representação LIMITADA, sem expor o valor acima do teto, mantendo
 //     intactos cache, quota e provedor (zero leituras e zero chamadas).
+//
+// 13. Precedência do vazio também entrega representação LIMITADA (revisão de
+//     segurança, MEDIUM): uma observação vazia após `trim` sai pelo motor puro
+//     (`nao_aplicavel`, §3.6) ANTES das checagens de abuso — mas, se o caminho
+//     vazio passar a guia CRUA ao motor, o campo gigante de
+//     convênio/procedimento ainda é interpolado em `motivos[].evidencia`
+//     (`O convênio "<campo>" não consta no catálogo.`), devolvendo o corpo
+//     rejeitado ao cliente. O vazio precisa PRESERVAR `nao_aplicavel`, a
+//     ausência de inferência e os zero efeitos colaterais (cache/quota/
+//     provedor) e, ao MESMO tempo, entregar ao motor a representação LIMITADA
+//     (marcador fixo): o corpo rejeitado nunca é interpolado. O marcador é não
+//     vazio e não catalogado, então `convenio_nao_catalogado`/
+//     `procedimento_nao_catalogado` continuam e nenhum falso `*_ausente`
+//     aparece.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import regrasRaw from "../../docs/fontes/regras_convenio.json?raw";
@@ -2016,6 +2030,77 @@ describe("lt-retentativa-timeout-e-limites — reforço: teto absoluto de ABUSO 
       expect(resultado.checagem_textual, caso.rotulo).toBe("incompleta");
       expect(resultado.limitacoes, caso.rotulo).toContain("checagem_textual_incompleta");
       expect(codigos(resultado), caso.rotulo).toContain(caso.codigoEsperado);
+
+      // A representação é LIMITADA: o campo rejeitado nunca chega à evidência,
+      // nem truncado no prefixo longo.
+      const serializado = JSON.stringify(resultado);
+      expect(serializado.length, caso.rotulo).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+      expect(serializado, caso.rotulo).not.toContain(gigante);
+      expect(serializado, caso.rotulo).not.toContain(gigante.slice(0, 1024));
+    }
+  });
+
+  it("observação vazia com convênio ou procedimento acima do teto devolve resultado LIMITADO sem expor o corpo", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // §3.6 mantém a precedência do vazio: uma observação só-espaços sai pelo
+    // motor puro (`nao_aplicavel`) ANTES das checagens de abuso. Mesmo assim, o
+    // caminho vazio NÃO pode passar a guia CRUA ao motor: um convênio/
+    // procedimento acima do teto seria interpolado em `motivos[].evidencia` e
+    // devolveria o corpo rejeitado. Sentinela genuinamente grande: 200000
+    // espaços + `X` ≈ 200001 BYTES UTF-8 crus (bem acima de 64 KiB), mas
+    // comprimento TRIMADO 1. Construído por `repeat`, sem concatenar strings
+    // gigantes.
+    const gigante = " ".repeat(200_000) + "X";
+    expect(new TextEncoder().encode(gigante).length).toBeGreaterThan(64 * 1024);
+    expect(gigante.trim()).toHaveLength(1);
+
+    const casos: Array<{
+      rotulo: string;
+      codigoEsperado: string;
+      codigoAusenteProibido: string;
+      overrides: Partial<Record<Coluna, string>>;
+    }> = [
+      {
+        rotulo: "convênio",
+        codigoEsperado: "convenio_nao_catalogado",
+        codigoAusenteProibido: "convenio_ausente",
+        overrides: { observacao_recepcao: "   ", convenio: gigante },
+      },
+      {
+        rotulo: "procedimento",
+        codigoEsperado: "procedimento_nao_catalogado",
+        codigoAusenteProibido: "procedimento_ausente",
+        overrides: { observacao_recepcao: "   ", procedimento_codigo: gigante },
+      },
+    ];
+
+    for (const caso of casos) {
+      const guia = guiaSintetica(caso.overrides);
+      const kv = criarKvFake();
+      const quota = criarQuotaFake();
+      const interpretador = criarInterpretadorFake([resposta(api, SINAIS_ADMIN)]);
+
+      const resultado = await api.conferirGuia(guia, catalogo, {
+        interpretador: interpretador.interpretador,
+        cache: api.criarAdaptadorCacheSemantico(kv.kv),
+        quota: quota.quota,
+      });
+
+      // §3.6 preservado: vazio após `trim` continua `nao_aplicavel`, sem
+      // inferência e sem qualquer efeito colateral faturável.
+      expect(resultado.checagem_textual, caso.rotulo).toBe("nao_aplicavel");
+      expect(resultado.inferencia_textual, caso.rotulo).toBeNull();
+      expect(interpretador.chamadas, caso.rotulo).toHaveLength(0);
+      expect(kv.leituras, caso.rotulo).toBe(0);
+      expect(kv.gravacoes, caso.rotulo).toBe(0);
+      expect(quota.consumidas, caso.rotulo).toBe(0);
+
+      // O marcador limitado é não vazio e não catalogado: o código
+      // determinístico é preservado e nenhum falso `*_ausente` aparece.
+      expect(codigos(resultado), caso.rotulo).toContain(caso.codigoEsperado);
+      expect(codigos(resultado), caso.rotulo).not.toContain(caso.codigoAusenteProibido);
 
       // A representação é LIMITADA: o campo rejeitado nunca chega à evidência,
       // nem truncado no prefixo longo.
