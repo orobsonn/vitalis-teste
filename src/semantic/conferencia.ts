@@ -39,10 +39,15 @@
  */
 
 import type { Catalogo } from "../domain/catalogo";
+import { COLUNAS_GUIA } from "../domain/contratos";
+import type { ColunaGuia, GuiaOriginal } from "../domain/contratos";
+import { dataParaIso, parseDataCivil } from "../domain/datas";
 import type { DataCivil } from "../domain/datas";
+import { valorParaCentavos } from "../domain/dinheiro";
 import { verificarGuia } from "../domain/motor";
 import type { ResultadoVerificacao } from "../domain/motor";
-import type { GuiaNormalizada } from "../domain/normalizacao";
+import { inteiroDaGuia, normalizarGuia } from "../domain/normalizacao";
+import type { CodigoProblema, GuiaNormalizada, ProblemaNormalizacao } from "../domain/normalizacao";
 import type { TextualValidado } from "../domain/policies/textuais";
 
 import { montarChaveCacheSemantica } from "./cache";
@@ -187,37 +192,831 @@ function acimaDoTetoDeAbuso(texto: string): boolean {
 const MARCADOR_TETO_ABUSO = "[campo_acima_do_teto_de_abuso]";
 
 /**
- * Cópia LIMITADA da guia: cada campo acima do teto de abuso é trocado pelo
- * marcador fixo, tanto no campo de topo (`observacaoRecepcao`/`convenio`/
- * `procedimentoCodigo`) quanto na célula `original` correspondente; todos os
- * demais campos permanecem intactos. Usada apenas como entrada do motor na
- * recusa de abuso, para que o resultado determinístico seja limitado: o
- * marcador é não vazio e não catalogado, então `convenio_nao_catalogado` e
- * `procedimento_nao_catalogado` continuam e nenhum falso `*_ausente` aparece.
+ * Aplica o teto ABSOLUTO de abuso a UM campo capturado: o texto cru acima do
+ * teto vira o marcador fixo, de modo que nem o campo de topo nem a célula
+ * `original` carreguem o corpo rejeitado (amplificação de memória/resposta).
  */
-function guiaComCamposLimitados(guia: GuiaNormalizada): GuiaNormalizada {
-  const observacaoAcima = acimaDoTetoDeAbuso(guia.observacaoRecepcao);
-  const convenioAcima = acimaDoTetoDeAbuso(guia.convenio);
-  const procedimentoAcima = acimaDoTetoDeAbuso(guia.procedimentoCodigo);
-  if (!observacaoAcima && !convenioAcima && !procedimentoAcima) {
-    return guia;
+function limitarCampo(texto: string): string {
+  return acimaDoTetoDeAbuso(texto) ? MARCADOR_TETO_ABUSO : texto;
+}
+
+/** Define um descritor PRÓPRIO de DADO: nenhum acessor é criado nem retido. */
+function definirDado(alvo: object, chave: string, valor: unknown): void {
+  Object.defineProperty(alvo, chave, {
+    value: valor,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+}
+
+/** Registro INERTE (sem protótipo) pronto para receber apenas dados. */
+function registroInerte(): Record<string, unknown> {
+  return Object.create(null) as Record<string, unknown>;
+}
+
+/**
+ * Verdadeiro para uma string PRIMITIVA dentro do teto ABSOLUTO de abuso em
+ * BYTES UTF-8. Um objeto coercível, uma função, um `Proxy` ou uma string
+ * gigante são MALFORMADOS: o snapshot do motor não pode carregá-los.
+ */
+function stringInerte(valor: unknown): valor is string {
+  return typeof valor === "string" && !acimaDoTetoDeAbuso(valor);
+}
+
+/**
+ * Clona um `DataCivil` PRÓPRIO de DADO como registro inerte, sem avaliar
+ * acessores: `null` é a ausência válida; `undefined` marca MALFORMADO (não é
+ * `null`/registro, faltam `ano`/`mes`/`dia`, algum não é INTEIRO, ou a tripla
+ * não é uma data REAL de 4 dígitos do calendário aceito por `parseDataCivil`).
+ * O calendário real (mês 1..12, dia dentro do mês, ano bissexto) e a faixa de
+ * ano são validados pelo ROUND-TRIP `dataParaIso`/`parseDataCivil` do próprio
+ * domínio, sem duplicar limites: uma data que o normalizador não produziria
+ * (impossível, fracionária ou fora da faixa) fecha o snapshot em vez de chegar
+ * ao motor e desviar cronologia/validade.
+ */
+function clonarDataInerte(valor: unknown): DataCivil | null | undefined {
+  if (valor === null) {
+    return null;
   }
-  const original = { ...guia.original };
-  if (observacaoAcima) {
-    original.observacao_recepcao = MARCADOR_TETO_ABUSO;
+  if (typeof valor !== "object" || Array.isArray(valor)) {
+    return undefined;
   }
-  if (convenioAcima) {
-    original.convenio = MARCADOR_TETO_ABUSO;
+  let descritores: Record<string, PropertyDescriptor>;
+  try {
+    descritores = Object.getOwnPropertyDescriptors(valor);
+  } catch {
+    return undefined;
   }
-  if (procedimentoAcima) {
-    original.procedimento_codigo = MARCADOR_TETO_ABUSO;
+  const saida = registroInerte();
+  for (const chave of ["ano", "mes", "dia"]) {
+    const descritor = descritores[chave];
+    if (!descritor || !("value" in descritor)) {
+      return undefined;
+    }
+    const numero = descritor.value;
+    if (typeof numero !== "number" || !Number.isInteger(numero)) {
+      return undefined;
+    }
+    definirDado(saida, chave, numero);
   }
+  const data = saida as unknown as DataCivil;
+  const revalidada = parseDataCivil(dataParaIso(data));
+  if (
+    revalidada === null ||
+    revalidada.ano !== data.ano ||
+    revalidada.mes !== data.mes ||
+    revalidada.dia !== data.dia
+  ) {
+    return undefined;
+  }
+  return data;
+}
+
+/**
+ * `null` ou inteiro dentro do domínio `inteiroDaGuia` (1..10000); `undefined`
+ * marca MALFORMADO. Reusa a MESMA gramática do normalizador convertendo o
+ * número de volta para texto, sem duplicar o intervalo: fracionário, fora da
+ * faixa, não finito ou não numérico nunca é aceito.
+ */
+function inteiroDaGuiaInerte(valor: unknown): number | null | undefined {
+  if (valor === null) {
+    return null;
+  }
+  if (typeof valor !== "number" || !Number.isInteger(valor)) {
+    return undefined;
+  }
+  const normalizado = inteiroDaGuia(String(valor));
+  return normalizado === null ? undefined : normalizado;
+}
+
+/**
+ * `null` ou CENTAVOS como inteiro seguro NÃO NEGATIVO — o mesmo domínio de
+ * `valorParaCentavos`; `undefined` marca MALFORMADO (negativo, fracionário ou
+ * fora do inteiro seguro).
+ */
+function centavosInertes(valor: unknown): number | null | undefined {
+  if (valor === null) {
+    return null;
+  }
+  return typeof valor === "number" && Number.isSafeInteger(valor) && valor >= 0
+    ? valor
+    : undefined;
+}
+
+/** Vocabulário FECHADO de códigos de problema que `normalizarGuia` emite. */
+const CODIGOS_PROBLEMA_VALIDOS: readonly CodigoProblema[] = [
+  "data_invalida",
+  "valor_ilegivel",
+  "campo_numerico_invalido",
+];
+
+/** Campos que `normalizarGuia` realmente verifica ao emitir problemas. */
+const CAMPOS_PROBLEMA_VALIDOS: readonly ColunaGuia[] = [
+  "data_atendimento",
+  "autorizacao_validade",
+  "data_lancamento",
+  "autorizacao_sessoes_limite",
+  "sessao_numero_na_autorizacao",
+  "valor",
+];
+
+/**
+ * Compatibilidade `(codigo, campo)` do normalizador: `data_invalida` só para
+ * os três campos de data, `campo_numerico_invalido` só para os dois inteiros
+ * de sessão e `valor_ilegivel` só para `valor`. Um código real num campo
+ * incompatível é tão hostil quanto um código desconhecido.
+ */
+const CAMPOS_POR_CODIGO_PROBLEMA: Record<CodigoProblema, readonly ColunaGuia[]> = {
+  data_invalida: ["data_atendimento", "autorizacao_validade", "data_lancamento"],
+  valor_ilegivel: ["valor"],
+  campo_numerico_invalido: ["autorizacao_sessoes_limite", "sessao_numero_na_autorizacao"],
+};
+
+/**
+ * Campo NORMALIZADO que uma célula com problema deixa `null` em
+ * `normalizarGuia`: a data, o inteiro de sessão ou `valorCentavos`
+ * correspondente. É o marcador de falha observável que um problema
+ * REPRODUZÍVEL precisa carregar no snapshot. O acesso só ocorre após
+ * `problemaCompativel` garantir um `campo` pertencente a este mapa.
+ */
+const CAMPO_NORMALIZADO_POR_PROBLEMA: Record<string, string> = {
+  data_atendimento: "dataAtendimento",
+  autorizacao_validade: "autorizacaoValidade",
+  data_lancamento: "dataLancamento",
+  autorizacao_sessoes_limite: "autorizacaoSessoesLimite",
+  sessao_numero_na_autorizacao: "sessaoNumero",
+  valor: "valorCentavos",
+};
+
+/**
+ * Cardinalidade máxima legítima da lista: um problema por campo verificável do
+ * normalizador (três datas, dois inteiros de sessão e `valor`).
+ */
+const MAXIMO_PROBLEMAS = CAMPOS_PROBLEMA_VALIDOS.length;
+
+/** Verdadeiro só para um par `(codigo, campo)` que `normalizarGuia` pode emitir. */
+function problemaCompativel(codigo: string, campo: string): boolean {
+  if (!CODIGOS_PROBLEMA_VALIDOS.includes(codigo as CodigoProblema)) {
+    return false;
+  }
+  if (!CAMPOS_PROBLEMA_VALIDOS.includes(campo as ColunaGuia)) {
+    return false;
+  }
+  return CAMPOS_POR_CODIGO_PROBLEMA[codigo as CodigoProblema].includes(campo as ColunaGuia);
+}
+
+/**
+ * Código de problema que `normalizarGuia` emitiria REALMENTE para a célula CRUA
+ * de um campo — ou `null` quando a célula não gera problema. É a prova de
+ * reprodução: reusa os MESMOS helpers do domínio (`parseDataCivil`,
+ * `inteiroDaGuia`, `valorParaCentavos`), sem duplicar gramática, faixa ou
+ * calendário, e olha a CÉLULA (entrada não confiável), nunca o campo derivado.
+ * Regras idênticas a `src/domain/normalizacao.ts`:
+ * - data: `lerData` retorna cedo quando `cru.trim()` é vazio; caso contrário
+ *   emite `data_invalida` sse `parseDataCivil` falha;
+ * - inteiro de sessão: `lerInteiro` retorna cedo quando `cru.trim()` é vazio;
+ *   caso contrário emite `campo_numerico_invalido` sse `inteiroDaGuia` falha;
+ * - `valor`: `normalizarGuia` NÃO tem o corte de vazio — `valorParaCentavos("")`
+ *   devolve `null` e `valor_ilegivel` é registrado também para uma célula
+ *   vazia, exatamente como no domínio.
+ * Uma célula AUSENTE (não-string, `undefined`) não é uma célula textual do
+ * contrato e não produz problema; um problema declarado para ela é rejeitado
+ * pelo confronto com o código esperado.
+ */
+function codigoEsperadoDaCelula(campo: ColunaGuia, celula: unknown): CodigoProblema | null {
+  if (typeof celula !== "string") {
+    return null;
+  }
+  switch (campo) {
+    case "data_atendimento":
+    case "autorizacao_validade":
+    case "data_lancamento":
+      return celula.trim() === "" || parseDataCivil(celula) !== null ? null : "data_invalida";
+    case "autorizacao_sessoes_limite":
+    case "sessao_numero_na_autorizacao":
+      return celula.trim() === "" || inteiroDaGuia(celula) !== null
+        ? null
+        : "campo_numerico_invalido";
+    case "valor":
+      return valorParaCentavos(celula) === null ? "valor_ilegivel" : null;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Clona os problemas de normalização como registros INERTES e exige que cada
+ * elemento seja REPRODUZÍVEL a partir do próprio snapshot:
+ * - forma simples com `campo`/`codigo`/`valorOriginal` em descritores PRÓPRIOS
+ *   de DADO e strings primitivas dentro do teto de abuso;
+ * - par `(codigo, campo)` no vocabulário FECHADO e na compatibilidade do
+ *   normalizador, no máximo um por par e no máximo `MAXIMO_PROBLEMAS`;
+ * - `valorOriginal` EXATAMENTE igual (igualdade de string, sem normalização) à
+ *   célula inerte correspondente `original[campo]`: o normalizador registra o
+ *   texto CRU daquela célula;
+ * - célula CRUA comprovando o problema: `original[campo]` reprova a MESMA
+ *   normalização do domínio (`codigoEsperadoDaCelula`); um campo derivado nulo
+ *   NÃO basta para declarar um problema que a célula não produz;
+ * - campo DERIVADO carregando o marcador de falha que o normalizador
+ *   produziria: todo problema real deixa o campo normalizado correspondente
+ *   `null` (`data_invalida` ⇒ data nula, `campo_numerico_invalido` ⇒ inteiro
+ *   nulo e `valor_ilegivel` ⇒ `valorCentavos` nulo);
+ * - extensão AGREGADA dos `valorOriginal` dentro do teto compartilhado
+ *   `LIMITE_TEXTO_BRUTO_BYTES`;
+ * - COMPLETUDE: se a célula crua de um dos seis campos verificáveis falha a
+ *   normalização, o problema correspondente TEM de estar declarado.
+ *
+ * Qualquer outra forma (não-array, buraco, acessor, tipo errado, string
+ * gigante, código desconhecido/incompatível, duplicado, lista acima do máximo,
+ * texto original divergente da célula, campo derivado não nulo ou evidência
+ * agregada acima do teto) é MALFORMADA e fecha o snapshot (`null`) — sem chegar
+ * ao motor (que indexa `TEXTOS[codigo]` e interpola `valorOriginal` em
+ * `motivos[].evidencia`) nem amplificar a resposta com problemas FABRICADOS.
+ *
+ * `original` é o registro INERTE já reconstruído e `snapshotParcial` já contém
+ * os campos normalizados derivados (datas, inteiros e centavos), de modo que a
+ * reprodução compara contra os MESMOS valores entregues ao motor.
+ */
+function clonarProblemasInertes(
+  valor: unknown,
+  original: Record<string, unknown>,
+  snapshotParcial: Record<string, unknown>,
+): ProblemaNormalizacao[] | null {
+  if (!Array.isArray(valor)) {
+    return null;
+  }
+  let descritores: Record<string, PropertyDescriptor>;
+  try {
+    descritores = Object.getOwnPropertyDescriptors(valor);
+  } catch {
+    return null;
+  }
+  const descritorTamanho = descritores.length;
+  const tamanho =
+    descritorTamanho && "value" in descritorTamanho ? descritorTamanho.value : undefined;
+  if (typeof tamanho !== "number" || !Number.isInteger(tamanho) || tamanho < 0) {
+    return null;
+  }
+  if (tamanho > MAXIMO_PROBLEMAS) {
+    return null;
+  }
+  const saida: ProblemaNormalizacao[] = [];
+  const vistos = new Set<string>();
+  let bytesEvidencia = 0;
+  for (let indice = 0; indice < tamanho; indice += 1) {
+    const descritor = descritores[String(indice)];
+    if (!descritor || !("value" in descritor)) {
+      return null;
+    }
+    const item = descritor.value;
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      return null;
+    }
+    let campos: Record<string, PropertyDescriptor>;
+    try {
+      campos = Object.getOwnPropertyDescriptors(item);
+    } catch {
+      return null;
+    }
+    const registro = registroInerte();
+    let campoLido = "";
+    let codigoLido = "";
+    let valorOriginalLido = "";
+    for (const chave of ["campo", "codigo", "valorOriginal"]) {
+      const campo = campos[chave];
+      if (!campo || !("value" in campo) || !stringInerte(campo.value)) {
+        return null;
+      }
+      definirDado(registro, chave, campo.value);
+      if (chave === "campo") {
+        campoLido = campo.value;
+      } else if (chave === "codigo") {
+        codigoLido = campo.value;
+      } else {
+        valorOriginalLido = campo.value;
+      }
+    }
+    if (!problemaCompativel(codigoLido, campoLido)) {
+      return null;
+    }
+    // Reprodução EXATA do texto: o normalizador registra o texto CRU de
+    // `original[campo]`, sem trimar nem normalizar. Um `valorOriginal` que não
+    // bata com a célula é FABRICADO (eco de texto que a guia não possui).
+    if (original[campoLido] !== valorOriginalLido) {
+      return null;
+    }
+    // Reprodução pela CÉLULA CRUA: o normalizador só registra este `(codigo,
+    // campo)` quando a PRÓPRIA célula falha a normalização. Sem esta prova, um
+    // snapshot hostil mantém a célula válida (`data_atendimento =
+    // "2026-08-10"`, `valor = "62,00"`, inteiro dentro de 1..10000), ANULA o
+    // campo derivado e declara um problema FABRICADO que chegaria a cache,
+    // quota, provedor e ao eco determinístico do motor.
+    if (codigoEsperadoDaCelula(campoLido as ColunaGuia, original[campoLido]) !== codigoLido) {
+      return null;
+    }
+    // Marcador de falha derivado: todo problema real deixa o campo normalizado
+    // correspondente `null`; um derivado válido prova um problema inventado
+    // para uma célula boa (e o motivo divergiria da decisão determinística).
+    if (snapshotParcial[CAMPO_NORMALIZADO_POR_PROBLEMA[campoLido]] !== null) {
+      return null;
+    }
+    // Teto AGREGADO da evidência: a soma dos `valorOriginal` não pode passar do
+    // teto compartilhado de abuso, senão as cópias somadas amplificam a resposta.
+    bytesEvidencia += bytesDoTexto(valorOriginalLido);
+    if (bytesEvidencia > LIMITE_TEXTO_BRUTO_BYTES) {
+      return null;
+    }
+    const identificador = `${codigoLido}\u0000${campoLido}`;
+    if (vistos.has(identificador)) {
+      return null;
+    }
+    vistos.add(identificador);
+    saida.push(registro as unknown as ProblemaNormalizacao);
+  }
+  // COMPLETUDE: nenhum problema LEGÍTIMO pode ser OMITIDO. Para cada campo
+  // verificável cuja célula crua reprova a normalização, o problema
+  // correspondente precisa estar declarado; sem isso, uma célula ilegível
+  // poderia viajar sem o achado determinístico e desviar a decisão do motor.
+  for (const campo of CAMPOS_PROBLEMA_VALIDOS) {
+    const esperado = codigoEsperadoDaCelula(campo, original[campo]);
+    if (esperado !== null && !vistos.has(`${esperado}\u0000${campo}`)) {
+      return null;
+    }
+  }
+  return saida;
+}
+
+/**
+ * Os três campos semânticos capturados UMA única vez (§3.7). Cada valor é uma
+ * string PRIMITIVA (a validação é do chamador): um objeto com
+ * `length`/`trim`/`toJSON` divergentes enganaria os testes de vazio/teto
+ * (que só usam `length`/`trim`/`ToString`) enquanto `JSON.stringify` do payload
+ * do provedor invocaria `toJSON` e enviaria um corpo gigante.
+ */
+interface CamposCapturados {
+  observacao: string;
+  convenio: string;
+  procedimento: string;
+}
+
+/**
+ * Captura ÚNICA dos três campos semânticos: uma leitura `[[Get]]` por campo (um
+ * getter hostil é lido EXATAMENTE uma vez, nunca relido — anti-TOCTOU). Um
+ * getter que LANCE invalida a captura inteira (`null`): a conferência fecha
+ * fechada em vez de rejeitar a Promise.
+ */
+function capturarCampos(guia: GuiaNormalizada): CamposCapturados | null {
+  try {
+    const observacao = guia.observacaoRecepcao;
+    const convenio = guia.convenio;
+    const procedimento = guia.procedimentoCodigo;
+    return { observacao, convenio, procedimento };
+  } catch {
+    return null;
+  }
+}
+
+const CELULAS_SEMANTICAS_ORIGINAL: readonly string[] = [
+  "observacao_recepcao",
+  "convenio",
+  "procedimento_codigo",
+];
+
+/**
+ * Campo de TOPO CAPTURADO correspondente a cada célula CRUA semântica. A
+ * porta de coerência compara o texto CRU da célula com este valor PRÉ-limite;
+ * o `limitarCampo` só é aplicado DEPOIS da igualdade exata.
+ */
+const CAPTURA_SEMANTICA_POR_CELULA: Record<string, keyof CamposCapturados> = {
+  observacao_recepcao: "observacao",
+  convenio: "convenio",
+  procedimento_codigo: "procedimento",
+};
+
+/**
+ * Reconstrói `original` como registro INERTE de dados (sem protótipo): só os
+ * descritores PRÓPRIOS de DADO de `guia.original` são copiados (um acessor
+ * nunca é avaliado) e as TRÊS células semânticas são lidas da PRÓPRIA fonte, na
+ * mesma varredura validada — NUNCA sintetizadas a partir do valor de topo
+ * capturado. Toda célula não semântica precisa ser string primitiva dentro do
+ * teto de abuso e NENHUMA chave própria `__proto__` é aceita (por colchetes ela
+ * poderia instalar um protótipo controlado); `null` marca MALFORMADO.
+ *
+ * Ler as células semânticas CRUAS (em vez de sobrepô-las com o valor capturado
+ * de topo) é o que fecha o último vão da coerência: uma célula AUSENTE, um
+ * acessor, um não-string ou uma célula DIVERGENTE do campo de topo precisa
+ * falhar fechada, e não ser mascarada pela célula sintética instalada aqui. A
+ * checagem `snapshotCoerenteComCelulas` recomputa `normalizarGuia` a partir
+ * destas células e exige igualdade exata com o snapshot, de modo que uma célula
+ * `A` pareada com um campo de topo `B` fecha o snapshot. Um `original` ausente,
+ * `null` ou `undefined` deixa as três células ausentes e também fecha fechada.
+ *
+ * Cada célula semântica EXIGE string primitiva na fonte e é comparada, ANTES
+ * de qualquer limitação, com o valor de TOPO CAPTURADO correspondente
+ * (`capturados`): a igualdade exata do texto CRU é a porta de coerência e uma
+ * divergência fecha o snapshot. Sem essa comparação pré-limite, o texto cru da
+ * célula e o valor de topo seriam reduzidos de forma INDEPENDENTE ao mesmo
+ * `MARCADOR_TETO_ABUSO`, de modo que uma célula acima do teto pareada com o
+ * marcador literal de topo (ou com outra célula gigante) seria considerada
+ * coerente e alcançaria cache, quota e provedor. Só depois da igualdade crua a
+ * célula é instalada com o MESMO tratamento do campo de topo (`limitarCampo`):
+ * um corpo acima do teto de abuso vira o marcador fixo, preservando a
+ * precedência do ramo vazio e o caminho determinístico de
+ * `observacao_acima_do_limite`/`limite_excedido` (um corpo gigante nunca é
+ * retido no snapshot) e mantendo a igualdade exata com o recomputado, que lê
+ * esta mesma célula.
+ */
+function montarOriginalInerte(
+  descritorOriginal: PropertyDescriptor | undefined,
+  capturados: CamposCapturados,
+): Record<string, unknown> | null {
+  const base = registroInerte();
+  if (descritorOriginal) {
+    if (!("value" in descritorOriginal)) {
+      return null;
+    }
+    const fonte = descritorOriginal.value;
+    if (fonte !== null && fonte !== undefined) {
+      if (typeof fonte !== "object" || Array.isArray(fonte)) {
+        return null;
+      }
+      let descritoresFonte: Record<string, PropertyDescriptor>;
+      try {
+        descritoresFonte = Object.getOwnPropertyDescriptors(fonte);
+      } catch {
+        return null;
+      }
+      for (const chave of Object.keys(descritoresFonte)) {
+        if (chave === "__proto__") {
+          return null;
+        }
+        const descritor = descritoresFonte[chave];
+        if (!descritor || !("value" in descritor)) {
+          // Acessor numa célula consumida pelo motor: nunca avaliado nem
+          // retido, inclusive nas três semânticas.
+          return null;
+        }
+        if (CELULAS_SEMANTICAS_ORIGINAL.includes(chave)) {
+          // Célula semântica crua: exige string primitiva, compara o texto CRU
+          // com o valor de TOPO CAPTURADO (pré-limite) e só então aplica o
+          // mesmo teto de abuso do campo de topo; nunca sintetizada do valor
+          // capturado. A comparação pré-limite impede que a redução de ambos ao
+          // `MARCADOR_TETO_ABUSO` mascare uma célula gigante pareada com o
+          // marcador literal de topo.
+          if (typeof descritor.value !== "string") {
+            return null;
+          }
+          if (descritor.value !== capturados[CAPTURA_SEMANTICA_POR_CELULA[chave]]) {
+            return null;
+          }
+          definirDado(base, chave, limitarCampo(descritor.value));
+          continue;
+        }
+        if (!stringInerte(descritor.value)) {
+          // Valor não inerte numa célula consumida pelo motor.
+          return null;
+        }
+        definirDado(base, chave, descritor.value);
+      }
+    }
+  }
+  // As três células semânticas precisam existir como DADO primitivo na fonte:
+  // uma célula ausente (inclusive `original` nulo/ausente) é MALFORMADA.
+  for (const chave of CELULAS_SEMANTICAS_ORIGINAL) {
+    const descritor = Object.getOwnPropertyDescriptor(base, chave);
+    if (!descritor || !("value" in descritor) || !stringInerte(descritor.value)) {
+      return null;
+    }
+  }
+  return base;
+}
+
+const CAMPOS_TEXTO_INERTES: readonly string[] = [
+  "id",
+  "unidade",
+  "paciente",
+  "carteirinha",
+  "cid",
+  "procedimentoDescricao",
+  "numeroAutorizacao",
+  "profissional",
+  "profissionalRegistro",
+];
+
+const CAMPOS_DATA_INERTES: readonly string[] = [
+  "dataAtendimento",
+  "autorizacaoValidade",
+  "dataLancamento",
+];
+
+/** Inteiros do normalizador no domínio `inteiroDaGuia` (1..10000). */
+const CAMPOS_INTEIRO_DA_GUIA_INERTES: readonly string[] = [
+  "autorizacaoSessoesLimite",
+  "sessaoNumero",
+];
+
+/** Centavos inteiros seguros NÃO NEGATIVOS do domínio `valorParaCentavos`. */
+const CAMPOS_CENTAVOS_INERTES: readonly string[] = ["valorCentavos"];
+
+/**
+ * Igualdade ESTRUTURAL de duas datas civis do snapshot: `null` só casa com
+ * `null`; dois registros casam quando `ano`/`mes`/`dia` são iguais. O lado do
+ * snapshot já é um registro INERTE de dados e o lado recomputado vem do
+ * normalizador do domínio, então a leitura direta é sobre dados próprios.
+ */
+function mesmasDatas(
+  fornecida: DataCivil | null,
+  recomputada: DataCivil | null,
+): boolean {
+  if (fornecida === null || recomputada === null) {
+    return fornecida === recomputada;
+  }
+  return (
+    fornecida.ano === recomputada.ano &&
+    fornecida.mes === recomputada.mes &&
+    fornecida.dia === recomputada.dia
+  );
+}
+
+/**
+ * Identidade EXATA de um problema de normalização: os três campos observáveis
+ * que `normalizarGuia` produz. A chave NUL-separada evita colisão entre campos
+ * de texto livre (o vocabulário de `codigo`/`campo` já é fechado).
+ */
+function identidadeProblema(problema: ProblemaNormalizacao): string {
+  return `${problema.codigo}\u0000${problema.campo}\u0000${problema.valorOriginal}`;
+}
+
+/**
+ * Igualdade de CONJUNTO entre os problemas DECLARADOS e os RECOMPUTADOS: mesma
+ * cardinalidade, nenhum duplicado e todo item declarado presente no conjunto
+ * recomputado com o MESMO `valorOriginal`. Prova que a lista não fabrica um
+ * achado que as células não produzem nem omite um achado real.
+ */
+function mesmosProblemas(
+  declarados: readonly ProblemaNormalizacao[],
+  recomputados: readonly ProblemaNormalizacao[],
+): boolean {
+  if (declarados.length !== recomputados.length) {
+    return false;
+  }
+  const esperados = new Set<string>();
+  for (const problema of recomputados) {
+    esperados.add(identidadeProblema(problema));
+  }
+  if (esperados.size !== recomputados.length) {
+    return false;
+  }
+  const vistos = new Set<string>();
+  for (const problema of declarados) {
+    const identidade = identidadeProblema(problema);
+    if (!esperados.has(identidade) || vistos.has(identidade)) {
+      return false;
+    }
+    vistos.add(identidade);
+  }
+  return true;
+}
+
+/**
+ * Coerência DERIVADO×CRU do snapshot (§3.7/#ac-17/#ac-18): a representação
+ * entregue ao motor tem de ser EXATAMENTE o que a normalização do próprio
+ * domínio (`normalizarGuia`) produziria a partir das células CRUAS validadas.
+ *
+ * Sem esta prova, cada campo derivado era validado apenas de forma ISOLADA: uma
+ * sessão crua válida (`original.sessao_numero_na_autorizacao = "10000"`) podia
+ * ser pareada com `sessaoNumero = 1` e `problemas = []`, omitindo o achado
+ * `sessao_acima_do_limite`; uma célula AUSENTE não gerava problema esperado; e
+ * um valor derivado diferente do que a célula normaliza chegava a cache, quota,
+ * provedor e à decisão determinística.
+ *
+ * O contrato exige:
+ * 1. TODA coluna consumida pelo normalizador é uma célula PRÓPRIA de DADO com
+ *    string primitiva dentro do teto de abuso `LIMITE_TEXTO_BRUTO_BYTES`; uma
+ *    célula ausente, um acessor ou um não-string fecham o snapshot;
+ * 2. a guia é RECOMPUTADA a partir dessas mesmas células com o normalizador do
+ *    domínio, sobre um `LinhaGuiaCsv` mínimo cuja `linhaOriginal` não é
+ *    comparada (o snapshot preserva a linha CRUA legítima);
+ * 3. TODO campo consumido pelo motor casa com o recomputado — cópias textuais,
+ *    datas, inteiros de sessão, centavos e o CONJUNTO exato de problemas (mesmos
+ *    pares `(codigo, campo)` e os mesmos `valorOriginal`);
+ * 4. qualquer divergência, célula ausente/malformada, falha de reflexão ou
+ *    exceção da recomputação devolve `false`, e o chamador cai no caminho
+ *    determinístico de `guiaMinima()` (sem cache, quota, provedor ou eco).
+ */
+function snapshotCoerenteComCelulas(
+  snapshot: GuiaNormalizada,
+  original: Record<string, unknown>,
+): boolean {
+  for (const coluna of COLUNAS_GUIA) {
+    const descritor = Object.getOwnPropertyDescriptor(original, coluna);
+    if (!descritor || !("value" in descritor) || !stringInerte(descritor.value)) {
+      return false;
+    }
+  }
+
+  let recomputado: GuiaNormalizada;
+  try {
+    recomputado = normalizarGuia({
+      numero: 0,
+      linhaOriginal: "",
+      original: original as unknown as GuiaOriginal,
+    });
+  } catch {
+    return false;
+  }
+
+  return (
+    snapshot.id === recomputado.id &&
+    snapshot.unidade === recomputado.unidade &&
+    snapshot.paciente === recomputado.paciente &&
+    snapshot.convenio === recomputado.convenio &&
+    snapshot.carteirinha === recomputado.carteirinha &&
+    snapshot.cid === recomputado.cid &&
+    snapshot.procedimentoCodigo === recomputado.procedimentoCodigo &&
+    snapshot.procedimentoDescricao === recomputado.procedimentoDescricao &&
+    snapshot.numeroAutorizacao === recomputado.numeroAutorizacao &&
+    snapshot.profissional === recomputado.profissional &&
+    snapshot.profissionalRegistro === recomputado.profissionalRegistro &&
+    snapshot.observacaoRecepcao === recomputado.observacaoRecepcao &&
+    mesmasDatas(snapshot.dataAtendimento, recomputado.dataAtendimento) &&
+    mesmasDatas(snapshot.autorizacaoValidade, recomputado.autorizacaoValidade) &&
+    mesmasDatas(snapshot.dataLancamento, recomputado.dataLancamento) &&
+    snapshot.autorizacaoSessoesLimite === recomputado.autorizacaoSessoesLimite &&
+    snapshot.sessaoNumero === recomputado.sessaoNumero &&
+    snapshot.valorCentavos === recomputado.valorCentavos &&
+    mesmosProblemas(snapshot.problemas, recomputado.problemas)
+  );
+}
+
+/**
+ * Snapshot VALIDADO em TEMPO DE EXECUÇÃO e INERTE da guia entregue ao motor
+ * (§3.7/#ac-17/#ac-18). Os três campos semânticos recebem os valores já
+ * CAPTURADOS e limitados uma única vez; TODO campo consumido pelo motor é
+ * validado contra sua forma de execução (string primitiva dentro do teto de
+ * abuso, `null`/`DataCivil` real de 4 dígitos, número no domínio do
+ * normalizador, `problemas` como array limitado de registros simples no
+ * vocabulário fechado) e reconstruído com `Object.create(null)` + `Object.defineProperty`,
+ * de modo que nenhum acessor, `Proxy`, objeto coercível, string gigante ou
+ * chave `__proto__` chegue ao motor. Qualquer valor MALFORMADO fecha o snapshot
+ * (`null`) para o chamador cair no caminho determinístico de `guiaMinima()`, sem
+ * rejeitar a Promise nem ampliar o resultado.
+ */
+function montarSnapshotInerte(
+  descritores: Record<string, PropertyDescriptor>,
+  observacao: string,
+  convenio: string,
+  procedimento: string,
+): GuiaNormalizada | null {
+  const observacaoFinal = limitarCampo(observacao);
+  const convenioFinal = limitarCampo(convenio);
+  const procedimentoFinal = limitarCampo(procedimento);
+
+  const saida = registroInerte();
+
+  const original = montarOriginalInerte(descritores.original, {
+    observacao,
+    convenio,
+    procedimento,
+  });
+  if (original === null) {
+    return null;
+  }
+
+  const descritorLinha = descritores.linhaOriginal;
+  if (
+    !descritorLinha ||
+    !("value" in descritorLinha) ||
+    typeof descritorLinha.value !== "string"
+  ) {
+    return null;
+  }
+  // `linhaOriginal` NÃO é consumido pelo motor e pode legitimamente embutir o
+  // texto CRU de um campo semântico acima do teto de abuso; por isso exige
+  // apenas string primitiva, sem o teto, e nunca é interpolado no resultado.
+  definirDado(saida, "linhaOriginal", descritorLinha.value);
+
+  for (const chave of CAMPOS_TEXTO_INERTES) {
+    const descritor = descritores[chave];
+    if (!descritor || !("value" in descritor) || !stringInerte(descritor.value)) {
+      return null;
+    }
+    definirDado(saida, chave, descritor.value);
+  }
+
+  for (const chave of CAMPOS_DATA_INERTES) {
+    const descritor = descritores[chave];
+    if (!descritor || !("value" in descritor)) {
+      return null;
+    }
+    const data = clonarDataInerte(descritor.value);
+    if (data === undefined) {
+      return null;
+    }
+    definirDado(saida, chave, data);
+  }
+
+  for (const chave of CAMPOS_INTEIRO_DA_GUIA_INERTES) {
+    const descritor = descritores[chave];
+    if (!descritor || !("value" in descritor)) {
+      return null;
+    }
+    const numero = inteiroDaGuiaInerte(descritor.value);
+    if (numero === undefined) {
+      return null;
+    }
+    definirDado(saida, chave, numero);
+  }
+
+  for (const chave of CAMPOS_CENTAVOS_INERTES) {
+    const descritor = descritores[chave];
+    if (!descritor || !("value" in descritor)) {
+      return null;
+    }
+    const numero = centavosInertes(descritor.value);
+    if (numero === undefined) {
+      return null;
+    }
+    definirDado(saida, chave, numero);
+  }
+
+  // `problemas` é validado DEPOIS dos campos derivados: cada problema
+  // REPRODUZÍVEL precisa provar que sua célula `original[campo]` carrega o mesmo
+  // texto cru E que o campo normalizado correspondente ficou `null` — a
+  // assinatura que `normalizarGuia` deixa ao registrar um problema. A evidência
+  // agregada também é limitada aqui, antes de qualquer cache, quota ou envio.
+  const descritorProblemas = descritores.problemas;
+  if (!descritorProblemas || !("value" in descritorProblemas)) {
+    return null;
+  }
+  const problemas = clonarProblemasInertes(descritorProblemas.value, original, saida);
+  if (problemas === null) {
+    return null;
+  }
+
+  definirDado(saida, "observacaoRecepcao", observacaoFinal);
+  definirDado(saida, "convenio", convenioFinal);
+  definirDado(saida, "procedimentoCodigo", procedimentoFinal);
+  definirDado(saida, "original", original);
+  definirDado(saida, "problemas", problemas);
+
+  // Coerência DERIVADO×CRU por último: o snapshot completo precisa ser o que
+  // `normalizarGuia` produziria das MESMAS células cruas. Uma divergência,
+  // célula ausente, malformada ou exceção da recomputação fecha o snapshot
+  // (`null`) e o chamador cai em `guiaMinima()` — sem cache, quota, provedor
+  // nem eco — preservando toda a validação independente anterior.
+  const snapshot = saida as unknown as GuiaNormalizada;
+  if (!snapshotCoerenteComCelulas(snapshot, original)) {
+    return null;
+  }
+
+  return snapshot;
+}
+
+/**
+ * Guia MÍNIMA e LIMITADA do caminho de falha fechada do snapshot (reflexão
+ * hostil ou acessor em campo consumido pelo motor): apenas os três campos
+ * capturados (com o teto de abuso aplicado) e um `original` com essas mesmas
+ * três células. Os demais campos ficam vazios/neutros, de modo que o motor
+ * determinístico roda e emite os códigos padrão (`checagem_textual_incompleta`)
+ * sem carregar nenhum valor hostil.
+ */
+function guiaMinima(
+  observacao: string,
+  convenio: string,
+  procedimento: string,
+): GuiaNormalizada {
+  const observacaoFinal = limitarCampo(observacao);
+  const convenioFinal = limitarCampo(convenio);
+  const procedimentoFinal = limitarCampo(procedimento);
+  const original = {
+    observacao_recepcao: observacaoFinal,
+    convenio: convenioFinal,
+    procedimento_codigo: procedimentoFinal,
+  } as unknown as GuiaNormalizada["original"];
   return {
-    ...guia,
+    id: "",
     original,
-    observacaoRecepcao: observacaoAcima ? MARCADOR_TETO_ABUSO : guia.observacaoRecepcao,
-    convenio: convenioAcima ? MARCADOR_TETO_ABUSO : guia.convenio,
-    procedimentoCodigo: procedimentoAcima ? MARCADOR_TETO_ABUSO : guia.procedimentoCodigo,
+    linhaOriginal: "",
+    unidade: "",
+    dataAtendimento: null,
+    paciente: "",
+    convenio: convenioFinal,
+    carteirinha: "",
+    cid: "",
+    procedimentoCodigo: procedimentoFinal,
+    procedimentoDescricao: "",
+    numeroAutorizacao: "",
+    autorizacaoValidade: null,
+    autorizacaoSessoesLimite: null,
+    sessaoNumero: null,
+    profissional: "",
+    profissionalRegistro: "",
+    valorCentavos: null,
+    observacaoRecepcao: observacaoFinal,
+    dataLancamento: null,
+    problemas: [],
   };
 }
 
@@ -564,6 +1363,45 @@ export async function conferirGuia(
   catalogo: Catalogo,
   opcoes: OpcoesConferencia = {},
 ): Promise<ResultadoVerificacao> {
+  // Captura ÚNICA e GUARDADA dos três campos semânticos (§3.7): cada campo é
+  // lido EXATAMENTE uma vez via `[[Get]]` (um getter hostil é lido uma vez,
+  // nunca relido — anti-TOCTOU) e um getter que LANCE vira captura inválida.
+  // Cada valor precisa ser uma string PRIMITIVA: um objeto com
+  // `length`/`trim`/`toJSON` divergentes passaria pelo vazio/teto (que só usam
+  // `length`/`trim`/`ToString`) enquanto `JSON.stringify` do payload do
+  // provedor invocaria `toJSON` e enviaria um corpo gigante.
+  const capturado = capturarCampos(guia);
+  const campoObservacao =
+    capturado !== null && typeof capturado.observacao === "string" ? capturado.observacao : "";
+  const campoConvenio =
+    capturado !== null && typeof capturado.convenio === "string" ? capturado.convenio : "";
+  const campoProcedimento =
+    capturado !== null && typeof capturado.procedimento === "string" ? capturado.procedimento : "";
+  const capturaValida =
+    capturado !== null &&
+    typeof capturado.observacao === "string" &&
+    typeof capturado.convenio === "string" &&
+    typeof capturado.procedimento === "string";
+
+  // Snapshot PURO DE DADOS entregue ao motor: `null` significa falha fechada
+  // determinística (reflexão hostil ou acessor em campo consumido). `??` só
+  // avalia `guiaMinima` quando o snapshot falhou.
+  let snapshot: GuiaNormalizada | null = null;
+  if (capturaValida) {
+    try {
+      const descritoresGuia = Object.getOwnPropertyDescriptors(guia);
+      snapshot = montarSnapshotInerte(
+        descritoresGuia,
+        campoObservacao,
+        campoConvenio,
+        campoProcedimento,
+      );
+    } catch {
+      snapshot = null;
+    }
+  }
+  const guiaLimitada = snapshot ?? guiaMinima(campoObservacao, campoConvenio, campoProcedimento);
+
   const referenciaTemporal = opcoes.referenciaTemporal;
   const registrador = opcoes.registrador;
   const observador = opcoes.observador;
@@ -578,7 +1416,7 @@ export async function conferirGuia(
       limitacoes?: string[];
       codigo?: ClassificacaoEstavel;
     },
-    guiaParaMotor: GuiaNormalizada = guia,
+    guiaParaMotor: GuiaNormalizada = guiaLimitada,
   ): ResultadoVerificacao => {
     const resultado = verificarGuia(guiaParaMotor, catalogo, { referenciaTemporal, textual });
     for (const limitacao of extras.limitacoes ?? []) {
@@ -604,6 +1442,19 @@ export async function conferirGuia(
     return resultado;
   };
 
+  // 0. Falha fechada do snapshot PRECEDE cache, quota e provedor: captura
+  // inválida (um dos três campos capturados não é string primitiva, ou um
+  // getter lançou) OU snapshot hostil (reflexão que lançou, acessor em campo
+  // consumido pelo motor). A MESMA forma de falha de configuração/validação é
+  // reutilizada (`PENDENTE`/`incompleta`, `inferencia_textual` nula), a guia
+  // mínima sustenta o motor determinístico e nenhum valor hostil é ecoado.
+  if (!capturaValida || snapshot === null) {
+    return concluir(
+      { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
+      { estado: "incompleta" },
+    );
+  }
+
   // 1. Observação vazia após `trim` PRECEDE os tetos de abuso (§3.6/#ac-1/
   // #uj-4). Uma observação vazia após `trim` sai pelo motor puro
   // (`nao_aplicavel`), sem cache, quota ou inferência — mesmo quando composta
@@ -617,8 +1468,8 @@ export async function conferirGuia(
   // embute o corpo rejeitado; a semântica `nao_aplicavel`, os códigos
   // determinísticos (`*_nao_catalogado`) e o zero de cache/quota/modelo
   // permanecem idênticos.
-  if (guia.observacaoRecepcao.trim() === "") {
-    const resultado = verificarGuia(guiaComCamposLimitados(guia), catalogo, { referenciaTemporal });
+  if (campoObservacao.trim() === "") {
+    const resultado = verificarGuia(guiaLimitada, catalogo, { referenciaTemporal });
     const duracao = medirDuracao(inicio, agora);
     emitir(registrador, "conferencia_concluida", {
       estado: "nao_aplicavel",
@@ -642,7 +1493,7 @@ export async function conferirGuia(
   // catálogo.`) nunca embute o corpo rejeitado nem um prefixo dele; cache,
   // quota e provedor permanecem intactos (zero leitura/gravação e zero
   // consumo).
-  if (acimaDoTetoDeAbuso(guia.observacaoRecepcao)) {
+  if (acimaDoTetoDeAbuso(campoObservacao)) {
     return concluir(
       { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
       {
@@ -650,17 +1501,14 @@ export async function conferirGuia(
         limitacoes: [LIMITACAO_OBSERVACAO_ACIMA_DO_LIMITE],
         codigo: "limite_excedido",
       },
-      guiaComCamposLimitados(guia),
+      guiaLimitada,
     );
   }
-  if (
-    acimaDoTetoDeAbuso(guia.convenio) ||
-    acimaDoTetoDeAbuso(guia.procedimentoCodigo)
-  ) {
+  if (acimaDoTetoDeAbuso(campoConvenio) || acimaDoTetoDeAbuso(campoProcedimento)) {
     return concluir(
       { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
       { estado: "incompleta", codigo: "limite_excedido" },
-      guiaComCamposLimitados(guia),
+      guiaLimitada,
     );
   }
 
@@ -684,9 +1532,9 @@ export async function conferirGuia(
   }
 
   const entrada: EntradaObservacao = {
-    observacao_recepcao: guia.observacaoRecepcao,
-    convenio: guia.convenio,
-    procedimento_codigo: guia.procedimentoCodigo,
+    observacao_recepcao: campoObservacao,
+    convenio: campoConvenio,
+    procedimento_codigo: campoProcedimento,
   };
   const modeloEfetivo = normalizarModelo(modeloCru);
   // Guarda redundante: a normalização só pode manter o valor cru (já sob o
@@ -702,7 +1550,7 @@ export async function conferirGuia(
   const contexto = contextoDaConfiguracao(modeloEfetivo);
 
   // 4. Limites semânticos de entrada (após `trim`), ainda sem cache ou chamada.
-  if (guia.observacaoRecepcao.trim().length > LIMITE_OBSERVACAO) {
+  if (campoObservacao.trim().length > LIMITE_OBSERVACAO) {
     return concluir(
       { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
       {
@@ -713,8 +1561,8 @@ export async function conferirGuia(
     );
   }
   if (
-    guia.convenio.trim().length > LIMITE_CONTEXTO ||
-    guia.procedimentoCodigo.trim().length > LIMITE_CONTEXTO
+    campoConvenio.trim().length > LIMITE_CONTEXTO ||
+    campoProcedimento.trim().length > LIMITE_CONTEXTO
   ) {
     return concluir(
       { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },

@@ -230,6 +230,87 @@
 //     roda ANTES dos tetos de abuso de payload. Os tetos CRUS dos três campos
 //     valem apenas para observação NÃO vazia; seguem-se, para o resto, os
 //     limites SEMÂNTICOS trimados (1000/200), cache, quota e tentativas.
+// 17. Campos da guia capturados UMA vez (reforço adversarial MEDIUM, TOCTOU):
+//     `observacaoRecepcao`/`convenio`/`procedimentoCodigo` eram RE-LIDOS várias
+//     vezes no caminho central (teste de vazio, tetos de abuso, `entrada` e
+//     limites semânticos). Um objeto `GuiaNormalizada` com GETTERS mutáveis
+//     pode devolver um valor CURTO numa leitura e um valor GIGANTE numa leitura
+//     posterior, contornando limites/cache. A correção aprovada captura os três
+//     campos UMA única vez no início, num objeto com propriedades PRÓPRIAS de
+//     DADO (snapshot), e usa EXCLUSIVAMENTE esse snapshot — teste de vazio,
+//     tetos de abuso de 64 KiB, limites semânticos 1000/200, chave/leitura de
+//     cache, validação, `entrada` do interpretador e motor — sem reler a guia
+//     depois da captura. Os testes exigem contador EXATO de 1 leitura por campo
+//     e que nenhum valor gigante chegue ao interpretador, ao cache ou ao
+//     resultado (fail-closed e corpos limitados quando o snapshot já nasce
+//     acima do teto).
+// 18. Captura da guia VALIDADA e snapshot do motor LIVRE DE ACESSORES (reforço
+//     SECURITY HIGH + ADVERSARY MEDIUM): cada um dos três valores capturados
+//     (`observacaoRecepcao`/`convenio`/`procedimentoCodigo`) precisa ser uma
+//     string PRIMITIVA. Um valor com `length`/`trim`/`toJSON` divergentes — por
+//     exemplo `{ length: 1, trim: () => "x", toJSON: () => "G".repeat(...) }` —
+//     engana os testes de vazio/limite (que só usam `length`/`trim`/`ToString`)
+//     enquanto `JSON.stringify` do payload do provedor invoca `toJSON` e envia
+//     um corpo gigante; um não-string fecha ANTES de cache, quota e provedor,
+//     com a MESMA forma de falha de configuração (`PENDENTE`/`incompleta`,
+//     `inferencia_textual` nula, zero leitura/gravação de cache, zero quota) e
+//     sem ecoar o valor. A representação entregue ao motor precisa ainda ser um
+//     snapshot PURO DE DADOS: nenhum getter é copiado nem avaliado. Um getter
+//     que LANÇA em `original` não pode rejeitar `conferirGuia`, e um acessor
+//     hostil em outro campo consumido pelo motor (por exemplo
+//     `procedimentoDescricao`) não pode ser retido e amplificar
+//     `motivos[].evidencia`; ambos fecham de forma determinística com resultado
+//     limitado.
+// 19. Snapshot do motor valida TIPOS e é INERTE (reforço adversarial+security):
+//     o snapshot de dados continua copiando valores de descritores próprios de
+//     DADO sem validar o TIPO em tempo de execução, então uma guia hostil pode
+//     rejeitar/amplificar o resultado sem nenhum acessor. `problemas: null` faz o
+//     `for...of` do motor lançar; uma `procedimentoDescricao` primitiva GIGANTE
+//     é copiada e interpolada em `motivos[].evidencia` quando o procedimento
+//     está catalogado; e um objeto coercível (`trim`/`Symbol.toPrimitive`
+//     divergentes) passa pela construção do snapshot e expande a evidência de
+//     forma ilimitada. A correção aprovada entrega ao motor um snapshot
+//     validado em TEMPO DE EXECUÇÃO e INERTE: exige as formas
+//     primitivo/null/registro simples para TODO campo consumido pelo motor,
+//     clona `problemas` e registros de data como dado inerte e rejeita
+//     proxies/funções/objetos coercíveis e valores malformados pelo caminho
+//     determinístico de `guiaMinima()` (`PENDENTE`/`incompleta`,
+//     `checagem_textual_incompleta`, zero chamadas ao interpretador, zero
+//     gravações de cache e resultado limitado), limita/substitui strings
+//     gigantes que carregam evidência e cria registros com `Object.create(null)`
+//     + `Object.defineProperty`, de modo que uma chave própria `__proto__` não
+//     instale um protótipo controlado. Os quatro casos abaixo provam que cada
+//     valor malformado/hostil RESOLVE a conferência (nunca rejeita a Promise) e
+//     não amplia o resultado nem persiste cache.
+// 20. Snapshot do motor valida os INVARIANTES DE NORMALIZAÇÃO (reforço
+//     ADVERSARY HIGH + SECURITY MEDIUM): além dos tipos primitivos, o snapshot
+//     precisa validar as garantias que `src/domain/normalizacao.ts` e
+//     `src/domain/datas.ts` asseguram, de modo que uma guia com `problemas`,
+//     datas ou números fora do domínio NÃO possa (a) rejeitar a conferência —
+//     um `codigo` fora do vocabulário fechado `data_invalida | valor_ilegivel |
+//     campo_numerico_invalido`, ou incompatível com o `campo`, faz o motor
+//     indexar `TEXTOS[codigo]` e lançar `TypeError`; (b) amplificar o resultado
+//     — uma lista sem cardinalidade/uniquidade transforma cada entrada repetida
+//     em um novo motivo, multiplicando memória/resposta; (c) desviar a decisão
+//     determinística — datas não calendário-real/fracionárias/fora da faixa
+//     suportada, sessões e limites fora de 1..10000, ou centavos negativos/
+//     fracionários/não seguros passam a influenciar limites, cronologia e
+//     somas. A correção aprovada valida esses invariantes no snapshot e fecha
+//     pelo caminho determinístico (`PENDENTE`/`incompleta`, `inferencia_textual`
+//     nula, zero chamadas ao interpretador, zero gravações de cache e resultado
+//     limitado) para toda violação.
+// 21. Células semânticas CRUAS coerentes com o topo (correção SECURITY do
+//     fix pós-task): `montarOriginalInerte` NÃO pode sintetizar as três células
+//     semânticas de `original` a partir do valor de topo capturado — isso
+//     mascarava uma célula crua divergente, ausente ou com acessor. A porta de
+//     coerência (`snapshotCoerenteComCelulas`) recomputa `normalizarGuia` das
+//     células cruas VALIDADAS e exige igualdade EXATA com o snapshot. Logo, as
+//     três células cruas precisam ser strings de DADO próprias IGUAIS ao
+//     respectivo campo de topo; divergência, ausência ou acessor fecham o
+//     snapshot pelo caminho determinístico. Os testes TOCTOU/teto desta task
+//     foram realinhados para guias COERENTES e um novo `describe` cobre as
+//     variantes divergente/ausente/acessor para as três células (zero cache,
+//     zero quota e zero chamadas, resultado limitado).
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import regrasRaw from "../../docs/fontes/regras_convenio.json?raw";
@@ -3395,5 +3476,875 @@ describe("lt-retentativa-timeout-e-limites — reforço: identidade CONFIGURADA 
     expect(resultado.checagem_textual).toBe("completa");
     expect(resultado.inferencia_textual).toEqual(identidadeConfig(api));
     expect(interpretador.chamadas).toHaveLength(1);
+  });
+});
+
+describe("lt-conferencia-vazio-cache-e-falhas — reforço: campos da guia são capturados UMA vez (sem TOCTOU)", () => {
+  // A fronteira exercitada é o objeto `GuiaNormalizada` recebido por
+  // `conferirGuia`. No caminho central os três campos semânticos
+  // (`observacaoRecepcao`, `convenio`, `procedimentoCodigo`) são RE-LIDOS
+  // várias vezes: teste de vazio, tetos de abuso, construção de `entrada`,
+  // limites semânticos e o próprio motor determinístico. Um objeto com
+  // ACESSORES (getters) mutáveis pode devolver um valor CURTO numa leitura e um
+  // valor GIGANTE numa leitura posterior, contornando limite/cache e sendo
+  // copiado para `entrada` e entregue ao interpretador (TOCTOU).
+  //
+  // A correção aprovada captura os três campos UMA única vez, no início, num
+  // objeto com propriedades PRÓPRIAS de DADO (snapshot), e usa EXCLUSIVAMENTE
+  // esse snapshot — sem reler a guia depois da captura. É por isso que cada
+  // getter precisa ser lido EXATAMENTE UMA vez, inclusive quando o snapshot já
+  // nasce acima do teto: o valor capturado decide vazio/teto/limite/cache/
+  // `entrada`/motor, nunca uma leitura tardia.
+
+  const CAMPOS = ["observacaoRecepcao", "convenio", "procedimentoCodigo"] as const;
+  type Campo = (typeof CAMPOS)[number];
+
+  const TAMANHO_HOSTIL = 200_000;
+  const TAMANHO_PREFIXO = 1024;
+
+  interface GuiaHostil {
+    guia: GuiaNormalizada;
+    leituras: Record<Campo, () => number>;
+  }
+
+  // Copia a guia-base (`Object.assign` materializa TODOS os campos como dados
+  // próprios; feito ANTES de instalar os acessores, não conta como leitura) e
+  // instala um getter por campo, que conta cada leitura e delega o valor
+  // retornado a `valor(campo, nLeituras)`.
+  function comAccessors(
+    base: GuiaNormalizada,
+    valor: (campo: Campo, leituras: number) => string,
+  ): GuiaHostil {
+    const contagens: Record<Campo, number> = {
+      observacaoRecepcao: 0,
+      convenio: 0,
+      procedimentoCodigo: 0,
+    };
+    const guia = Object.assign({}, base) as GuiaNormalizada;
+    for (const campo of CAMPOS) {
+      Object.defineProperty(guia, campo, {
+        enumerable: true,
+        configurable: true,
+        get(): string {
+          contagens[campo] += 1;
+          return valor(campo, contagens[campo]);
+        },
+      });
+    }
+    return {
+      guia,
+      leituras: {
+        observacaoRecepcao: () => contagens.observacaoRecepcao,
+        convenio: () => contagens.convenio,
+        procedimentoCodigo: () => contagens.procedimentoCodigo,
+      },
+    };
+  }
+
+  function exigirLeituraUnica(hostil: GuiaHostil): void {
+    expect(hostil.leituras.observacaoRecepcao(), "leituras de observacaoRecepcao").toBe(1);
+    expect(hostil.leituras.convenio(), "leituras de convenio").toBe(1);
+    expect(hostil.leituras.procedimentoCodigo(), "leituras de procedimentoCodigo").toBe(1);
+  }
+
+  function exigirSemGigante(serializado: string, gigantes: string[]): void {
+    for (const gigante of gigantes) {
+      expect(serializado).not.toContain(gigante);
+      expect(serializado).not.toContain(gigante.slice(0, TAMANHO_PREFIXO));
+    }
+  }
+
+  it("getters que devolvem valor curto e depois gigante são lidos uma única vez por campo", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // Valor CURTO válido (não vazio, dentro de 1000/200) e valores GIGANTES
+    // devolvidos a partir da SEGUNDA leitura de cada campo.
+    const CURTO = TEXTO_PARTICULAR;
+    const GIGANTES: Record<Campo, string> = {
+      observacaoRecepcao: `${" ".repeat(TAMANHO_HOSTIL)}a`,
+      convenio: "G".repeat(TAMANHO_HOSTIL),
+      procedimentoCodigo: "G".repeat(TAMANHO_HOSTIL),
+    };
+
+    // A guia-base precisa ser COERENTE com o valor que os acessores devolvem
+    // na PRIMEIRA leitura: as três células semânticas cruas de `original`
+    // (`observacao_recepcao`/`convenio`/`procedimento_codigo`) têm de ser
+    // strings de DADO próprias IGUAIS ao topo capturado (porta de coerência do
+    // snapshot). Sem isso, o snapshot fecharia antes do interpretador e o teste
+    // deixaria de exercer a captura única.
+    const hostil = comAccessors(
+      guiaSintetica({
+        observacao_recepcao: CURTO,
+        convenio: CURTO,
+        procedimento_codigo: CURTO,
+      }),
+      (campo, leituras) => (leituras === 1 ? CURTO : GIGANTES[campo]),
+    );
+    const quota = criarQuotaFake();
+    const observador = criarObservadorFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+
+    const resultado = await api.conferirGuia(hostil.guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: null,
+      quota: quota.quota,
+      observador: observador.observador,
+    });
+
+    // Captura ÚNICA por campo: cada getter da guia é lido exatamente uma vez.
+    exigirLeituraUnica(hostil);
+
+    // O interpretador recebeu o snapshot CURTO — nunca o valor gigante.
+    expect(interpretador.chamadas).toHaveLength(1);
+    expect(interpretador.chamadas[0].observacao_recepcao).toBe(CURTO);
+    expect(interpretador.chamadas[0].convenio).toBe(CURTO);
+    expect(interpretador.chamadas[0].procedimento_codigo).toBe(CURTO);
+    exigirSemGigante(JSON.stringify(interpretador.chamadas), Object.values(GIGANTES));
+
+    // A jornada permanece normal (`completa`) e o resultado é limitado, sem o
+    // corpo gigante que nunca foi capturado.
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(resultado.inferencia_textual).toEqual(identidadeConfig(api));
+    expect(quota.consumidas).toBe(1);
+
+    const serializado = JSON.stringify(resultado);
+    expect(serializado.length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+    exigirSemGigante(serializado, Object.values(GIGANTES));
+  });
+
+  it("snapshot acima do teto (observação) falha fechada e é lido uma única vez", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // A PRIMEIRA leitura de `observacaoRecepcao` já devolve um valor acima do
+    // teto absoluto de abuso (64 KiB); convênio e procedimento continuam
+    // normais. O snapshot nasce acima do teto e falha fechada.
+    const GIGANTE = `${" ".repeat(TAMANHO_HOSTIL)}a`;
+    // A célula crua da observação carrega o MESMO gigante do topo: o snapshot
+    // permanece coerente (ambos passam pelo mesmo teto de abuso) e o que fecha
+    // é o teto, não a porta de coerência.
+    const hostil = comAccessors(
+      guiaSintetica({
+        observacao_recepcao: GIGANTE,
+        convenio: TEXTO_PARTICULAR,
+        procedimento_codigo: TEXTO_PARTICULAR,
+      }),
+      (campo) => (campo === "observacaoRecepcao" ? GIGANTE : TEXTO_PARTICULAR),
+    );
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+
+    const resultado = await api.conferirGuia(hostil.guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+
+    exigirLeituraUnica(hostil);
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(resultado.limitacoes).toContain("observacao_acima_do_limite");
+    // Nenhum efeito faturável: zero modelo, quota e cache.
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(quota.consumidas).toBe(0);
+    expect(kv.leituras).toBe(0);
+    expect(kv.gravacoes).toBe(0);
+
+    const serializado = JSON.stringify(resultado);
+    expect(serializado.length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+    exigirSemGigante(serializado, [GIGANTE]);
+  });
+
+  it("snapshot acima do teto (convênio) com observação normal falha fechada e é lido uma única vez", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // Observação normal e não vazia; a PRIMEIRA leitura de `convenio` já
+    // devolve um valor acima do teto absoluto de abuso. O snapshot do convênio
+    // nasce acima do teto e falha fechada, sem limitação nomeada nova (item 11).
+    const GIGANTE = "G".repeat(TAMANHO_HOSTIL);
+    // Célula crua do convênio com o MESMO gigante do topo: snapshot coerente;
+    // fecha pelo teto de abuso de contexto, não pela coerência.
+    const hostil = comAccessors(
+      guiaSintetica({
+        observacao_recepcao: TEXTO_PARTICULAR,
+        convenio: GIGANTE,
+        procedimento_codigo: TEXTO_PARTICULAR,
+      }),
+      (campo) => (campo === "convenio" ? GIGANTE : TEXTO_PARTICULAR),
+    );
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+
+    const resultado = await api.conferirGuia(hostil.guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+
+    exigirLeituraUnica(hostil);
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(codigos(resultado)).toContain("checagem_textual_incompleta");
+    // Nenhum efeito faturável: zero modelo, quota e cache.
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(quota.consumidas).toBe(0);
+    expect(kv.leituras).toBe(0);
+    expect(kv.gravacoes).toBe(0);
+
+    const serializado = JSON.stringify(resultado);
+    expect(serializado.length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+    exigirSemGigante(serializado, [GIGANTE]);
+  });
+
+  it("getters que devolvem valor gigante apenas numa leitura intermediária não entregam payload gigante", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // Variante mais forte da fronteira anterior: a leitura INTERMEDIÁRIA que
+    // alimenta `entrada` devolve o valor GIGANTE enquanto TODAS as outras
+    // leituras (vazio, teto de abuso e limites semânticos) continuam vendo o
+    // valor CURTO. Assim o teto de 64 KiB não aborta a jornada e o corpo
+    // gigante chega de fato ao interpretador no caminho pré-correção. Os
+    // índices foram identificados na implementação pré-correção ("a leitura
+    // que alimenta `entrada`"); depois da captura única cada getter é lido só
+    // UMA vez e o índice deixa de existir — o contrato durável é o contador em
+    // 1.
+    const CURTO = TEXTO_PARTICULAR;
+    const GIGANTES: Record<Campo, string> = {
+      observacaoRecepcao: `${" ".repeat(TAMANHO_HOSTIL)}a`,
+      convenio: "G".repeat(TAMANHO_HOSTIL),
+      procedimentoCodigo: "G".repeat(TAMANHO_HOSTIL),
+    };
+    const LEITURA_QUE_ALIMENTA_ENTRADA: Record<Campo, number> = {
+      observacaoRecepcao: 3,
+      convenio: 2,
+      procedimentoCodigo: 2,
+    };
+
+    // Base COERENTE: as três células cruas valem o CURTO que a PRIMEIRA
+    // leitura (a única depois da captura) devolve; o gigante só apareceria numa
+    // leitura intermediária que a captura única eliminou.
+    const hostil = comAccessors(
+      guiaSintetica({
+        observacao_recepcao: CURTO,
+        convenio: CURTO,
+        procedimento_codigo: CURTO,
+      }),
+      (campo, leituras) =>
+        leituras === LEITURA_QUE_ALIMENTA_ENTRADA[campo] ? GIGANTES[campo] : CURTO,
+    );
+    const quota = criarQuotaFake();
+    const observador = criarObservadorFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+
+    const resultado = await api.conferirGuia(hostil.guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: null,
+      quota: quota.quota,
+      observador: observador.observador,
+    });
+
+    // Contrato durável: captura ÚNICA por campo — nenhuma leitura
+    // intermediária pode devolver outro valor.
+    exigirLeituraUnica(hostil);
+
+    // Nem o interpretador nem o resultado carregam o corpo gigante (nem um
+    // prefixo de 1024 caracteres dele): só o snapshot CURTO é entregue.
+    exigirSemGigante(JSON.stringify(interpretador.chamadas), Object.values(GIGANTES));
+    exigirSemGigante(JSON.stringify(resultado), Object.values(GIGANTES));
+  });
+});
+
+describe("lt-conferencia-vazio-cache-e-falhas — reforço: células semânticas cruas são coerentes com o topo", () => {
+  // A fronteira exercitada é o registro `original` de `GuiaNormalizada`
+  // entregue a `conferirGuia`. A porta de COERÊNCIA aprovada exige que as três
+  // células semânticas CRUAS (`observacao_recepcao`, `convenio`,
+  // `procedimento_codigo`) sejam strings PRIMITIVAS de DADO próprias e
+  // REcomponham EXATAMENTE o snapshot de topo (`snapshotCoerenteComCelulas`
+  // recomputa `normalizarGuia` dessas células e exige igualdade exata com os
+  // campos derivados). Em consequência, cada célula crua tem de ser IGUAL ao
+  // seu campo de topo capturado; uma célula DIVERGENTE, AUSENTE ou com ACESSOR
+  // (que lança ou devolve string) fecha o snapshot antes de cache, quota e
+  // provedor — a célula crua nunca é sintetizada do topo para mascarar a
+  // divergência. Todos os casos RESOLVEM a conferência (nunca rejeitam) pelo
+  // caminho malformado: `PENDENTE`/`incompleta`, `inferencia_textual` nula,
+  // zero chamadas, zero leituras/gravações de KV, zero quota e resultado
+  // limitado ao teto de abuso.
+  const CELULAS = [
+    { campoTopo: "observacaoRecepcao", celulaCrua: "observacao_recepcao" },
+    { campoTopo: "convenio", celulaCrua: "convenio" },
+    { campoTopo: "procedimentoCodigo", celulaCrua: "procedimento_codigo" },
+  ] as const;
+
+  // Guia COERENTE de partida: topo e células cruas valem o mesmo valor curto
+  // (strings de dado próprias).
+  function guiaCoerente(): GuiaNormalizada {
+    return guiaSintetica({
+      observacao_recepcao: TEXTO_PARTICULAR,
+      convenio: TEXTO_PARTICULAR,
+      procedimento_codigo: TEXTO_PARTICULAR,
+    });
+  }
+
+  async function exigirFalhaFechadaMalformada(guia: GuiaNormalizada): Promise<void> {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+
+    // Caminho malformado determinístico: nenhum efeito faturável.
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(resultado.inferencia_textual).toBeNull();
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(kv.leituras).toBe(0);
+    expect(kv.gravacoes).toBe(0);
+    expect(quota.consumidas).toBe(0);
+    expect(JSON.stringify(resultado).length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+  }
+
+  for (const { campoTopo, celulaCrua } of CELULAS) {
+    it(`célula crua divergente do topo (${celulaCrua}) falha fechada`, async () => {
+      const guia = guiaCoerente();
+      // O topo passa a divergir da célula CRUA, que mantém o valor original.
+      (guia as unknown as Record<string, unknown>)[campoTopo] = "valor-divergente-do-topo";
+      await exigirFalhaFechadaMalformada(guia);
+    });
+
+    it(`célula crua ausente (${celulaCrua}) falha fechada`, async () => {
+      const guia = guiaCoerente();
+      // Ausência da célula CRUA: o registro `original` fica sem a chave.
+      delete (guia.original as unknown as Record<string, unknown>)[celulaCrua];
+      await exigirFalhaFechadaMalformada(guia);
+    });
+  }
+
+  it("célula crua com acessor que lança falha fechada sem rejeitar", async () => {
+    const guia = guiaCoerente();
+    Object.defineProperty(guia.original, "observacao_recepcao", {
+      get() {
+        throw new Error("célula crua hostil");
+      },
+      enumerable: true,
+      configurable: true,
+    });
+    await exigirFalhaFechadaMalformada(guia);
+  });
+
+  it("célula crua com acessor que devolve string diverge do topo e falha fechada", async () => {
+    for (const celulaCrua of ["convenio", "procedimento_codigo"] as const) {
+      const guia = guiaCoerente();
+      // Acessor NUNCA avaliado pelo snapshot; a célula crua não é uma string de
+      // DADO própria e a conferência fecha.
+      Object.defineProperty(guia.original, celulaCrua, {
+        get() {
+          return TEXTO_ADMIN;
+        },
+        enumerable: true,
+        configurable: true,
+      });
+      await exigirFalhaFechadaMalformada(guia);
+    }
+  });
+});
+
+describe("lt-conferencia-vazio-cache-e-falhas — reforço: captura da guia é validada e livre de acessores hostis", () => {
+  // A fronteira exercitada é o objeto `GuiaNormalizada` recebido por
+  // `conferirGuia`. Duas garantias aprovadas:
+  //   (a) os TRÊS campos capturados (`observacaoRecepcao`/`convenio`/
+  //       `procedimentoCodigo`) precisam ser strings PRIMITIVAS. Um valor com
+  //       `length`/`trim`/`toJSON` divergentes engana os testes de vazio/limite
+  //       (que só usam `length`/`trim`/`ToString`) enquanto `JSON.stringify` do
+  //       payload do provedor invoca `toJSON` e envia um corpo gigante. Um
+  //       não-string fecha ANTES de cache, quota e provedor, com a mesma forma
+  //       de falha de configuração, sem ecoar o valor.
+  //   (b) a representação entregue ao motor precisa ser um snapshot PURO DE
+  //       DADOS: nenhum getter é copiado nem avaliado. Um getter que LANÇA em
+  //       `original` não pode rejeitar `conferirGuia`, e um acessor hostil em
+  //       outro campo consumido pelo motor (`procedimentoDescricao`) não pode
+  //       ser retido e amplificar `motivos[].evidencia`.
+
+  const CAMPOS_SEMANTICOS = ["observacaoRecepcao", "convenio", "procedimentoCodigo"] as const;
+  type CampoSemantico = (typeof CAMPOS_SEMANTICOS)[number];
+
+  const TAMANHO_HOSTIL = 200_000;
+  const TAMANHO_PREFIXO = 1024;
+
+  // Valor hostil cujos `length` (1), `trim` ("x") e `toJSON` (200 kB) divergem.
+  // `toString` herda `Object.prototype` ("[object Object]"), de modo que os
+  // testes de vazio/teto (que usam `length`/`trim`/`ToString`) o veem CURTO.
+  // `trim`/`toJSON` são próprios mas NÃO enumeráveis: a derivação canônica da
+  // chave de cache enxerga apenas `length` (como um valor JSON pequeno), o que
+  // mantém o caminho central executando até o interpretador, enquanto
+  // `JSON.stringify` do payload do provedor continua invocando `toJSON` via
+  // `[[Get]]` e materializando o corpo gigante.
+  function valorNaoString(): object {
+    const hostil: Record<string, unknown> = {};
+    Object.defineProperty(hostil, "length", { value: 1, enumerable: true });
+    Object.defineProperty(hostil, "trim", { value: () => "x", enumerable: false });
+    Object.defineProperty(hostil, "toJSON", {
+      value: () => "G".repeat(TAMANHO_HOSTIL),
+      enumerable: false,
+    });
+    return hostil;
+  }
+
+  // Substitui, por um valor não-string, UMA das três propriedades de DADO
+  // próprias do snapshot de entrada; para os campos de contexto a observação
+  // permanece normal e NÃO vazia.
+  function guiaComCampoNaoString(campo: CampoSemantico): GuiaNormalizada {
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    (guia as unknown as Record<string, unknown>)[campo] = valorNaoString();
+    return guia;
+  }
+
+  it("valores capturados não-string falham fechada sem cache, quota ou chamada", async () => {
+    for (const campo of CAMPOS_SEMANTICOS) {
+      const api = exigirSemantica();
+      const catalogo = catalogoValido();
+      const guia = guiaComCampoNaoString(campo);
+      const kv = criarKvFake();
+      const quota = criarQuotaFake();
+      const observador = criarObservadorFake();
+      const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+      const resultado = await api.conferirGuia(guia, catalogo, {
+        interpretador: interpretador.interpretador,
+        cache: api.criarAdaptadorCacheSemantico(kv.kv),
+        quota: quota.quota,
+        observador: observador.observador,
+      });
+
+      // Nenhum efeito faturável: a recusa precede cache, quota e provedor.
+      expect(interpretador.chamadas, `chamadas com ${campo} não-string`).toHaveLength(0);
+      expect(quota.consumidas, `quota com ${campo} não-string`).toBe(0);
+      expect(kv.leituras, `leituras de KV com ${campo} não-string`).toBe(0);
+      expect(kv.gravacoes, `gravações de KV com ${campo} não-string`).toBe(0);
+
+      // Forma de falha fechada da configuração/validação, sem identidade de
+      // inferência derivada de uma tentativa que não aconteceu.
+      expect(resultado.decisao, `decisão com ${campo} não-string`).toBe("PENDENTE");
+      expect(resultado.checagem_textual, `checagem com ${campo} não-string`).toBe("incompleta");
+      expect(resultado.inferencia_textual, `inferência com ${campo} não-string`).toBeNull();
+
+      // O valor hostil nunca é ecoado no resultado (nem um prefixo de 1024).
+      const serializado = JSON.stringify(resultado);
+      expect(serializado).not.toContain("G".repeat(TAMANHO_HOSTIL));
+      expect(serializado).not.toContain("G".repeat(TAMANHO_PREFIXO));
+    }
+  });
+
+  it("getter hostil em `original` não rejeita e falha fechada de forma limitada", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    Object.defineProperty(guia, "original", {
+      get() {
+        throw new Error("original hostil");
+      },
+      enumerable: true,
+      configurable: true,
+    });
+
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+
+    // A avaliar `original` no snapshot NUNCA rejeita a conferência: fecha
+    // fechada e limitada.
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(kv.gravacoes).toBe(0);
+
+    const serializado = JSON.stringify(resultado);
+    expect(serializado.length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+  });
+
+  it("acessor hostil em outro campo do motor não amplia a evidência", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    const GIGANTE = "D".repeat(TAMANHO_HOSTIL);
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    Object.defineProperty(guia, "procedimentoDescricao", {
+      get() {
+        return GIGANTE;
+      },
+      enumerable: true,
+      configurable: true,
+    });
+
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+
+    // O acessor hostil do motor não é avaliado nem retido: a evidência
+    // determinística não carrega o corpo gigante (nem 1024 caracteres dele).
+    const serializado = JSON.stringify(resultado);
+    expect(serializado).not.toContain(GIGANTE);
+    expect(serializado).not.toContain(GIGANTE.slice(0, TAMANHO_PREFIXO));
+    expect(kv.gravacoes).toBe(0);
+
+    // Resultado é um `ResultadoVerificacao` limitado; a decisão exata não é
+    // fixada por este reforço.
+    expect(serializado.length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+    expect(["OK", "PENDENTE"]).toContain(resultado.decisao);
+    expect(Array.isArray(resultado.motivos)).toBe(true);
+  });
+});
+
+describe("lt-conferencia-vazio-cache-e-falhas — reforço: snapshot do motor valida tipos e é inerte", () => {
+  // A fronteira exercitada é o SNAPSHOT de dados entregue ao motor
+  // determinístico. O snapshot já é livre de ACESSORES (itens 17/18), mas ainda
+  // copia o VALOR de cada descritor próprio de DADO sem validar seu tipo em
+  // tempo de execução. Sem acessores, uma guia hostil ainda pode:
+  //   (a) rejeitar a conferência — `problemas: null` faz o `for...of` do motor
+  //       lançar e a Promise de `conferirGuia` rejeitar;
+  //   (b) amplificar `motivos[].evidencia` — uma `procedimentoDescricao`
+  //       primitiva GIGANTE, ou um objeto coercível com `trim`/`Symbol.toPrimitive`
+  //       divergentes, é interpolada quando o procedimento está catalogado.
+  //   (c) poluir protótipos — uma chave própria `__proto__` em `original` é
+  //       atribuída por colchetes no registro reconstruído.
+  // A correção aprovada valida em TEMPO DE EXECUÇÃO e clona como dado INERTE
+  // TODO campo consumido pelo motor; valores malformados fecham pelo caminho
+  // determinístico de `guiaMinima()` (`PENDENTE`/`incompleta`, zero chamadas,
+  // zero gravações de cache, resultado limitado). Cada caso faz `await` em
+  // `conferirGuia`, de modo que uma rejeição (motor lançando) já falha o teste.
+  const TAMANHO_HOSTIL = 200_000;
+  const TAMANHO_PREFIXO = 1024;
+
+  function exigirSemHostil(serializado: string, hostil: string): void {
+    expect(serializado).not.toContain(hostil);
+    expect(serializado).not.toContain(hostil.slice(0, TAMANHO_PREFIXO));
+    expect(serializado.length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+  }
+
+  it("problemas malformado falha fechada sem rejeitar", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // `problemas` é uma propriedade própria de DADO do snapshot; o motor a
+    // consome num `for...of`, então `null` rejeita a Promise hoje.
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    (guia as unknown as Record<string, unknown>).problemas = null;
+
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const observador = criarObservadorFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+      observador: observador.observador,
+    });
+
+    // Valor malformado fecha pelo caminho determinístico, sem efeito faturável.
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(kv.gravacoes).toBe(0);
+
+    expect(JSON.stringify(resultado).length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+  });
+
+  it("descrição gigante em dado próprio não amplia a evidência", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // O procedimento da guia-base (50000470) ESTÁ catalogado, então a
+    // divergência de descrição interpolaria o valor em `motivos[].evidencia`.
+    const GIGANTE = "D".repeat(TAMANHO_HOSTIL);
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    (guia as unknown as Record<string, unknown>).procedimentoDescricao = GIGANTE;
+
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+
+    // O corpo gigante nunca é copiado para o resultado (nem um prefixo de
+    // 1024) e nada é persistido. O dado malformado fecha pelo caminho
+    // determinístico (não é sanitizado e continuado).
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(resultado.inferencia_textual).toBeNull();
+    exigirSemHostil(JSON.stringify(resultado), GIGANTE);
+    expect(kv.gravacoes).toBe(0);
+  });
+
+  it("valor coercível hostil na descrição não amplia a evidência", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // Objeto coercível como propriedade própria de DADO: `trim` (usado por
+    // `normalizarChave`) devolve um valor curto e `Symbol.toPrimitive` (usado
+    // pela interpolação em `motivos[].evidencia`) devolve o corpo gigante.
+    const GIGANTE = "D".repeat(TAMANHO_HOSTIL);
+    const descricaoHostil: Record<string | symbol, unknown> = {
+      trim: () => "divergente",
+      [Symbol.toPrimitive]: () => GIGANTE,
+    };
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    (guia as unknown as Record<string, unknown>).procedimentoDescricao = descricaoHostil;
+
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+
+    // O objeto coercível é rejeitado como dado não inerte e fecha pelo caminho
+    // determinístico: nada é ampliado nem persistido, e não há tentativa.
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(resultado.inferencia_textual).toBeNull();
+    exigirSemHostil(JSON.stringify(resultado), GIGANTE);
+    expect(kv.gravacoes).toBe(0);
+  });
+
+  it("`__proto__` próprio em `original` não polui protótipos", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // Chave própria de DADO `__proto__` em `original`: atribuída por colchetes
+    // no registro reconstruído, instala um protótipo controlado hoje.
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    Object.defineProperty(guia.original, "__proto__", {
+      value: { poluido: true },
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+
+    // Registro inerte: fecha pelo caminho determinístico, sem tentativa, com
+    // nenhuma poluição observável, nada persistido e resultado limitado.
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(resultado.inferencia_textual).toBeNull();
+    expect(JSON.stringify(resultado).length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+    expect(kv.gravacoes).toBe(0);
+    expect(({} as Record<string, unknown>).poluido).toBeUndefined();
+  });
+});
+
+describe("lt-conferencia-vazio-cache-e-falhas — reforço: invariantes de normalização são validadas no snapshot", () => {
+  // A fronteira exercitada é o SNAPSHOT de dados entregue ao motor. O snapshot
+  // já valida tipos primitivos e teto por string, mas ainda aceita valores que
+  // o normalizador NUNCA produziria. `src/domain/normalizacao.ts` garante:
+  //   - vocabulário FECHADO de códigos: `data_invalida`, `valor_ilegivel`,
+  //     `campo_numerico_invalido`;
+  //   - compatibilidade `(codigo, campo)`: `data_invalida` só para
+  //     `data_atendimento`/`autorizacao_validade`/`data_lancamento`,
+  //     `campo_numerico_invalido` só para `autorizacao_sessoes_limite`/
+  //     `sessao_numero_na_autorizacao` e `valor_ilegivel` só para `valor`;
+  //   - no máximo UM problema por `(codigo, campo)` (cardinalidade/uniquidade);
+  //   - datas `DataCivil` com `ano`/`mes`/`dia` INTEIROS, calendário-real (mês
+  //     1..12, dia dentro do mês) e dentro da faixa de 4 dígitos suportada por
+  //     `parseDataCivil`;
+  //   - números como `null` ou inteiros seguros: sessões/limites em 1..10000
+  //     (`inteiroDaGuia`) e centavos não negativos e seguros (`valorParaCentavos`).
+  // Sem essa validação (a) um código desconhecido/incompatível faz o motor
+  // indexar `TEXTOS[codigo]` e lançar — `conferirGuia` REJEITA; (b) uma lista
+  // duplicada/acima do máximo multiplica motivos e amplia a resposta; e (c)
+  // datas/números fora do domínio desviam limites, cronologia e somas. A
+  // correção aprovada fecha essas violações pelo caminho determinístico
+  // (`PENDENTE`/`incompleta`, `inferencia_textual` nula, zero chamadas, zero
+  // gravações e resultado limitado). Cada caso faz `await` em `conferirGuia`,
+  // então uma rejeição (motor lançando) já falha o teste.
+  const HOSTIL_PROBLEMA = "Q".repeat(40_000);
+  const PREFIXO_PROBLEMA = 1024;
+
+  interface FakesConferencia {
+    resultado: ResultadoVerificacao;
+    interpretador: InterpretadorFake;
+    kv: KvFake;
+    quota: QuotaFake;
+  }
+
+  async function conferirGuiaComFakes(guia: GuiaNormalizada): Promise<FakesConferencia> {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+    return { resultado, interpretador, kv, quota };
+  }
+
+  /** Guia sintética válida com os overrides hostis próprios de DADO. */
+  function guiaHostil(overrides: Record<string, unknown>): GuiaNormalizada {
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    for (const chave of Object.keys(overrides)) {
+      (guia as unknown as Record<string, unknown>)[chave] = overrides[chave];
+    }
+    return guia;
+  }
+
+  function exigirFalhaFechada(
+    resultado: ResultadoVerificacao,
+    interpretador: InterpretadorFake,
+    kv: KvFake,
+    hostil?: string,
+  ): void {
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(resultado.inferencia_textual).toBeNull();
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(kv.gravacoes).toBe(0);
+    const serializado = JSON.stringify(resultado);
+    expect(serializado.length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+    if (hostil !== undefined) {
+      expect(serializado).not.toContain(hostil);
+      expect(serializado).not.toContain(hostil.slice(0, PREFIXO_PROBLEMA));
+    }
+  }
+
+  it("código de problema desconhecido falha fechada sem rejeitar", async () => {
+    const guia = guiaHostil({
+      problemas: [{ campo: "valor", codigo: "codigo_desconhecido", valorOriginal: "x" }],
+    });
+
+    const { resultado, interpretador, kv } = await conferirGuiaComFakes(guia);
+
+    exigirFalhaFechada(resultado, interpretador, kv);
+  });
+
+  it("código de problema incompatível com o campo falha fechada", async () => {
+    // `valor_ilegivel` é um código REAL, mas o normalizador só o emite para o
+    // campo `valor`; `convenio` nunca recebe problema de normalização.
+    const guia = guiaHostil({
+      problemas: [{ campo: "convenio", codigo: "valor_ilegivel", valorOriginal: "x" }],
+    });
+
+    const { resultado, interpretador, kv } = await conferirGuiaComFakes(guia);
+
+    exigirFalhaFechada(resultado, interpretador, kv);
+  });
+
+  it("lista de problemas duplicada falha fechada sem amplificar", async () => {
+    // Mesmo `(codigo, campo)` repetido: o normalizador emite no máximo um por
+    // par. Hoje cada cópia vira um motivo separado, duplicando a evidência.
+    const guia = guiaHostil({
+      problemas: [
+        { campo: "valor", codigo: "valor_ilegivel", valorOriginal: HOSTIL_PROBLEMA },
+        { campo: "valor", codigo: "valor_ilegivel", valorOriginal: HOSTIL_PROBLEMA },
+      ],
+    });
+
+    const { resultado, interpretador, kv } = await conferirGuiaComFakes(guia);
+
+    exigirFalhaFechada(resultado, interpretador, kv, HOSTIL_PROBLEMA);
+  });
+
+  it("lista de problemas acima do máximo falha fechada sem amplificar", async () => {
+    // O normalizador só pode emitir um problema por campo verificável (no
+    // máximo 6). 500 cópias já são mais do que a lista legítima e hoje cada uma
+    // amplifica a resposta com o corpo hostil.
+    const problemas = Array.from({ length: 500 }, () => ({
+      campo: "valor",
+      codigo: "valor_ilegivel",
+      valorOriginal: HOSTIL_PROBLEMA,
+    }));
+    const guia = guiaHostil({ problemas });
+
+    const { resultado, interpretador, kv } = await conferirGuiaComFakes(guia);
+
+    exigirFalhaFechada(resultado, interpretador, kv, HOSTIL_PROBLEMA);
+  });
+
+  it("data impossível no calendário falha fechada", async () => {
+    // `parseDataCivil` rejeita mês fora de 1..12 e dia fora do mês real.
+    const guia = guiaHostil({ dataAtendimento: { ano: 2026, mes: 99, dia: 99 } });
+
+    const { resultado, interpretador, kv } = await conferirGuiaComFakes(guia);
+
+    exigirFalhaFechada(resultado, interpretador, kv);
+  });
+
+  it("data fracionária ou fora da faixa falha fechada", async () => {
+    // Componentes não inteiros e ano fora dos 4 dígitos suportados.
+    const fracionaria = guiaHostil({ dataLancamento: { ano: 2026.5, mes: 8, dia: 10.5 } });
+    const foraDaFaixa = guiaHostil({
+      dataAtendimento: { ano: 20260, mes: 8, dia: 10 },
+    });
+
+    const primeira = await conferirGuiaComFakes(fracionaria);
+    exigirFalhaFechada(primeira.resultado, primeira.interpretador, primeira.kv);
+
+    const segunda = await conferirGuiaComFakes(foraDaFaixa);
+    exigirFalhaFechada(segunda.resultado, segunda.interpretador, segunda.kv);
+  });
+
+  it("número fora do domínio de normalização falha fechada", async () => {
+    // Sessões/limites: inteiro 1..10000; centavos: inteiro seguro não negativo.
+    const dominios: Array<Record<string, unknown>> = [
+      { sessaoNumero: -1 },
+      { autorizacaoSessoesLimite: 0 },
+      { valorCentavos: -1 },
+      { valorCentavos: 1.5 },
+      { valorCentavos: Number.MAX_SAFE_INTEGER + 1 },
+    ];
+
+    for (const override of dominios) {
+      const { resultado, interpretador, kv } = await conferirGuiaComFakes(
+        guiaHostil(override),
+      );
+      exigirFalhaFechada(resultado, interpretador, kv);
+    }
   });
 });
