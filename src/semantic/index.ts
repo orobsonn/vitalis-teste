@@ -34,7 +34,12 @@ export {
   versaoEfetivaDoPrompt,
 } from "./prompt";
 
-export { MODELO_OBSERVACAO, ErroTetoDeAbuso, criarInterpretadorWorkersAi } from "./workers-ai";
+export {
+  MODELO_OBSERVACAO,
+  ErroModeloInvalido,
+  ErroTetoDeAbuso,
+  criarInterpretadorWorkersAi,
+} from "./workers-ai";
 export type {
   BindingAi,
   OpcoesInterpretadorWorkersAi,
