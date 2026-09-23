@@ -325,3 +325,72 @@ describe("lt-metadados-efetivos-da-inferencia", () => {
     expect(Object.keys(resposta).sort()).toEqual(["modelo", "promptVersao", "texto"]);
   });
 });
+
+// Consistência da normalização do modelo configurado (achado real de
+// consistência): a orquestração já aceita apenas string NÃO VAZIA (após trim)
+// como identidade de modelo, preservando-a LITERALMENTE — inclusive espaços
+// laterais, para conferir com a identidade devolvida pelo provedor — e recai no
+// padrão `MODELO_OBSERVACAO` para string vazia, só espaços ou qualquer valor
+// não-string. O observável aqui é o primeiro argumento de `ai.run` e
+// `RespostaBruta.modelo`, nunca uma função interna. O restante do contrato
+// (payload exato de três campos e `max_tokens: 512`) permanece intacto.
+describe("consistencia-da-normalizacao-do-modelo", () => {
+  // Valores que NÃO são strings não vazias: todos devem recair no padrão.
+  const FALLBACKS: { rotulo: string; modelo: unknown }[] = [
+    { rotulo: 'string vazia ("")', modelo: "" },
+    { rotulo: "somente espaços", modelo: "   " },
+    { rotulo: "número em runtime", modelo: 42 },
+    { rotulo: "objeto em runtime", modelo: { id: MODELO_CONFIGURADO } },
+    { rotulo: "null em runtime", modelo: null },
+    { rotulo: "undefined em runtime", modelo: undefined },
+  ];
+
+  for (const { rotulo, modelo } of FALLBACKS) {
+    it(`usa o modelo padrão quando opcoes.modelo é ${rotulo}`, async () => {
+      expect(typeof api?.criarInterpretadorWorkersAi).toBe("function");
+
+      const entrada = entradaComInjecao({ observacao_recepcao: "Protocolo 123 enviado." });
+      const { binding, chamadas } = criarBindingFake({ response: RESPOSTA_PROVEDOR });
+      const interpretador = api!.criarInterpretadorWorkersAi!(binding, {
+        modelo: modelo as string,
+      });
+
+      const resposta = await interpretador.extrair(entrada);
+
+      // O modelo efetivo é o padrão, nunca a string em branco nem o não-string.
+      expect(chamadas).toHaveLength(1);
+      expect(chamadas[0].modelo).toBe(api?.MODELO_OBSERVACAO);
+      expect(resposta.modelo).toBe(api?.MODELO_OBSERVACAO);
+
+      // O restante do contrato não é alterado pela normalização do modelo.
+      const mensagens = chamadas[0].entrada.messages as { role: string; content: string }[];
+      const payloadUsuario = JSON.parse(mensagens[1].content) as Record<string, unknown>;
+      expect(Object.keys(payloadUsuario).sort()).toEqual([
+        "convenio",
+        "observacao_recepcao",
+        "procedimento_codigo",
+      ]);
+      expect(payloadUsuario).toEqual(entrada);
+      expect(chamadas[0].entrada.max_tokens).toBe(512);
+    });
+  }
+
+  it("preserva LITERALMENTE uma string válida com espaços laterais, sem trim", async () => {
+    expect(typeof api?.criarInterpretadorWorkersAi).toBe("function");
+
+    const modeloComEspacos = `  ${MODELO_CONFIGURADO}  `;
+    const entrada = entradaComInjecao({ observacao_recepcao: "Protocolo 123 enviado." });
+    const { binding, chamadas } = criarBindingFake({ response: RESPOSTA_PROVEDOR });
+    const interpretador = api!.criarInterpretadorWorkersAi!(binding, {
+      modelo: modeloComEspacos,
+    });
+
+    const resposta = await interpretador.extrair(entrada);
+
+    // Consistência: string não vazia é preservada como veio (sem `trim`), para
+    // conferir com a identidade que o provedor devolve.
+    expect(chamadas).toHaveLength(1);
+    expect(chamadas[0].modelo).toBe(modeloComEspacos);
+    expect(resposta.modelo).toBe(modeloComEspacos);
+  });
+});
