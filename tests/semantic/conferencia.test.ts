@@ -166,6 +166,16 @@
 //     a precedência do vazio: uma observação vazia após `trim` continua
 //     `nao_aplicavel` mesmo sendo só espaços — por isso não há caso de
 //     só-espaços acima do teto.
+// 12. Rejeição de ABUSO produz resultado LIMITADO (revisão de segurança):
+//     quando convênio/procedimento excedem o teto de bytes, o motor
+//     determinístico NÃO pode receber o campo cru para interpolar em
+//     `motivos[].evidencia` (`O convênio "<campo>" não consta no catálogo.`).
+//     Caso contrário um campo de vários MB rejeitado gera um resultado de
+//     vários MB (amplificação de memória/resposta) e devolve o corpo rejeitado
+//     ao cliente. A correção aprovada preserva os códigos determinísticos
+//     (`PENDENTE`/`incompleta`/`checagem_textual_incompleta`) com uma
+//     representação LIMITADA, sem expor o valor acima do teto, mantendo
+//     intactos cache, quota e provedor (zero leituras e zero chamadas).
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import regrasRaw from "../../docs/fontes/regras_convenio.json?raw";
@@ -1947,6 +1957,73 @@ describe("lt-retentativa-timeout-e-limites — reforço: teto absoluto de ABUSO 
     expect(interpretador.chamadas[0]?.convenio).toBe(convenioCru);
     expect(resultado.checagem_textual).toBe("completa");
     expect(resultado.limitacoes).not.toContain("observacao_acima_do_limite");
+  });
+
+  it("convênio ou procedimento acima do teto produz resultado LIMITADO que não expõe o corpo rejeitado", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // Sentinela genuinamente grande: 200000 espaços + `X` ≈ 200001 BYTES UTF-8
+    // crus no campo (bem acima de 64 KiB), mas comprimento TRIMADO 1 (passaria
+    // o limite SEMÂNTICO de 200). O motor determinístico interpola o campo cru
+    // em `motivos[].evidencia` (`O convênio "<campo>" não consta no
+    // catálogo.`); sem a correção, o resultado rejeitado carrega o corpo
+    // inteiro de ~200 kB (amplificação de memória/resposta). Construído por
+    // `repeat`, sem concatenar strings gigantes.
+    const gigante = " ".repeat(200_000) + "X";
+    expect(new TextEncoder().encode(gigante).length).toBeGreaterThan(64 * 1024);
+    expect(gigante.trim()).toHaveLength(1);
+
+    const casos: Array<{
+      rotulo: string;
+      codigoEsperado: string;
+      overrides: Partial<Record<Coluna, string>>;
+    }> = [
+      {
+        rotulo: "convênio",
+        codigoEsperado: "convenio_nao_catalogado",
+        overrides: { observacao_recepcao: TEXTO_ADMIN, convenio: gigante },
+      },
+      {
+        rotulo: "procedimento",
+        codigoEsperado: "procedimento_nao_catalogado",
+        overrides: { observacao_recepcao: TEXTO_ADMIN, procedimento_codigo: gigante },
+      },
+    ];
+
+    for (const caso of casos) {
+      const guia = guiaSintetica(caso.overrides);
+      const kv = criarKvFake();
+      const quota = criarQuotaFake();
+      const interpretador = criarInterpretadorFake([resposta(api, SINAIS_ADMIN)]);
+
+      const resultado = await api.conferirGuia(guia, catalogo, {
+        interpretador: interpretador.interpretador,
+        cache: api.criarAdaptadorCacheSemantico(kv.kv),
+        quota: quota.quota,
+      });
+
+      // O teto precede cache e modelo: nada é lido, nada é gravado, nada é
+      // enviado e nenhuma quota é consumida.
+      expect(interpretador.chamadas, caso.rotulo).toHaveLength(0);
+      expect(kv.leituras, caso.rotulo).toBe(0);
+      expect(kv.gravacoes, caso.rotulo).toBe(0);
+      expect(quota.consumidas, caso.rotulo).toBe(0);
+      expect(resultado.inferencia_textual, caso.rotulo).toBeNull();
+
+      // Códigos determinísticos preservados: fail-closed com a limitação textual.
+      expect(resultado.decisao, caso.rotulo).toBe("PENDENTE");
+      expect(resultado.checagem_textual, caso.rotulo).toBe("incompleta");
+      expect(resultado.limitacoes, caso.rotulo).toContain("checagem_textual_incompleta");
+      expect(codigos(resultado), caso.rotulo).toContain(caso.codigoEsperado);
+
+      // A representação é LIMITADA: o campo rejeitado nunca chega à evidência,
+      // nem truncado no prefixo longo.
+      const serializado = JSON.stringify(resultado);
+      expect(serializado.length, caso.rotulo).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+      expect(serializado, caso.rotulo).not.toContain(gigante);
+      expect(serializado, caso.rotulo).not.toContain(gigante.slice(0, 1024));
+    }
   });
 });
 
