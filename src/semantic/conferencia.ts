@@ -104,6 +104,14 @@ export interface OpcoesConferencia {
   modelo?: string;
   /** Timeout por tentativa em ms; padrão `TIMEOUT_PADRAO_MS`. */
   timeoutMs?: number;
+  /**
+   * Limite temporal, em ms, de CADA operação de cache (leitura E gravação);
+   * padrão `TIMEOUT_PADRAO_MS`. Um cache que não responda dentro do prazo
+   * degrada para miss (leitura) ou conclusão sem persistir (gravação) — nunca
+   * para falha da conferência. Normalizado como o timeout por tentativa: só
+   * número finito positivo vale; qualquer outra forma usa o padrão.
+   */
+  timeoutCacheMs?: number;
   /** Relógio injetável para durações observáveis; padrão `Date.now`. */
   agora?: () => number;
   /** Classificador fechado de falha; padrão trata 429/5xx como `transporte`. */
@@ -328,17 +336,24 @@ type ResultadoTentativa =
   | { tipo: "timeout" }
   | { tipo: "erro"; erro: unknown };
 
+type ResultadoCorrida<T> =
+  | { tipo: "ok"; valor: T }
+  | { tipo: "timeout" }
+  | { tipo: "erro"; erro: unknown };
+
 /**
- * Executa uma tentativa de extração com timeout real por `setTimeout`. A
- * tentativa abandonada por timeout nunca dispara nova chamada: o resultado do
- * timeout vence a corrida e a promessa em voo é descartada sem sobreposição.
+ * Corrida limitada por `setTimeout`, mecanismo ÚNICO compartilhado por cada
+ * tentativa de extração e por cada operação de cache (leitura E gravação).
+ * Uma promessa que nunca resolve é abandonada quando o prazo vence: o timeout
+ * ganha a corrida e a promessa em voo é descartada sem sobreposição, sem
+ * lançar e sem bloquear a conferência. Uma rejeição também é convertida em
+ * resultado fechado, nunca em exceção de `conferirGuia`.
  */
-function tentarExtracao(
-  interpretador: InterpretadorObservacao,
-  entrada: EntradaObservacao,
+function correrComTimeout<T>(
+  iniciar: () => Promise<T>,
   timeoutMs: number,
-): Promise<ResultadoTentativa> {
-  return new Promise<ResultadoTentativa>((resolve) => {
+): Promise<ResultadoCorrida<T>> {
+  return new Promise<ResultadoCorrida<T>>((resolve) => {
     let concluido = false;
 
     const temporizador = setTimeout(() => {
@@ -348,7 +363,7 @@ function tentarExtracao(
       }
     }, timeoutMs);
 
-    const finalizar = (resultado: ResultadoTentativa): void => {
+    const finalizar = (resultado: ResultadoCorrida<T>): void => {
       if (concluido) {
         return;
       }
@@ -357,19 +372,42 @@ function tentarExtracao(
       resolve(resultado);
     };
 
-    let promessa: Promise<RespostaBruta>;
+    let promessa: Promise<T>;
     try {
-      promessa = interpretador.extrair(entrada);
+      promessa = iniciar();
     } catch (erro) {
       finalizar({ tipo: "erro", erro });
       return;
     }
 
     promessa.then(
-      (resposta) => finalizar({ tipo: "ok", resposta }),
+      (valor) => finalizar({ tipo: "ok", valor }),
       (erro: unknown) => finalizar({ tipo: "erro", erro }),
     );
   });
+}
+
+/**
+ * Executa uma tentativa de extração com timeout real por `setTimeout`. A
+ * tentativa abandonada por timeout nunca dispara nova chamada: o resultado do
+ * timeout vence a corrida e a promessa em voo é descartada sem sobreposição.
+ */
+async function tentarExtracao(
+  interpretador: InterpretadorObservacao,
+  entrada: EntradaObservacao,
+  timeoutMs: number,
+): Promise<ResultadoTentativa> {
+  const corrida = await correrComTimeout<RespostaBruta>(
+    () => interpretador.extrair(entrada),
+    timeoutMs,
+  );
+  if (corrida.tipo === "ok") {
+    return { tipo: "ok", resposta: corrida.valor };
+  }
+  if (corrida.tipo === "timeout") {
+    return { tipo: "timeout" };
+  }
+  return { tipo: "erro", erro: corrida.erro };
 }
 
 /**
@@ -461,12 +499,22 @@ export async function conferirGuia(
   }
 
   // 3. Cache semântico: hit válido entrega `completa` sem modelo nem quota.
+  // Cada operação de cache (leitura E gravação) corre sob o MESMO limite
+  // temporal configurável, com o mesmo mecanismo de corrida por `setTimeout`
+  // das tentativas: um KV que aceita a chamada e nunca resolve degrada para
+  // miss (leitura) ou conclusão sem persistir (gravação) — nunca trava nem
+  // rejeita a conferência.
+  const timeoutCacheMs = normalizarTimeout(opcoes.timeoutCacheMs);
   const cache = opcoes.cache ?? null;
   if (cache) {
     let sinais: SinaisObservacao | null = null;
-    try {
-      sinais = await cache.ler(entrada, contexto);
-    } catch {
+    const leitura = await correrComTimeout<SinaisObservacao | null>(
+      () => cache.ler(entrada, contexto),
+      timeoutCacheMs,
+    );
+    if (leitura.tipo === "ok") {
+      sinais = leitura.valor;
+    } else {
       sinais = null;
       emitir(registrador, "cache_leitura_falhou", {
         estado: "incompleta",
@@ -623,11 +671,15 @@ export async function conferirGuia(
         );
       }
 
-      // Gravação best-effort: falha de KV não fecha a guia.
+      // Gravação best-effort: falha de KV não fecha a guia. Uma gravação
+      // expirada (ou rejeitada) não persiste e o resultado validado segue
+      // `completa` — a conferência não muda por causa do cache.
       if (cache) {
-        try {
-          await cache.gravar(entrada, contexto, validacao.sinais);
-        } catch {
+        const gravacao = await correrComTimeout<void>(
+          () => cache.gravar(entrada, contexto, validacao.sinais),
+          timeoutCacheMs,
+        );
+        if (gravacao.tipo !== "ok") {
           emitir(registrador, "cache_gravacao_falhou", {
             estado: "incompleta",
             codigo: "cache_indisponivel",
