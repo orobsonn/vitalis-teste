@@ -33,6 +33,11 @@ interface ObservadorContadores {
 
 interface QuotaDeChamadas {
   consumir(): boolean;
+  // `true` exatamente quando `criarQuotaDeChamadas` recebeu um observador e,
+  // portanto, já auto-notifica `registrarRecusaQuota()` em `consumir() === false`.
+  // Ausente quando nenhum observador foi fornecido: consultável por quem orquestra
+  // para não notificar a mesma recusa duas vezes (evita double-count).
+  notificaRecusaNoObservador?: boolean;
 }
 
 interface OpcoesQuotaDeChamadas {
@@ -187,6 +192,21 @@ describe("lt-quota-por-tentativa", () => {
     expect(aceitouNovaJanela).toBe(true);
     expect(chamadasAoModelo).toBe(LIMITE_PADRAO + 1);
     expect(valores().recusasQuota).toBe(2);
+  });
+
+  it("expoe notificaRecusaNoObservador=true somente quando ha observador injetado", () => {
+    expect(typeof api?.criarQuotaDeChamadas).toBe("function");
+
+    const { observador } = criarObservadorFake();
+
+    // Com observador, a quota já auto-notifica a recusa em `consumir() === false`;
+    // o marcador diz isso a quem orquestra, evitando contar a mesma recusa duas vezes.
+    const quotaComObservador = api!.criarQuotaDeChamadas({ observador });
+    expect(quotaComObservador.notificaRecusaNoObservador).toBe(true);
+
+    // Sem observador, não há notificação própria da quota: o marcador fica ausente.
+    const quotaSemObservador = api!.criarQuotaDeChamadas();
+    expect(quotaSemObservador.notificaRecusaNoObservador).toBeUndefined();
   });
 });
 
