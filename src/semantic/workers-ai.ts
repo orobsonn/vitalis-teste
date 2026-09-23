@@ -11,6 +11,16 @@
  * functions, `stream`, …) e nenhum identificador estruturado é enviado. O modelo
  * vem de `MODELO_OBSERVACAO` ou da configuração injetada; jamais do texto da
  * observação, que é dado não confiável.
+ *
+ * Teto de ABUSO por campo cru: antes de serializar o payload e antes de chamar o
+ * provedor, cada campo bruto (`observacao_recepcao`, `convenio`,
+ * `procedimento_codigo`) é confrontado com `campoTemTamanhoDeAbuso` do contrato
+ * compartilhado (mesmo `LIMITE_TEXTO_BRUTO_BYTES`, 64 KiB em bytes UTF-8). A
+ * fronteira é inclusiva: exatamente o teto é enviado normalmente; um byte acima
+ * é recusado com `ErroTetoDeAbuso`, SEM serializar o payload gigante e SEM
+ * disparar inferência. Não é um limite semântico de entrada — esses continuam
+ * nos contratos próprios — e nada de retentativa, timeout, cache ou quota aqui:
+ * essas políticas permanecem na orquestração.
  */
 
 import type {
@@ -18,6 +28,7 @@ import type {
   InterpretadorObservacao,
   RespostaBruta,
 } from "./contratos";
+import { LIMITE_TEXTO_BRUTO_BYTES, campoTemTamanhoDeAbuso } from "./contratos";
 import { TEXTO_PROMPT, versaoEfetivaDoPrompt } from "./prompt";
 
 /** Modelo padrão fixo do contrato; sobreponível apenas por configuração. */
@@ -25,6 +36,46 @@ export const MODELO_OBSERVACAO = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
 /** Teto nativo de geração da resposta (spec §3.9). */
 const MAX_TOKENS_RESPOSTA = 512;
+
+/**
+ * Erro tipado e distinguível de teto de abuso por campo cru.
+ *
+ * Lançado quando algum dos três campos brutos enviados ao provedor excede o teto
+ * de abuso compartilhado (`LIMITE_TEXTO_BRUTO_BYTES`, 64 KiB em bytes UTF-8),
+ * medido no valor CRU antes de qualquer serialização. `name` é estável
+ * (`"ErroTetoDeAbuso"`) para que o chamador classifique a falha sem inspecionar
+ * a mensagem; a mensagem nomeia apenas o campo infrator e nunca o valor de
+ * entrada.
+ */
+export class ErroTetoDeAbuso extends Error {
+  constructor(campo: string) {
+    super(
+      `Campo bruto acima do teto de abuso de ${LIMITE_TEXTO_BRUTO_BYTES} bytes UTF-8: ${campo}.`,
+    );
+    this.name = "ErroTetoDeAbuso";
+  }
+}
+
+/** Campos brutos do payload do provedor sujeitos ao teto de abuso (§3.9). */
+const CAMPOS_BRUTOS: readonly (keyof EntradaObservacao)[] = [
+  "observacao_recepcao",
+  "convenio",
+  "procedimento_codigo",
+];
+
+/**
+ * Recusa, por campo cru, entradas acima do teto de abuso. Chamada ANTES de
+ * `montarRequisicao` e de `ai.run`, de modo que uma entrada abusiva não chegue a
+ * ser serializada nem enviada ao provedor. A fronteira é inclusiva: exatamente o
+ * teto passa.
+ */
+function garantirEntradaDentroDoTetoDeAbuso(entradaObservacao: EntradaObservacao): void {
+  for (const campo of CAMPOS_BRUTOS) {
+    if (campoTemTamanhoDeAbuso(entradaObservacao[campo])) {
+      throw new ErroTetoDeAbuso(campo);
+    }
+  }
+}
 
 /**
  * Superfície mínima do binding de inferência. O binding real do Workers AI
@@ -82,6 +133,11 @@ function textoDaResposta(resultado: unknown): string {
  * Cria o interpretador de produção sobre o binding `AI`. Cada chamada a
  * `extrair` faz uma única inferência e devolve `{ texto, modelo, promptVersao }`
  * com o modelo enviado e a versão+hash do prompt efetivamente usados.
+ *
+ * Aplica o teto de abuso por campo cru antes de serializar e antes de chamar o
+ * provedor (fronteira inclusiva); entrada acima do teto falha com
+ * `ErroTetoDeAbuso` sem nenhuma chamada ao binding, deixando ao chamador a
+ * classificação como `limite_excedido`.
  */
 export function criarInterpretadorWorkersAi(
   ai: BindingAi,
@@ -91,6 +147,8 @@ export function criarInterpretadorWorkersAi(
 
   return {
     async extrair(entradaObservacao: EntradaObservacao): Promise<RespostaBruta> {
+      garantirEntradaDentroDoTetoDeAbuso(entradaObservacao);
+
       const resultado = await ai.run(modelo, montarRequisicao(entradaObservacao));
 
       return {
