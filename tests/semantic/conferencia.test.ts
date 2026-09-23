@@ -261,6 +261,27 @@
 //     `procedimentoDescricao`) não pode ser retido e amplificar
 //     `motivos[].evidencia`; ambos fecham de forma determinística com resultado
 //     limitado.
+// 19. Snapshot do motor valida TIPOS e é INERTE (reforço adversarial+security):
+//     o snapshot de dados continua copiando valores de descritores próprios de
+//     DADO sem validar o TIPO em tempo de execução, então uma guia hostil pode
+//     rejeitar/amplificar o resultado sem nenhum acessor. `problemas: null` faz o
+//     `for...of` do motor lançar; uma `procedimentoDescricao` primitiva GIGANTE
+//     é copiada e interpolada em `motivos[].evidencia` quando o procedimento
+//     está catalogado; e um objeto coercível (`trim`/`Symbol.toPrimitive`
+//     divergentes) passa pela construção do snapshot e expande a evidência de
+//     forma ilimitada. A correção aprovada entrega ao motor um snapshot
+//     validado em TEMPO DE EXECUÇÃO e INERTE: exige as formas
+//     primitivo/null/registro simples para TODO campo consumido pelo motor,
+//     clona `problemas` e registros de data como dado inerte e rejeita
+//     proxies/funções/objetos coercíveis e valores malformados pelo caminho
+//     determinístico de `guiaMinima()` (`PENDENTE`/`incompleta`,
+//     `checagem_textual_incompleta`, zero chamadas ao interpretador, zero
+//     gravações de cache e resultado limitado), limita/substitui strings
+//     gigantes que carregam evidência e cria registros com `Object.create(null)`
+//     + `Object.defineProperty`, de modo que uma chave própria `__proto__` não
+//     instale um protótipo controlado. Os quatro casos abaixo provam que cada
+//     valor malformado/hostil RESOLVE a conferência (nunca rejeita a Promise) e
+//     não amplia o resultado nem persiste cache.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import regrasRaw from "../../docs/fontes/regras_convenio.json?raw";
@@ -3832,5 +3853,163 @@ describe("lt-conferencia-vazio-cache-e-falhas — reforço: captura da guia é v
     expect(serializado.length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
     expect(["OK", "PENDENTE"]).toContain(resultado.decisao);
     expect(Array.isArray(resultado.motivos)).toBe(true);
+  });
+});
+
+describe("lt-conferencia-vazio-cache-e-falhas — reforço: snapshot do motor valida tipos e é inerte", () => {
+  // A fronteira exercitada é o SNAPSHOT de dados entregue ao motor
+  // determinístico. O snapshot já é livre de ACESSORES (itens 17/18), mas ainda
+  // copia o VALOR de cada descritor próprio de DADO sem validar seu tipo em
+  // tempo de execução. Sem acessores, uma guia hostil ainda pode:
+  //   (a) rejeitar a conferência — `problemas: null` faz o `for...of` do motor
+  //       lançar e a Promise de `conferirGuia` rejeitar;
+  //   (b) amplificar `motivos[].evidencia` — uma `procedimentoDescricao`
+  //       primitiva GIGANTE, ou um objeto coercível com `trim`/`Symbol.toPrimitive`
+  //       divergentes, é interpolada quando o procedimento está catalogado.
+  //   (c) poluir protótipos — uma chave própria `__proto__` em `original` é
+  //       atribuída por colchetes no registro reconstruído.
+  // A correção aprovada valida em TEMPO DE EXECUÇÃO e clona como dado INERTE
+  // TODO campo consumido pelo motor; valores malformados fecham pelo caminho
+  // determinístico de `guiaMinima()` (`PENDENTE`/`incompleta`, zero chamadas,
+  // zero gravações de cache, resultado limitado). Cada caso faz `await` em
+  // `conferirGuia`, de modo que uma rejeição (motor lançando) já falha o teste.
+  const TAMANHO_HOSTIL = 200_000;
+  const TAMANHO_PREFIXO = 1024;
+
+  function exigirSemHostil(serializado: string, hostil: string): void {
+    expect(serializado).not.toContain(hostil);
+    expect(serializado).not.toContain(hostil.slice(0, TAMANHO_PREFIXO));
+    expect(serializado.length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+  }
+
+  it("problemas malformado falha fechada sem rejeitar", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // `problemas` é uma propriedade própria de DADO do snapshot; o motor a
+    // consome num `for...of`, então `null` rejeita a Promise hoje.
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    (guia as unknown as Record<string, unknown>).problemas = null;
+
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const observador = criarObservadorFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+      observador: observador.observador,
+    });
+
+    // Valor malformado fecha pelo caminho determinístico, sem efeito faturável.
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(kv.gravacoes).toBe(0);
+
+    expect(JSON.stringify(resultado).length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+  });
+
+  it("descrição gigante em dado próprio não amplia a evidência", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // O procedimento da guia-base (50000470) ESTÁ catalogado, então a
+    // divergência de descrição interpolaria o valor em `motivos[].evidencia`.
+    const GIGANTE = "D".repeat(TAMANHO_HOSTIL);
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    (guia as unknown as Record<string, unknown>).procedimentoDescricao = GIGANTE;
+
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+
+    // O corpo gigante nunca é copiado para o resultado (nem um prefixo de
+    // 1024) e nada é persistido. O dado malformado fecha pelo caminho
+    // determinístico (não é sanitizado e continuado).
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(resultado.inferencia_textual).toBeNull();
+    exigirSemHostil(JSON.stringify(resultado), GIGANTE);
+    expect(kv.gravacoes).toBe(0);
+  });
+
+  it("valor coercível hostil na descrição não amplia a evidência", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // Objeto coercível como propriedade própria de DADO: `trim` (usado por
+    // `normalizarChave`) devolve um valor curto e `Symbol.toPrimitive` (usado
+    // pela interpolação em `motivos[].evidencia`) devolve o corpo gigante.
+    const GIGANTE = "D".repeat(TAMANHO_HOSTIL);
+    const descricaoHostil: Record<string | symbol, unknown> = {
+      trim: () => "divergente",
+      [Symbol.toPrimitive]: () => GIGANTE,
+    };
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    (guia as unknown as Record<string, unknown>).procedimentoDescricao = descricaoHostil;
+
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+
+    // O objeto coercível é rejeitado como dado não inerte e fecha pelo caminho
+    // determinístico: nada é ampliado nem persistido, e não há tentativa.
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(resultado.inferencia_textual).toBeNull();
+    exigirSemHostil(JSON.stringify(resultado), GIGANTE);
+    expect(kv.gravacoes).toBe(0);
+  });
+
+  it("`__proto__` próprio em `original` não polui protótipos", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // Chave própria de DADO `__proto__` em `original`: atribuída por colchetes
+    // no registro reconstruído, instala um protótipo controlado hoje.
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    Object.defineProperty(guia.original, "__proto__", {
+      value: { poluido: true },
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+
+    // Registro inerte: fecha pelo caminho determinístico, sem tentativa, com
+    // nenhuma poluição observável, nada persistido e resultado limitado.
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(resultado.inferencia_textual).toBeNull();
+    expect(JSON.stringify(resultado).length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+    expect(kv.gravacoes).toBe(0);
+    expect(({} as Record<string, unknown>).poluido).toBeUndefined();
   });
 });
