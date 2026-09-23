@@ -105,11 +105,15 @@ export interface OpcoesConferencia {
   /** Timeout por tentativa em ms; padrão `TIMEOUT_PADRAO_MS`. */
   timeoutMs?: number;
   /**
-   * Limite temporal, em ms, de CADA operação de cache (leitura E gravação);
-   * padrão `TIMEOUT_PADRAO_MS`. Um cache que não responda dentro do prazo
-   * degrada para miss (leitura) ou conclusão sem persistir (gravação) — nunca
-   * para falha da conferência. Normalizado como o timeout por tentativa: só
-   * número finito positivo vale; qualquer outra forma usa o padrão.
+   * Limite temporal, em ms, de ESPERA de CADA operação de cache (leitura E
+   * gravação); padrão `TIMEOUT_PADRAO_MS`. O limite cerca a ESPERA, não o efeito
+   * de armazenamento: um cache que não responda dentro do prazo degrada a
+   * leitura para miss e ABANDONA a gravação — a conferência não a aguarda,
+   * conclui `completa` e emite o evento redigido `cache_gravacao_falhou`; uma
+   * conclusão tardia da gravação ainda pode persistir best-effort, sem alterar
+   * o resultado devolvido nem o evento emitido. Nada disso vira falha da
+   * conferência. Normalizado como o timeout por tentativa: só número finito
+   * positivo vale; qualquer outra forma usa o padrão.
    */
   timeoutCacheMs?: number;
   /** Relógio injetável para durações observáveis; padrão `Date.now`. */
@@ -506,9 +510,12 @@ export async function conferirGuia(
   // 3. Cache semântico: hit válido entrega `completa` sem modelo nem quota.
   // Cada operação de cache (leitura E gravação) corre sob o MESMO limite
   // temporal configurável, com o mesmo mecanismo de corrida por `setTimeout`
-  // das tentativas: um KV que aceita a chamada e nunca resolve degrada para
-  // miss (leitura) ou conclusão sem persistir (gravação) — nunca trava nem
-  // rejeita a conferência.
+  // das tentativas: um KV que aceita a chamada e nunca resolve degrada a
+  // leitura para miss e ABANDONA a gravação. O limite cerca a ESPERA, não o
+  // efeito de armazenamento: a conferência não aguarda a gravação abandonada,
+  // conclui `completa` e emite `cache_gravacao_falhou`, e uma conclusão tardia
+  // ainda pode persistir best-effort sem alterar o resultado devolvido nem o
+  // evento emitido. Nada aqui trava nem rejeita a conferência.
   const timeoutCacheMs = normalizarTimeout(opcoes.timeoutCacheMs);
   const cache = opcoes.cache ?? null;
   if (cache) {
@@ -518,7 +525,22 @@ export async function conferirGuia(
       timeoutCacheMs,
     );
     if (leitura.tipo === "ok") {
-      sinais = leitura.valor;
+      // §3.8: a MESMA validação de schema/evidência da extração vale para o
+      // valor LIDO do cache. Um adaptador estrutural pode RESOLVER uma Promise
+      // legítima com um valor truthy que NÃO é `SinaisObservacao`; a truthiness
+      // sozinha não pode selecionar o hit. `validarExtracao` aceita o objeto já
+      // parseado: só `{ ok: true, sinais }` é hit válido. Um valor
+      // inválido/null/malformado — ou um acessor hostil que lance durante a
+      // validação — degrada em silêncio para MISS, como a entrada corrompida do
+      // adaptador (sem evento de falha); o fluxo segue para a extração, de modo
+      // que a conferência nunca rejeita nem deixa um erro de acesso a
+      // propriedade escapar.
+      try {
+        const validacaoCache = validarExtracao(leitura.valor, entrada.observacao_recepcao);
+        sinais = validacaoCache.ok ? validacaoCache.sinais : null;
+      } catch {
+        sinais = null;
+      }
     } else {
       sinais = null;
       emitir(registrador, "cache_leitura_falhou", {
@@ -676,9 +698,12 @@ export async function conferirGuia(
         );
       }
 
-      // Gravação best-effort: falha de KV não fecha a guia. Uma gravação
-      // expirada (ou rejeitada) não persiste e o resultado validado segue
-      // `completa` — a conferência não muda por causa do cache.
+      // Gravação best-effort: falha de KV não fecha a guia. O limite temporal
+      // cerca a ESPERA, não o efeito de armazenamento: uma gravação expirada
+      // (ou rejeitada) é ABANDONADA — a conferência não a aguarda, emite
+      // `cache_gravacao_falhou` e o resultado validado segue `completa`; uma
+      // conclusão tardia ainda pode persistir best-effort, sem alterar o
+      // resultado devolvido nem o evento emitido.
       if (cache) {
         const gravacao = await correrComTimeout<void>(
           () => cache.gravar(entrada, contexto, validacao.sinais),
