@@ -53,6 +53,7 @@ interface ApiAprovada {
   PROMPT_HASH: string;
   LIMITE_TEXTO_BRUTO_BYTES: number;
   ErroTetoDeAbuso: new (...args: unknown[]) => Error;
+  ErroModeloInvalido: new (...args: unknown[]) => Error;
   versaoEfetivaDoPrompt(): string;
   criarInterpretadorWorkersAi(ai: BindingAi, opcoes?: OpcoesInterpretador): InterpretadorObservacao;
 }
@@ -711,5 +712,139 @@ describe("teto-de-abuso-por-campo-e-ordem-das-guardas", () => {
     expect(chamadas).toHaveLength(0);
     expect(erro).toBeInstanceOf(ConstrutorErro);
     expect((erro as Error).name).toBe("ErroTetoDeAbuso");
+  });
+});
+
+// Teto de COMPRIMENTO do modelo configurado (achado residual cross-task, no
+// escopo desta task): `opcoes.modelo` era aceito sem teto e repassado a `ai.run`
+// antes de qualquer validação de identidade. O contrato pinado: o teto é medido
+// no valor CRU (sem `trim`) com teto de 200 caracteres, aplicado no MOMENTO DA
+// CONSTRUÇÃO — `criarInterpretadorWorkersAi` lança o erro tipado exportado
+// `ErroModeloInvalido` (name estável), sem NENHUMA chamada ao binding. Exatamente
+// 200 caracteres é aceito e preservado LITERALMENTE; acima do teto a mensagem cita
+// apenas o LIMITE e nunca o valor hostil. Observáveis apenas comportamentais:
+// erro tipado do barrel, `name`, ausência de eco na mensagem, contagem de
+// chamadas, primeiro argumento de `ai.run` e `RespostaBruta.modelo` — nada de
+// espiões internos nem de inspecionar constantes privadas do módulo.
+describe("teto-de-comprimento-do-modelo-configurado", () => {
+  const LIMITE_MODELO_CARACTERES = 200;
+
+  it("aceita e preserva LITERALMENTE um modelo cru de exatamente 200 caracteres", async () => {
+    expect(typeof api?.criarInterpretadorWorkersAi).toBe("function");
+
+    // Fronteira inclusiva: exatamente o teto é configuração válida, e o valor
+    // cru é preservado como identidade (sem `trim`), jamais trocado pelo padrão.
+    const modeloNoTeto = "m".repeat(LIMITE_MODELO_CARACTERES);
+    expect(modeloNoTeto.length).toBe(200);
+
+    const entrada = entradaComInjecao();
+    const { binding, chamadas } = criarBindingFake({ response: RESPOSTA_PROVEDOR });
+    const interpretador = api!.criarInterpretadorWorkersAi!(binding, { modelo: modeloNoTeto });
+
+    const resposta = await interpretador.extrair(entrada);
+
+    // Uma única inferência, com o modelo literal como primeiro argumento.
+    expect(chamadas).toHaveLength(1);
+    expect(chamadas[0].modelo).toBe(modeloNoTeto);
+    expect(resposta.modelo).toBe(modeloNoTeto);
+    expect(resposta.modelo).not.toBe(api?.MODELO_OBSERVACAO);
+
+    // O restante do contrato (§3.1) permanece intacto na borda do teto.
+    expect(chamadas[0].entrada.max_tokens).toBe(512);
+    const mensagens = chamadas[0].entrada.messages as { role: string; content: string }[];
+    const payloadUsuario = JSON.parse(mensagens[1].content) as Record<string, unknown>;
+    expect(Object.keys(payloadUsuario).sort()).toEqual([
+      "convenio",
+      "observacao_recepcao",
+      "procedimento_codigo",
+    ]);
+  });
+
+  it("recusa na construção um modelo cru de 201 caracteres, sem chamar o provedor", async () => {
+    const ConstrutorErro = api?.ErroModeloInvalido;
+    expect(typeof api?.criarInterpretadorWorkersAi).toBe("function");
+    expect(typeof ConstrutorErro).toBe("function");
+
+    // Um caractere acima do teto é o primeiro valor inaceitável.
+    const modeloAcimaDoTeto = "m".repeat(LIMITE_MODELO_CARACTERES + 1);
+    expect(modeloAcimaDoTeto.length).toBe(201);
+
+    const { binding, chamadas } = criarBindingFake({ response: RESPOSTA_PROVEDOR });
+
+    // A recusa é no MOMENTO DA CONSTRUÇÃO: nenhum interpretador é devolvido.
+    let interpretador: InterpretadorObservacao | undefined;
+    let erro: unknown;
+    try {
+      interpretador = api!.criarInterpretadorWorkersAi!(binding, { modelo: modeloAcimaDoTeto });
+    } catch (capturado) {
+      erro = capturado;
+    }
+
+    // O binding nunca é tocado e nenhum interpretador utilizável é retornado.
+    expect(chamadas).toHaveLength(0);
+    expect(interpretador).toBeUndefined();
+
+    // Erro tipado e distinguível, exportado pelo barrel, com `name` estável.
+    expect(erro).toBeInstanceOf(ConstrutorErro);
+    expect((erro as Error).name).toBe("ErroModeloInvalido");
+    expect(erro).toBeInstanceOf(Error);
+  });
+
+  it("recusa valor hostil gigante sem ecoar o valor e citando apenas o limite", async () => {
+    const ConstrutorErro = api?.ErroModeloInvalido;
+    expect(typeof api?.criarInterpretadorWorkersAi).toBe("function");
+    expect(typeof ConstrutorErro).toBe("function");
+
+    // Valor hostil: um marcador reconhecível seguido de centenas de milhares de
+    // caracteres, muito acima do teto.
+    const modeloHostil = `MARCADOR_HOSTIL${"x".repeat(200_000)}`;
+    expect(modeloHostil.length).toBeGreaterThan(200);
+
+    const { binding, chamadas } = criarBindingFake({ response: RESPOSTA_PROVEDOR });
+
+    let erro: unknown;
+    try {
+      api!.criarInterpretadorWorkersAi!(binding, { modelo: modeloHostil });
+    } catch (capturado) {
+      erro = capturado;
+    }
+
+    // Nenhuma inferência foi disparada.
+    expect(chamadas).toHaveLength(0);
+
+    expect(erro).toBeInstanceOf(ConstrutorErro);
+    expect((erro as Error).name).toBe("ErroModeloInvalido");
+
+    // A mensagem cita SÓ o limite — nunca ecoa o valor hostil de entrada.
+    const mensagem = (erro as Error).message;
+    expect(mensagem).not.toContain("MARCADOR_HOSTIL");
+    expect(mensagem).toContain("200");
+  });
+
+  it("mede o teto no valor CRU, não no valor trimado", async () => {
+    const ConstrutorErro = api?.ErroModeloInvalido;
+    expect(typeof api?.criarInterpretadorWorkersAi).toBe("function");
+    expect(typeof ConstrutorErro).toBe("function");
+
+    // Valor com espaços laterais: o conteúdo trimado (199 chars) é uma
+    // identidade válida dentro do teto, mas o valor CRU tem 203 caracteres. Uma
+    // implementação que medisse o comprimento APÓS o `trim` aceitaria; a recusa
+    // prova que o teto é medido no valor cru, antes de normalizar.
+    const modeloComEspacosLaterais = `  ${"m".repeat(199)}  `;
+    expect(modeloComEspacosLaterais.length).toBe(203);
+    expect(modeloComEspacosLaterais.trim().length).toBeLessThanOrEqual(200);
+
+    const { binding, chamadas } = criarBindingFake({ response: RESPOSTA_PROVEDOR });
+
+    let erro: unknown;
+    try {
+      api!.criarInterpretadorWorkersAi!(binding, { modelo: modeloComEspacosLaterais });
+    } catch (capturado) {
+      erro = capturado;
+    }
+
+    expect(chamadas).toHaveLength(0);
+    expect(erro).toBeInstanceOf(ConstrutorErro);
+    expect((erro as Error).name).toBe("ErroModeloInvalido");
   });
 });
