@@ -78,15 +78,15 @@
 //    `status`, ou com status não transitório (400), ainda que o classificador
 //    injetado diga `transporte`, não retenta e não consome o segundo roteiro
 //    (§3.9, §7.13, #ac-17).
-// 2. Os ÚNICOS limites de entrada do contrato §3.9 são os TRIMADOS: 1000
+// 2. O único limite SEMÂNTICO de entrada do contrato §3.9 é o TRIMADO: 1000
 //    caracteres para a observação (após `trim`) e 200 para
-//    convênio/procedimento (após `trim`). Não existe teto de caracteres CRUS:
-//    preservar o texto original é o julgamento aprovado e `trim` serve apenas
-//    para vazio e limites. Uma observação com 4097 caracteres crus mas
-//    exatamente 1000 após `trim` é enviada ao modelo. O risco residual de
-//    custo/entrada crua pertence ao limite de corpo do entrypoint HTTP
-//    (issues #4/#6), não a este contrato — por isso não há mais testes de teto
-//    cru neste arquivo.
+//    convênio/procedimento (após `trim`). Preservar o texto original é o
+//    julgamento aprovado e `trim` serve apenas para vazio e limites. Uma
+//    observação com 4097 caracteres crus mas exatamente 1000 após `trim` é
+//    enviada ao modelo — fica ABAIXO do teto absoluto de ABUSO documentado no
+//    item 11. O risco residual de custo/entrada crua pertence sobretudo ao
+//    limite de corpo do entrypoint HTTP (issues #4/#6); o teto absoluto apenas
+//    fecha o caso patológico sem reintroduzir o teto cru pequeno da 3ª rodada.
 // 3. A quota padrão vive no módulo: uma ÚNICA instância (60 chamadas / 60000 ms)
 //    usada quando `quota` é OMITIDA ou `null`, nunca criada por chamada. A prova
 //    é determinística (não depende do consumo de casos anteriores): recarrega o
@@ -147,6 +147,20 @@
 //     propriedade escapando de `conferirGuia` nem de hit aceito só por
 //     truthiness. A conferência degrada para a extração, invoca o interpretador
 //     EXATAMENTE uma vez e entrega `completa`.
+//
+// 11. Teto ABSOLUTO de ABUSO em BYTES UTF-8 (reconciliação das visões
+//     anteriores): `LIMITE_TEXTO_BRUTO_BYTES = 64 * 1024` (65536) é um teto de
+//     abuso sobre o texto CRU da observação, medido em BYTES UTF-8 (nunca em
+//     unidades UTF-16 de `String.length`) ANTES de trim/cache/hash/envio. Acima
+//     dele a conferência falha fechada: `incompleta` +
+//     `observacao_acima_do_limite`, SEM chamada ao modelo, SEM leitura de cache
+//     e SEM hash. No limite ou abaixo, nada muda: o texto cru é preservado na
+//     chave e no payload e o limite SEMÂNTICO trimado de 1000 caracteres
+//     continua sendo o único limite de entrada — 4097 crus com 1000 trimados
+//     seguem enviados (não se restaura o teto cru pequeno da 3ª rodada, que
+//     recusava entradas válidas). §3.6 mantém a precedência do vazio: uma
+//     observação vazia após `trim` continua `nao_aplicavel` mesmo sendo só
+//     espaços — por isso não há caso de só-espaços acima do teto.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import regrasRaw from "../../docs/fontes/regras_convenio.json?raw";
@@ -1684,11 +1698,14 @@ describe("lt-retentativa-timeout-e-limites — reforço: retentativa exige statu
   });
 });
 
-describe("lt-retentativa-timeout-e-limites — reforço: entrada só tem os limites TRIMADOS (sem teto cru)", () => {
-  // §3.9 fixa apenas o limite TRIMADO de 1000 caracteres para a observação (e
-  // 200 para convênio/procedimento). O texto original é preservado e não há
-  // teto de caracteres CRUS; o risco residual de corpo cru pertence ao limite
-  // do entrypoint HTTP (issues #4/#6), não a este contrato.
+describe("lt-retentativa-timeout-e-limites — reforço: 4097 crus com 1000 trimados ficam abaixo do teto de ABUSO", () => {
+  // §3.9 fixa o limite SEMÂNTICO TRIMADO de 1000 caracteres para a observação
+  // (e 200 para convênio/procedimento). O texto original é preservado e este
+  // caso (4097 crus com 1000 trimados) fica ABAIXO do teto absoluto de ABUSO
+  // (`LIMITE_TEXTO_BRUTO_BYTES`, 64 KiB UTF-8) exercido no describe seguinte —
+  // não se restaura o teto cru pequeno da 3ª rodada. O risco residual de
+  // custo/corpo pertence sobretudo ao limite do entrypoint HTTP (issues
+  // #4/#6).
   it("observação com 4097 caracteres CRUS e exatamente 1000 trimados é enviada ao modelo", async () => {
     const api = exigirSemantica();
     const catalogo = catalogoValido();
@@ -1708,6 +1725,127 @@ describe("lt-retentativa-timeout-e-limites — reforço: entrada só tem os limi
 
     // Acima de 4096 caracteres crus, mas com 1000 trimados: sem teto cru, a
     // observação segue para o modelo exatamente uma vez.
+    expect(interpretador.chamadas).toHaveLength(1);
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(resultado.limitacoes).not.toContain("observacao_acima_do_limite");
+  });
+});
+
+describe("lt-retentativa-timeout-e-limites — reforço: teto absoluto de ABUSO em bytes UTF-8", () => {
+  // Reconciliação das visões anteriores: NÃO se restaura o teto cru pequeno da
+  // 3ª rodada (que recusava entradas válidas como 4097 crus com 1000 após
+  // `trim`); em vez disso há um teto ABSOLUTO de abuso alinhado ao limite de
+  // corpo HTTP aprovado. `LIMITE_TEXTO_BRUTO_BYTES = 64 * 1024` (65536) BYTES
+  // UTF-8 medidos no texto CRU antes de trim/cache/hash/envio. Acima dele:
+  // `incompleta` + `observacao_acima_do_limite`, SEM chamada ao modelo, SEM
+  // leitura de cache e SEM hash. No limite ou abaixo, nada muda: o texto cru é
+  // preservado na chave/payload e o limite SEMÂNTICO trimado de 1000 caracteres
+  // continua sendo o único limite de entrada. A medição é em BYTES UTF-8, nunca
+  // em unidades UTF-16 de `String.length`: `á` custa 2 bytes.
+  const LIMITE_TEXTO_BRUTO_BYTES = 64 * 1024;
+
+  it("padding de espaços acima do teto absoluto não lê cache, não chama o modelo e produz incompleta", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // 65537 espaços + 1 letra: 65538 BYTES UTF-8 crus, mas comprimento TRIMADO
+    // 1 (passaria o limite semântico). Construído por `repeat`, sem concatenar
+    // strings gigantes.
+    const observacaoCrua = " ".repeat(LIMITE_TEXTO_BRUTO_BYTES + 1) + "a";
+    expect(observacaoCrua).toHaveLength(LIMITE_TEXTO_BRUTO_BYTES + 2);
+    expect(observacaoCrua.trim()).toHaveLength(1);
+
+    const guia = guiaSintetica({ observacao_recepcao: observacaoCrua });
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(resultado.limitacoes).toContain("observacao_acima_do_limite");
+    // O teto precede o modelo: nenhuma tentativa chega ao interpretador.
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(resultado.inferencia_textual).toBeNull();
+    // E precede também a leitura de cache (e o hash que ela recalcula).
+    expect(kv.leituras).toBe(0);
+  });
+
+  it("4097 caracteres crus com exatamente 1000 trimados ficam abaixo do teto e são enviados", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    const observacaoCrua = " ".repeat(3097) + "a".repeat(LIMITE_ENTRADA);
+    expect(observacaoCrua).toHaveLength(4097);
+    expect(observacaoCrua.trim()).toHaveLength(LIMITE_ENTRADA);
+    // Abaixo do teto absoluto de abuso: o limite SEMÂNTICO trimado é o único.
+    expect(observacaoCrua.length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+
+    const guia = guiaSintetica({ observacao_recepcao: observacaoCrua });
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+    });
+
+    expect(interpretador.chamadas).toHaveLength(1);
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(resultado.limitacoes).not.toContain("observacao_acima_do_limite");
+  });
+
+  it("o teto mede BYTES UTF-8: 66000 bytes em 65000 unidades UTF-16 é recusado", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // 64000 espaços + 1000 `á`: 65000 unidades UTF-16 (ABAIXO de 65536) mas
+    // 64000 + 2*1000 = 66000 BYTES UTF-8 (ACIMA do teto). Só uma medição em
+    // bytes UTF-8 recusa este caso; `String.length` o enviaria ao modelo.
+    const observacaoCrua = " ".repeat(64000) + "á".repeat(1000);
+    expect(observacaoCrua).toHaveLength(65000);
+    expect(new TextEncoder().encode(observacaoCrua)).toHaveLength(66000);
+
+    const guia = guiaSintetica({ observacao_recepcao: observacaoCrua });
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(resultado.limitacoes).toContain("observacao_acima_do_limite");
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(resultado.inferencia_textual).toBeNull();
+    expect(kv.leituras).toBe(0);
+  });
+
+  it("exatamente 65536 BYTES UTF-8 e 1000 após trim continua sendo enviado (limite honesto)", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // 63536 espaços + 1000 `á`: 63536 + 2000 = 65536 BYTES UTF-8, exatamente no
+    // teto (não acima) e exatamente 1000 após `trim`. O limite é honesto: a
+    // observação ainda é enviada.
+    const observacaoCrua = " ".repeat(63536) + "á".repeat(1000);
+    expect(new TextEncoder().encode(observacaoCrua)).toHaveLength(LIMITE_TEXTO_BRUTO_BYTES);
+    expect(observacaoCrua.trim()).toHaveLength(LIMITE_ENTRADA);
+
+    const guia = guiaSintetica({ observacao_recepcao: observacaoCrua });
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+    });
+
     expect(interpretador.chamadas).toHaveLength(1);
     expect(resultado.checagem_textual).toBe("completa");
     expect(resultado.limitacoes).not.toContain("observacao_acima_do_limite");
