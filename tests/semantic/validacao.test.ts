@@ -17,7 +17,8 @@
 //
 // Superfície exercitada (contrato da task): `validarExtracao`, `normalizarEvidencia`,
 // os limites numéricos, `hashDoPrompt`/`PROMPT_HASH`/`VERSAO_PROMPT`/`TEXTO_PROMPT`/
-// `versaoEfetivaDoPrompt`, `TIPOS_SINAL` e `TIPOS_AMBIGUIDADE`.
+// `versaoEfetivaDoPrompt`, `TIPOS_SINAL`, `TIPOS_AMBIGUIDADE` e a fonte canônica
+// `VALORES_SITUACAO`/`LITERAIS_SITUACAO` (a mesma que o schema Zod consome).
 import { describe, expect, it } from "vitest";
 
 interface Sinal {
@@ -47,9 +48,18 @@ type ResultadoValidacaoExtracao =
   | { ok: true; sinais: SinaisObservacao }
   | { ok: false; erro: string };
 
+interface ValoresSituacao {
+  autorizacao: readonly string[];
+  modalidade: readonly string[];
+  procedimento: readonly string[];
+  reagendamento: readonly string[];
+}
+
 interface ApiAprovada {
   TIPOS_SINAL: readonly string[];
   TIPOS_AMBIGUIDADE: readonly string[];
+  VALORES_SITUACAO: ValoresSituacao;
+  LITERAIS_SITUACAO: readonly string[];
   LIMITE_SINAIS: number;
   LIMITE_AMBIGUIDADES: number;
   LIMITE_EVIDENCIA: number;
@@ -374,17 +384,19 @@ describe("lt-limite-da-evidencia-literal", () => {
 // valores literais, mas o prompt precisa entregá-los ao modelo como tokens
 // próprios, senão respostas plausíveis viram `incompleta` (fail-closed).
 //
-// A lista abaixo é fato local do teste: o schema não exporta esses literais.
-const TOKENS_SITUACAO: readonly string[] = [
-  "nenhuma",
-  "nova_nao_cadastrada",
-  "verbal_sem_numero",
-  "particular_decidido",
-  "somente_pergunta",
-  "realizado_divergente",
-  "nenhum",
-  "mencionado",
-];
+// O teste NÃO duplica a enumeração: deriva do contrato exportado pelo barrel
+// (`VALORES_SITUACAO`/`LITERAIS_SITUACAO`), a mesma fonte canônica que o schema
+// Zod consome. Se o enum mudar, o acoplamento com o prompt e o hash quebram
+// aqui. O fallback vazio mantém a falha como asserção (nunca de coleta).
+const VALORES_SITUACAO_AUSENTE: ValoresSituacao = {
+  autorizacao: [],
+  modalidade: [],
+  procedimento: [],
+  reagendamento: [],
+};
+
+const valoresSituacao = api?.VALORES_SITUACAO ?? VALORES_SITUACAO_AUSENTE;
+const literaisSituacao = api?.LITERAIS_SITUACAO ?? [];
 
 const MAPEAMENTO_SINAL_SITUACAO: ReadonlyArray<readonly [string, string]> = [
   ["autorizacao_nova_nao_cadastrada", "nova_nao_cadastrada"],
@@ -410,9 +422,52 @@ function linhaLigaTokens(texto: string, a: string, b: string): boolean {
 }
 
 describe("lt-prompt-acoplado-e-anti-injecao > situação textual", () => {
+  it("exporta a fonte canônica dos literais de situação", () => {
+    const valores = api?.VALORES_SITUACAO;
+    expect(valores, "VALORES_SITUACAO ausente no barrel").toBeDefined();
+    expect(Object.keys(valores ?? {}).sort()).toEqual([
+      "autorizacao",
+      "modalidade",
+      "procedimento",
+      "reagendamento",
+    ]);
+
+    const campos: ReadonlyArray<readonly string[]> = [
+      valoresSituacao.autorizacao,
+      valoresSituacao.modalidade,
+      valoresSituacao.procedimento,
+      valoresSituacao.reagendamento,
+    ];
+    for (const campo of campos) {
+      expect(Array.isArray(campo)).toBe(true);
+      expect(campo.length).toBeGreaterThanOrEqual(2);
+      for (const literal of campo) {
+        expect(typeof literal).toBe("string");
+        expect(literal.length).toBeGreaterThan(0);
+      }
+      expect(new Set(campo).size).toBe(campo.length);
+    }
+
+    const planos: string[] = [];
+    for (const campo of campos) {
+      planos.push(...campo);
+    }
+    const uniao = new Set(planos);
+    const literais = api?.LITERAIS_SITUACAO ?? [];
+    expect(uniao.size).toBeGreaterThan(0);
+    expect(literais.length).toBeGreaterThan(0);
+    // LITERAIS_SITUACAO é a união única dos quatro campos, sem duplicatas.
+    expect(new Set(literais).size).toBe(literais.length);
+    expect(literais.length).toBe(uniao.size);
+    for (const literal of uniao) {
+      expect(literais).toContain(literal);
+    }
+  });
+
   it("documenta cada literal de situação do contrato como token próprio", () => {
     expect(typeof promptCanonico).toBe("string");
-    const ausentes = TOKENS_SITUACAO.filter(
+    expect(literaisSituacao.length).toBeGreaterThan(0);
+    const ausentes = literaisSituacao.filter(
       (token) => !contemTokenProprio(promptCanonico ?? "", token),
     );
     expect(ausentes, `literais de situacao ausentes no prompt: ${ausentes.join(", ")}`).toEqual(
@@ -431,6 +486,13 @@ describe("lt-prompt-acoplado-e-anti-injecao > situação textual", () => {
 
   it("mapeia cada sinal material ao valor de situação na mesma linha", () => {
     expect(typeof promptCanonico).toBe("string");
+    // O par local documenta o prompt, mas precisa permanecer alinhado à fonte
+    // canônica: mudar o enum quebra o teste se o par não acompanhar.
+    expect(literaisSituacao.length).toBeGreaterThan(0);
+    for (const [sinal, valor] of MAPEAMENTO_SINAL_SITUACAO) {
+      expect(api?.TIPOS_SINAL).toContain(sinal);
+      expect(literaisSituacao).toContain(valor);
+    }
     const semLinha = MAPEAMENTO_SINAL_SITUACAO.filter(
       ([sinal, valor]) => !linhaLigaTokens(promptCanonico ?? "", sinal, valor),
     ).map(([sinal, valor]) => `${sinal}->${valor}`);
@@ -446,7 +508,8 @@ describe("lt-prompt-acoplado-e-anti-injecao > situação textual", () => {
     expect(api?.PROMPT_HASH).toBe(sha?.sha256Hex(texto));
     // Remover cada literal muda o conteúdo e, portanto, o hash: trocar o prompt
     // invalida o cache pela versão efetiva.
-    const semCobertura = TOKENS_SITUACAO.filter(
+    expect(literaisSituacao.length).toBeGreaterThan(0);
+    const semCobertura = literaisSituacao.filter(
       (token) => api?.hashDoPrompt(texto.replace(new RegExp(token, "g"), "")) === api?.PROMPT_HASH,
     );
     expect(
