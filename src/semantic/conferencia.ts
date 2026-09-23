@@ -42,6 +42,7 @@ import type { Catalogo } from "../domain/catalogo";
 import type { ColunaGuia } from "../domain/contratos";
 import { dataParaIso, parseDataCivil } from "../domain/datas";
 import type { DataCivil } from "../domain/datas";
+import { valorParaCentavos } from "../domain/dinheiro";
 import { verificarGuia } from "../domain/motor";
 import type { ResultadoVerificacao } from "../domain/motor";
 import { inteiroDaGuia } from "../domain/normalizacao";
@@ -365,6 +366,45 @@ function problemaCompativel(codigo: string, campo: string): boolean {
 }
 
 /**
+ * Código de problema que `normalizarGuia` emitiria REALMENTE para a célula CRUA
+ * de um campo — ou `null` quando a célula não gera problema. É a prova de
+ * reprodução: reusa os MESMOS helpers do domínio (`parseDataCivil`,
+ * `inteiroDaGuia`, `valorParaCentavos`), sem duplicar gramática, faixa ou
+ * calendário, e olha a CÉLULA (entrada não confiável), nunca o campo derivado.
+ * Regras idênticas a `src/domain/normalizacao.ts`:
+ * - data: `lerData` retorna cedo quando `cru.trim()` é vazio; caso contrário
+ *   emite `data_invalida` sse `parseDataCivil` falha;
+ * - inteiro de sessão: `lerInteiro` retorna cedo quando `cru.trim()` é vazio;
+ *   caso contrário emite `campo_numerico_invalido` sse `inteiroDaGuia` falha;
+ * - `valor`: `normalizarGuia` NÃO tem o corte de vazio — `valorParaCentavos("")`
+ *   devolve `null` e `valor_ilegivel` é registrado também para uma célula
+ *   vazia, exatamente como no domínio.
+ * Uma célula AUSENTE (não-string, `undefined`) não é uma célula textual do
+ * contrato e não produz problema; um problema declarado para ela é rejeitado
+ * pelo confronto com o código esperado.
+ */
+function codigoEsperadoDaCelula(campo: ColunaGuia, celula: unknown): CodigoProblema | null {
+  if (typeof celula !== "string") {
+    return null;
+  }
+  switch (campo) {
+    case "data_atendimento":
+    case "autorizacao_validade":
+    case "data_lancamento":
+      return celula.trim() === "" || parseDataCivil(celula) !== null ? null : "data_invalida";
+    case "autorizacao_sessoes_limite":
+    case "sessao_numero_na_autorizacao":
+      return celula.trim() === "" || inteiroDaGuia(celula) !== null
+        ? null
+        : "campo_numerico_invalido";
+    case "valor":
+      return valorParaCentavos(celula) === null ? "valor_ilegivel" : null;
+    default:
+      return null;
+  }
+}
+
+/**
  * Clona os problemas de normalização como registros INERTES e exige que cada
  * elemento seja REPRODUZÍVEL a partir do próprio snapshot:
  * - forma simples com `campo`/`codigo`/`valorOriginal` em descritores PRÓPRIOS
@@ -374,12 +414,17 @@ function problemaCompativel(codigo: string, campo: string): boolean {
  * - `valorOriginal` EXATAMENTE igual (igualdade de string, sem normalização) à
  *   célula inerte correspondente `original[campo]`: o normalizador registra o
  *   texto CRU daquela célula;
+ * - célula CRUA comprovando o problema: `original[campo]` reprova a MESMA
+ *   normalização do domínio (`codigoEsperadoDaCelula`); um campo derivado nulo
+ *   NÃO basta para declarar um problema que a célula não produz;
  * - campo DERIVADO carregando o marcador de falha que o normalizador
  *   produziria: todo problema real deixa o campo normalizado correspondente
  *   `null` (`data_invalida` ⇒ data nula, `campo_numerico_invalido` ⇒ inteiro
  *   nulo e `valor_ilegivel` ⇒ `valorCentavos` nulo);
  * - extensão AGREGADA dos `valorOriginal` dentro do teto compartilhado
- *   `LIMITE_TEXTO_BRUTO_BYTES`.
+ *   `LIMITE_TEXTO_BRUTO_BYTES`;
+ * - COMPLETUDE: se a célula crua de um dos seis campos verificáveis falha a
+ *   normalização, o problema correspondente TEM de estar declarado.
  *
  * Qualquer outra forma (não-array, buraco, acessor, tipo errado, string
  * gigante, código desconhecido/incompatível, duplicado, lista acima do máximo,
@@ -460,6 +505,15 @@ function clonarProblemasInertes(
     if (original[campoLido] !== valorOriginalLido) {
       return null;
     }
+    // Reprodução pela CÉLULA CRUA: o normalizador só registra este `(codigo,
+    // campo)` quando a PRÓPRIA célula falha a normalização. Sem esta prova, um
+    // snapshot hostil mantém a célula válida (`data_atendimento =
+    // "2026-08-10"`, `valor = "62,00"`, inteiro dentro de 1..10000), ANULA o
+    // campo derivado e declara um problema FABRICADO que chegaria a cache,
+    // quota, provedor e ao eco determinístico do motor.
+    if (codigoEsperadoDaCelula(campoLido as ColunaGuia, original[campoLido]) !== codigoLido) {
+      return null;
+    }
     // Marcador de falha derivado: todo problema real deixa o campo normalizado
     // correspondente `null`; um derivado válido prova um problema inventado
     // para uma célula boa (e o motivo divergiria da decisão determinística).
@@ -478,6 +532,16 @@ function clonarProblemasInertes(
     }
     vistos.add(identificador);
     saida.push(registro as unknown as ProblemaNormalizacao);
+  }
+  // COMPLETUDE: nenhum problema LEGÍTIMO pode ser OMITIDO. Para cada campo
+  // verificável cuja célula crua reprova a normalização, o problema
+  // correspondente precisa estar declarado; sem isso, uma célula ilegível
+  // poderia viajar sem o achado determinístico e desviar a decisão do motor.
+  for (const campo of CAMPOS_PROBLEMA_VALIDOS) {
+    const esperado = codigoEsperadoDaCelula(campo, original[campo]);
+    if (esperado !== null && !vistos.has(`${esperado}\u0000${campo}`)) {
+      return null;
+    }
   }
   return saida;
 }
