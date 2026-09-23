@@ -243,6 +243,28 @@ function emitir(
 }
 
 /**
+ * Notificação best-effort do observador de contadores: TODA notificação da
+ * conferência passa por aqui. Um `ObservadorContadores` hostil que lance nunca
+ * rejeita a Promise de `conferirGuia` — a exceção é engolida e nenhuma decisão
+ * muda (chamadas ao modelo, consumo de quota, leitura/gravação de cache e
+ * resultado permanecem idênticos); só a telemetria falha em silêncio. Nunca
+ * `console.*`.
+ */
+function notificarObservador(
+  observador: ObservadorContadores | undefined,
+  notificar: (observador: ObservadorContadores) => void,
+): void {
+  if (!observador) {
+    return;
+  }
+  try {
+    notificar(observador);
+  } catch {
+    // Telemetria best-effort: falha do observador nunca vira falha da conferência.
+  }
+}
+
+/**
  * A resposta só é aceita quando o provedor confirma a identidade configurada
  * (`modelo` e versão efetiva do prompt); uma resposta de outra identidade é
  * tratada como `configuracao` (sem código estável) e nunca é cacheada.
@@ -439,7 +461,7 @@ export async function conferirGuia(
       });
     }
     if (sinais) {
-      observador?.registrarCacheHit();
+      notificarObservador(observador, (o) => o.registrarCacheHit());
       return concluir(
         {
           estado: "completa",
@@ -473,7 +495,16 @@ export async function conferirGuia(
       // Contagem única da recusa: a orquestração (não a quota injetada) registra
       // a métrica e emite `quota_recusada` — antes de `registrarChamada()` e de
       // qualquer envio — e retorna imediatamente, sem segunda contagem.
-      observador?.registrarRecusaQuota();
+      //
+      // LIMITAÇÃO CONHECIDA (propriedade da tarefa da quota, `quota.ts`): a
+      // orquestração conta a recusa por quotas que NÃO se auto-reportam (a quota
+      // padrão compartilhada do isolate não tem observador). Como
+      // `QuotaDeChamadas` expõe apenas `consumir()`, o núcleo não tem como
+      // detectar que uma quota injetada, criada com o MESMO observador, já
+      // reportou a mesma recusa em `consumir()`. Chamadores não devem conectar o
+      // mesmo observador nos dois lados; o alinhamento rigoroso exatamente-uma-
+      // vez pertence à tarefa dona de `src/semantic/quota.ts`.
+      notificarObservador(observador, (o) => o.registrarRecusaQuota());
       emitir(registrador, "quota_recusada", {
         estado: "incompleta",
         codigo: "quota_excedida",
@@ -496,7 +527,7 @@ export async function conferirGuia(
       );
     }
 
-    observador?.registrarChamada();
+    notificarObservador(observador, (o) => o.registrarChamada());
     tentativas += 1;
     emitir(registrador, "extracao_iniciada", { tentativas });
 
