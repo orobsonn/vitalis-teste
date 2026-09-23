@@ -586,18 +586,32 @@ const CELULAS_SEMANTICAS_ORIGINAL: readonly string[] = [
 /**
  * Reconstrói `original` como registro INERTE de dados (sem protótipo): só os
  * descritores PRÓPRIOS de DADO de `guia.original` são copiados (um acessor
- * nunca é avaliado) e as três células CAPTURADAS são sempre sobrepostas com os
- * valores já limitados. Toda célula precisa ser string primitiva dentro do teto
- * de abuso e NENHUMA chave própria `__proto__` é aceita (por colchetes ela
- * poderia instalar um protótipo controlado); `null` marca MALFORMADO. Um
- * `original` ausente, `null` ou `undefined` é reconstruído apenas a partir do
- * trio capturado.
+ * nunca é avaliado) e as TRÊS células semânticas são lidas da PRÓPRIA fonte, na
+ * mesma varredura validada — NUNCA sintetizadas a partir do valor de topo
+ * capturado. Toda célula não semântica precisa ser string primitiva dentro do
+ * teto de abuso e NENHUMA chave própria `__proto__` é aceita (por colchetes ela
+ * poderia instalar um protótipo controlado); `null` marca MALFORMADO.
+ *
+ * Ler as células semânticas CRUAS (em vez de sobrepô-las com o valor capturado
+ * de topo) é o que fecha o último vão da coerência: uma célula AUSENTE, um
+ * acessor, um não-string ou uma célula DIVERGENTE do campo de topo precisa
+ * falhar fechada, e não ser mascarada pela célula sintética instalada aqui. A
+ * checagem `snapshotCoerenteComCelulas` recomputa `normalizarGuia` a partir
+ * destas células e exige igualdade exata com o snapshot, de modo que uma célula
+ * `A` pareada com um campo de topo `B` fecha o snapshot. Um `original` ausente,
+ * `null` ou `undefined` deixa as três células ausentes e também fecha fechada.
+ *
+ * Cada célula semântica EXIGE string primitiva na fonte e é instalada com o
+ * MESMO tratamento do campo de topo (`limitarCampo`): um corpo acima do teto de
+ * abuso vira o marcador fixo, preservando a precedência do ramo vazio e o
+ * caminho determinístico de `observacao_acima_do_limite`/`limite_excedido`
+ * (um corpo gigante nunca é retido no snapshot). Como a célula de topo capturada
+ * recebe o mesmo limite, a coerência continua comparando valores equivalentes;
+ * quando a célula crua DIVERGE do valor de topo (dentro ou fora do teto), a
+ * igualdade exata com o recomputado falha e o snapshot fecha.
  */
 function montarOriginalInerte(
   descritorOriginal: PropertyDescriptor | undefined,
-  observacao: string,
-  convenio: string,
-  procedimento: string,
 ): Record<string, unknown> | null {
   const base = registroInerte();
   if (descritorOriginal) {
@@ -616,25 +630,40 @@ function montarOriginalInerte(
         return null;
       }
       for (const chave of Object.keys(descritoresFonte)) {
-        if (CELULAS_SEMANTICAS_ORIGINAL.includes(chave)) {
-          continue;
-        }
         if (chave === "__proto__") {
           return null;
         }
         const descritor = descritoresFonte[chave];
-        if (!descritor || !("value" in descritor) || !stringInerte(descritor.value)) {
-          // Acessor ou valor não inerte numa célula consumida pelo motor:
-          // nunca avaliado nem retido.
+        if (!descritor || !("value" in descritor)) {
+          // Acessor numa célula consumida pelo motor: nunca avaliado nem
+          // retido, inclusive nas três semânticas.
+          return null;
+        }
+        if (CELULAS_SEMANTICAS_ORIGINAL.includes(chave)) {
+          // Célula semântica crua: exige string primitiva e aplica o mesmo teto
+          // de abuso do campo de topo; nunca sintetizada do valor capturado.
+          if (typeof descritor.value !== "string") {
+            return null;
+          }
+          definirDado(base, chave, limitarCampo(descritor.value));
+          continue;
+        }
+        if (!stringInerte(descritor.value)) {
+          // Valor não inerte numa célula consumida pelo motor.
           return null;
         }
         definirDado(base, chave, descritor.value);
       }
     }
   }
-  definirDado(base, "observacao_recepcao", observacao);
-  definirDado(base, "convenio", convenio);
-  definirDado(base, "procedimento_codigo", procedimento);
+  // As três células semânticas precisam existir como DADO primitivo na fonte:
+  // uma célula ausente (inclusive `original` nulo/ausente) é MALFORMADA.
+  for (const chave of CELULAS_SEMANTICAS_ORIGINAL) {
+    const descritor = Object.getOwnPropertyDescriptor(base, chave);
+    if (!descritor || !("value" in descritor) || !stringInerte(descritor.value)) {
+      return null;
+    }
+  }
   return base;
 }
 
@@ -821,12 +850,7 @@ function montarSnapshotInerte(
 
   const saida = registroInerte();
 
-  const original = montarOriginalInerte(
-    descritores.original,
-    observacaoFinal,
-    convenioFinal,
-    procedimentoFinal,
-  );
+  const original = montarOriginalInerte(descritores.original);
   if (original === null) {
     return null;
   }
