@@ -7,10 +7,12 @@
  */
 
 export {
+  LIMITE_TEXTO_BRUTO_BYTES,
   LITERAIS_SITUACAO,
   TIPOS_AMBIGUIDADE,
   TIPOS_SINAL,
   VALORES_SITUACAO,
+  campoTemTamanhoDeAbuso,
 } from "./contratos";
 export type {
   Ambiguidade,
