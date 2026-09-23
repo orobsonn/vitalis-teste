@@ -7,17 +7,22 @@
  * da resposta e entrega textual ao motor.
  *
  * Garantias do contrato:
+ * - Observação vazia após `trim` PRECEDE os tetos de abuso (§3.6): sai pelo
+ *   motor puro (`nao_aplicavel`), sem cache, sem quota e sem inferência — o
+ *   único trabalho antes dos tetos é a varredura linear do vazio, sem cópia,
+ *   hash, serialização, cache ou envio. O texto CRU é preservado na chave e no
+ *   payload, e o `trim` serve apenas para vazio e limites.
  * - O teto ABSOLUTO de ABUSO em BYTES UTF-8 do texto CRU
  *   (`LIMITE_TEXTO_BRUTO_BYTES`, 64 KiB) é aplicado POR CAMPO do payload do
  *   provedor — observação, convênio e procedimento — ANTES de qualquer `trim()`
- *   e ANTES do ramo de observação vazia, recusando entradas desproporcionais
+ *   e SOMENTE para observação NÃO vazia, recusando entradas desproporcionais
  *   antes de cache/hash/envio; o risco residual de custo/corpo cru pertence
  *   sobretudo ao limite de corpo do entrypoint HTTP (issues #4/#6), não a este
  *   contrato.
- * - Observação vazia após `trim` (ABAIXO dos tetos de abuso) sai pelo motor puro
- *   (`nao_aplicavel`), sem cache, sem quota e sem inferência; o texto CRU é
- *   preservado na chave e no payload, e o `trim` serve apenas para vazio e
- *   limites.
+ * - A identidade CONFIGURADA (`opcoes.modelo`) tem um teto COMPARTILHADO de 200
+ *   caracteres (`LIMITE_IDENTIDADE_CONFIGURADA`), medido ANTES do cache, da
+ *   chamada e do resultado: acima dele a conferência falha fechada sem ecoar o
+ *   valor.
  * - ÚNICOS limites SEMÂNTICOS de entrada são os TRIMADOS (1000 observação,
  *   200 contexto); o texto CRU é preservado na chave e no payload.
  * - Quota antes de cada tentativa, com uma ÚNICA instância padrão do isolate
@@ -63,6 +68,15 @@ import { MODELO_OBSERVACAO } from "./workers-ai";
 export const LIMITE_OBSERVACAO = 1000;
 /** Teto de caracteres de convênio e de procedimento após `trim` (§3.9). */
 export const LIMITE_CONTEXTO = 200;
+/**
+ * Teto COMPARTILHADO, em caracteres, da identidade CONFIGURADA
+ * (`opcoes.modelo`): a identidade efetiva é aplicada em cache, chamada e
+ * resultado, então uma configuração acima do teto falha fechada antes de
+ * qualquer leitura, chamada ou eco — o valor hostil nunca é copiado
+ * integralmente para `inferencia_textual`. O mesmo limite semântico de
+ * contexto.
+ */
+const LIMITE_IDENTIDADE_CONFIGURADA = 200;
 /**
  * Teto ABSOLUTO de ABUSO de CADA campo cru do payload do provedor, em BYTES
  * UTF-8 (§3.9), medido ANTES de `trim`, cache, hash e envio. Não é um limite
@@ -590,9 +604,33 @@ export async function conferirGuia(
     return resultado;
   };
 
-  // 1. Teto ABSOLUTO de abuso (§3.9): BYTES UTF-8 do texto CRU de CADA campo
-  // do payload do provedor, medidos ANTES de qualquer `trim()` e ANTES do ramo
-  // de observação vazia — um campo só-espaços enorme não escapa por ter
+  // 1. Observação vazia após `trim` PRECEDE os tetos de abuso (§3.6/#ac-1/
+  // #uj-4). Uma observação vazia após `trim` sai pelo motor puro
+  // (`nao_aplicavel`), sem cache, quota ou inferência — mesmo quando composta
+  // só de espaços ACIMA do teto de 64 KiB. O único trabalho antes dos tetos é
+  // esta varredura LINEAR do vazio sobre a observação já limitada pelo
+  // entrypoint: nada é copiado, serializado, hasheado, cacheado ou enviado
+  // nesse caminho, então antecipar o vazio não reabre o custo que o teto de
+  // abuso limita. O motor recebe uma representação LIMITADA
+  // (`guiaComCamposLimitados`): um convênio/procedimento acima do teto de abuso
+  // é trocado por um marcador fixo, de modo que `motivos[].evidencia` nunca
+  // embute o corpo rejeitado; a semântica `nao_aplicavel`, os códigos
+  // determinísticos (`*_nao_catalogado`) e o zero de cache/quota/modelo
+  // permanecem idênticos.
+  if (guia.observacaoRecepcao.trim() === "") {
+    const resultado = verificarGuia(guiaComCamposLimitados(guia), catalogo, { referenciaTemporal });
+    const duracao = medirDuracao(inicio, agora);
+    emitir(registrador, "conferencia_concluida", {
+      estado: "nao_aplicavel",
+      ...(duracao === undefined ? {} : { duracao_ms: duracao }),
+      tentativas: 0,
+    });
+    return resultado;
+  }
+
+  // 2. Teto ABSOLUTO de abuso (§3.9), APENAS para observação NÃO vazia: BYTES
+  // UTF-8 do texto CRU de CADA campo do payload do provedor, medidos ANTES de
+  // qualquer `trim()` — um campo só-espaços enorme não escapa por ter
   // comprimento trimado pequeno. Dentro do teto, o texto cru é preservado e o
   // teto trimado segue como o único limite semântico. Acima do teto, falha
   // fechada sem cache e sem chamada. A observação carrega a limitação nomeada;
@@ -626,22 +664,23 @@ export async function conferirGuia(
     );
   }
 
-  // 2. Observação vazia após `trim`: motor puro, sem cache, quota ou
-  // inferência. Só é alcançado ABAIXO dos tetos de abuso do passo 1. O motor
-  // recebe uma representação LIMITADA (`guiaComCamposLimitados`): um
-  // convênio/procedimento acima do teto de abuso é trocado por um marcador
-  // fixo, de modo que `motivos[].evidencia` nunca embute o corpo rejeitado; a
-  // semântica `nao_aplicavel`, os códigos determinísticos
-  // (`*_nao_catalogado`) e o zero de cache/quota/modelo permanecem idênticos.
-  if (guia.observacaoRecepcao.trim() === "") {
-    const resultado = verificarGuia(guiaComCamposLimitados(guia), catalogo, { referenciaTemporal });
-    const duracao = medirDuracao(inicio, agora);
-    emitir(registrador, "conferencia_concluida", {
-      estado: "nao_aplicavel",
-      ...(duracao === undefined ? {} : { duracao_ms: duracao }),
-      tentativas: 0,
-    });
-    return resultado;
+  // 3. Identidade CONFIGURADA sob teto COMPARTILHADO de 200 caracteres: a
+  // identidade efetiva é aplicada em cache, chamada e resultado, então uma
+  // configuração acima do teto falha fechada AQUI — ANTES de qualquer leitura
+  // de cache, chamada ou eco — reutilizando a MESMA forma de falha de
+  // configuração (`PENDENTE`/`incompleta`, `inferencia_textual` nula) usada
+  // quando não há interpretador. O valor hostil nunca é copiado para o
+  // resultado; exatamente 200 caracteres são aceitos. O comprimento é medido
+  // no valor CRU, ANTES de `normalizarModelo`: um valor só-espaços acima do
+  // teto seria trimado para vazio e recairia no padrão, escapando da recusa.
+  // Aqui ele é recusado como qualquer identidade acima do teto, sem ser
+  // trimado, normalizado ou copiado primeiro.
+  const modeloCru = opcoes.modelo;
+  if (typeof modeloCru === "string" && modeloCru.length > LIMITE_IDENTIDADE_CONFIGURADA) {
+    return concluir(
+      { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
+      { estado: "incompleta" },
+    );
   }
 
   const entrada: EntradaObservacao = {
@@ -649,9 +688,20 @@ export async function conferirGuia(
     convenio: guia.convenio,
     procedimento_codigo: guia.procedimentoCodigo,
   };
-  const contexto = contextoDaConfiguracao(normalizarModelo(opcoes.modelo));
+  const modeloEfetivo = normalizarModelo(modeloCru);
+  // Guarda redundante: a normalização só pode manter o valor cru (já sob o
+  // teto) ou recair no padrão curto, então nunca AUMENTA o comprimento e este
+  // teste não dispara quando o teto cru já foi aplicado; permanece como defesa
+  // em profundidade para qualquer normalização futura.
+  if (modeloEfetivo.length > LIMITE_IDENTIDADE_CONFIGURADA) {
+    return concluir(
+      { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
+      { estado: "incompleta" },
+    );
+  }
+  const contexto = contextoDaConfiguracao(modeloEfetivo);
 
-  // 3. Limites semânticos de entrada (após `trim`), ainda sem cache ou chamada.
+  // 4. Limites semânticos de entrada (após `trim`), ainda sem cache ou chamada.
   if (guia.observacaoRecepcao.trim().length > LIMITE_OBSERVACAO) {
     return concluir(
       { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
@@ -672,7 +722,7 @@ export async function conferirGuia(
     );
   }
 
-  // 4. Cache semântico: hit válido entrega `completa` sem modelo nem quota.
+  // 5. Cache semântico: hit válido entrega `completa` sem modelo nem quota.
   // Cada operação de cache (leitura E gravação) corre sob o MESMO limite
   // temporal configurável, com o mesmo mecanismo de corrida por `setTimeout`
   // das tentativas: um KV que aceita a chamada e nunca resolve degrada a
@@ -728,7 +778,7 @@ export async function conferirGuia(
     }
   }
 
-  // 5. Configuração ausente: sem tentativa e sem identidade de inferência.
+  // 6. Configuração ausente: sem tentativa e sem identidade de inferência.
   const interpretador = opcoes.interpretador ?? null;
   if (!interpretador) {
     return concluir(
@@ -743,7 +793,7 @@ export async function conferirGuia(
   // do isolate (nunca uma nova instância por chamada).
   const quota = opcoes.quota ?? QUOTA_PADRAO;
 
-  // 6. Tentativas estritamente sequenciais, com no máximo uma retentativa.
+  // 7. Tentativas estritamente sequenciais, com no máximo uma retentativa.
   for (;;) {
     // Quota consultada sob guarda: um `consumir()` que lance (por exemplo, um
     // observador hostil injetado na quota) é tratado como recusa fechada e cai
@@ -831,7 +881,9 @@ export async function conferirGuia(
       }
 
       // Identidade efetiva do provedor: só a configurada é aceita. Mismatch
-      // fecha sem gravar cache, sem retentar e sem relabelar como padrão.
+      // fecha sem gravar cache, sem retentar e sem relabelar como padrão. Os
+      // metadados do envelope são ENTRADA NÃO CONFIÁVEL e nunca são ecoados; a
+      // identidade relatada é sempre a CONFIGURADA, mesmo no mismatch.
       if (!identidadeConfere(resposta, contexto)) {
         emitir(registrador, "extracao_falhou", {
           estado: "incompleta",
@@ -841,8 +893,8 @@ export async function conferirGuia(
           {
             estado: "incompleta",
             sinais: null,
-            modelo: resposta.modelo,
-            prompt_versao: resposta.promptVersao,
+            modelo: contexto.modelo,
+            prompt_versao: contexto.promptVersao,
           },
           { estado: "incompleta" },
         );
