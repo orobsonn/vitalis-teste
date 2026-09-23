@@ -150,16 +150,31 @@ export function criarAdaptadorCacheSemantico(
         valor = await kv.get(chave);
       } catch {
         // KV indisponível na leitura: miss, sem exceção fatal. O evento
-        // redigido expõe só estado, código e prefixo da chave (§3.10).
-        registrador?.info("cache_leitura_falhou", {
-          estado: "incompleta",
-          codigo: "cache_indisponivel",
-          cache_prefixo: prefixo,
-        });
+        // redigido expõe só estado, código e prefixo da chave (§3.10). A
+        // própria emissão é best-effort: registrador indisponível é engolido
+        // para não substituir a degradação para miss.
+        try {
+          registrador?.info("cache_leitura_falhou", {
+            estado: "incompleta",
+            codigo: "cache_indisponivel",
+            cache_prefixo: prefixo,
+          });
+        } catch {
+          // Registrador indisponível não pode fechar a guia (§3.8).
+        }
         return null;
       }
 
       if (typeof valor !== "string") {
+        return null;
+      }
+
+      // Rejeição barata antes de codificar: em UTF-8 o comprimento nunca é
+      // menor que o número de code units UTF-16, então `valor.length` acima do
+      // teto já é excesso certo e evita materializar/codificar o valor inteiro
+      // (§3.9). Só o que passa por esse crivo é medido em bytes para preservar
+      // a fronteira exata (`>`).
+      if (valor.length > LIMITE_VALOR_CACHE_BYTES) {
         return null;
       }
 
@@ -181,12 +196,18 @@ export function criarAdaptadorCacheSemantico(
         await kv.put(chave, JSON.stringify(sinais), { expirationTtl: ttlSegundos });
       } catch {
         // KV indisponível na gravação: fluxo segue sem persistência. O evento
-        // redigido expõe só estado, código e prefixo da chave (§3.10).
-        registrador?.info("cache_gravacao_falhou", {
-          estado: "incompleta",
-          codigo: "cache_indisponivel",
-          cache_prefixo: prefixo,
-        });
+        // redigido expõe só estado, código e prefixo da chave (§3.10). A
+        // própria emissão é best-effort: registrador indisponível é engolido
+        // para não fechar a guia nem impedir a conclusão sem persistência.
+        try {
+          registrador?.info("cache_gravacao_falhou", {
+            estado: "incompleta",
+            codigo: "cache_indisponivel",
+            cache_prefixo: prefixo,
+          });
+        } catch {
+          // Registrador indisponível não pode fechar a guia (§3.8).
+        }
       }
     },
   };
