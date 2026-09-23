@@ -48,7 +48,9 @@
 //     quota?: QuotaDeChamadas | null;                    // consumida antes da chamada
 //     registrador?: RegistradorRedigido;                 // eventos da allowlist
 //     observador?: ObservadorContadores;                 // chamadas e cache hits efetivos
-//     timeoutMs?: number;                                // padrão 5000
+//     timeoutMs?: number;                                // padrão 5000 (por tentativa)
+//     timeoutCacheMs?: number;                           // padrão 5000 (por operação de
+//                                                        // cache: leitura e gravação)
 //     agora?: () => number;                              // relógio monotônico injetável
 //     classificarFalha?: (erro: unknown) => ClassificacaoFalha; // fechado e injetável
 //   }
@@ -105,6 +107,18 @@
 //    (`duracao_ms`); um relógio que lança é degradável com segurança — a
 //    conferência resolve no `ResultadoVerificacao` aprovado em sucesso e em
 //    falha, nunca rejeita a Promise.
+// 7. Cache que nunca responde (5ª revisão) — §3.8 determina degradação
+//    best-effort também para o cache: `cache.ler` e `cache.gravar` são
+//    aguardados com um limite temporal CONFIGURÁVEL por operação
+//    (`timeoutCacheMs`, padrão 5000 ms), o mesmo já usado por tentativa. Uma
+//    leitura que não responde dentro do prazo vira MISS sem rejeitar; uma
+//    gravação que não responde conclui sem persistir, preservando o resultado
+//    `completa` da extração válida. Um KV que aceita a chamada e NUNCA resolve
+//    não pode bloquear a conferência indefinidamente. Os eventos redigidos
+//    `cache_leitura_falhou`/`cache_gravacao_falhou` (estado/código
+//    `cache_indisponivel`/prefixo da chave, sem corpo nem chave plena) e a
+//    regra de nunca lançar continuam válidos; por isso ficam por ÚLTIMO os
+//    testes que recarregam o módulo.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import regrasRaw from "../../docs/fontes/regras_convenio.json?raw";
@@ -301,6 +315,13 @@ interface OpcoesConferencia {
   registrador?: RegistradorRedigido;
   observador?: ObservadorContadores;
   timeoutMs?: number;
+  /**
+   * Limite temporal, em ms, de CADA operação de cache (leitura e gravação);
+   * padrão `TIMEOUT_PADRAO_MS` (5000). Um cache que não responda dentro do
+   * prazo degrada para miss (leitura) ou conclusão sem persistir (gravação) —
+   * nunca para falha da conferência.
+   */
+  timeoutCacheMs?: number;
   agora?: () => number;
   classificarFalha?: (erro: unknown) => ClassificacaoFalha;
 }
@@ -543,12 +564,18 @@ interface KvFake {
   tentativasGravacao: number;
   falharLeitura(erro?: unknown): void;
   falharGravacao(erro?: unknown): void;
+  travarLeitura(): void;
+  travarGravacao(): void;
 }
 
 function criarKvFake(inicial: Record<string, string> = {}): KvFake {
   const armazem = new Map<string, string>(Object.entries(inicial));
   let erroLeitura: unknown = null;
   let erroGravacao: unknown = null;
+  // Operações que aceitam a chamada e NUNCA resolvem: exercitam o limite
+  // temporal por operação de cache sem tocar os demais testes.
+  let leituraPendente = false;
+  let gravacaoPendente = false;
   const estado = {
     leituras: 0,
     gravacoes: 0,
@@ -558,6 +585,9 @@ function criarKvFake(inicial: Record<string, string> = {}): KvFake {
   const kv: BindingCacheSemantico = {
     async get(chave) {
       estado.leituras += 1;
+      if (leituraPendente) {
+        return new Promise<string | null>(() => {});
+      }
       if (erroLeitura) {
         throw erroLeitura;
       }
@@ -565,6 +595,9 @@ function criarKvFake(inicial: Record<string, string> = {}): KvFake {
     },
     async put(chave, valor) {
       estado.tentativasGravacao += 1;
+      if (gravacaoPendente) {
+        return new Promise<void>(() => {});
+      }
       if (erroGravacao) {
         throw erroGravacao;
       }
@@ -593,6 +626,12 @@ function criarKvFake(inicial: Record<string, string> = {}): KvFake {
     },
     falharGravacao(erro = new Error("KV indisponível na gravação")) {
       erroGravacao = erro;
+    },
+    travarLeitura() {
+      leituraPendente = true;
+    },
+    travarGravacao() {
+      gravacaoPendente = true;
     },
   };
 }
@@ -1808,6 +1847,152 @@ describe("lt-conferencia-vazio-cache-e-falhas — reforço: recusa auto-reportan
       emitidos.map((evento) => evento.evento).filter((nome) => nome === "quota_recusada"),
     ).toHaveLength(1);
     expect(resultado.inferencia_textual).toBeNull();
+  });
+});
+
+describe("lt-conferencia-vazio-cache-e-falhas — reforço: cache que nunca responde expira dentro do prazo", () => {
+  // §3.8: leitura e gravação de cache são best-effort. Um KV que aceita a
+  // chamada e NUNCA resolve não pode bloquear a conferência indefinidamente:
+  // cada operação de cache tem um limite temporal CONFIGURÁVEL (padrão 5000 ms),
+  // o mesmo já aplicado a cada tentativa. Leitura expirada vira MISS; gravação
+  // expirada conclui sem persistir — em nenhum caso a Promise rejeita ou trava.
+  // Os eventos redigidos de falha continuam no formato fechado (sem corpo da
+  // observação e sem chave plena).
+  const TIMEOUT_CACHE_CONFIGURADO = 1200;
+
+  it("leitura de cache que nunca resolve expira no padrão e a extração válida ainda produz completa", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const entrada = entradaDe(guia);
+    const kv = criarKvFake();
+    kv.travarLeitura();
+    const cache = api.criarAdaptadorCacheSemantico(kv.kv);
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+    const emitidos: EventoRedigido[] = [];
+    const registrador = api.criarRegistradorRedigido((evento) => {
+      emitidos.push(evento);
+    });
+
+    vi.useFakeTimers();
+
+    let resolvido = false;
+    const promessa = api
+      .conferirGuia(guia, catalogo, {
+        interpretador: interpretador.interpretador,
+        cache,
+        registrador,
+      })
+      .then((resultado) => {
+        resolvido = true;
+        return resultado;
+      });
+
+    // Prazo PADRÃO (TIMEOUT_PADRAO_MS = 5000): a leitura precisa expirar dentro
+    // dele. Hoje a leitura é aguardada direto, então `resolvido` continua falso.
+    await vi.advanceTimersByTimeAsync(TIMEOUT_PADRAO_MS);
+    expect(resolvido, "a leitura de cache precisa expirar dentro do prazo padrão").toBe(true);
+
+    const resultado = await promessa;
+
+    // Leitura expirada = miss: a extração é aplicada e a guia fica completa.
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(codigos(resultado)).toContain("modalidade_particular_contraditoria");
+    // Exatamente uma tentativa: nenhuma chamada extra ao modelo pelo timeout da leitura.
+    expect(interpretador.chamadas).toHaveLength(1);
+    expect(kv.leituras).toBe(1);
+
+    const falhasLeitura = emitidos.filter((evento) => evento.evento === "cache_leitura_falhou");
+    expect(falhasLeitura).toHaveLength(1);
+    const falha = falhasLeitura[0];
+    expect(falha.codigo).toBe("cache_indisponivel");
+    // Prefixo curto e observável: no máximo 12 hex, igual ao prefixo da chave,
+    // nunca a chave completa.
+    expect(falha.cache_prefixo).toMatch(/^[0-9a-f]{1,12}$/);
+    expect(falha.cache_prefixo).toBe(
+      api.montarChaveCacheSemantica(entrada, contextoConfig(api)).prefixo,
+    );
+    // Nenhum campo fora do vocabulário redigido do cache.
+    for (const chave of Object.keys(falha)) {
+      expect(["evento", "estado", "codigo", "cache_prefixo"].includes(chave)).toBe(true);
+    }
+    const serializado = JSON.stringify(emitidos);
+    expect(serializado).not.toContain(TEXTO_PARTICULAR);
+    expect(serializado).not.toContain(chaveDe(api, entrada));
+  });
+
+  it("gravação de cache que nunca resolve expira no prazo configurado e conclui completa sem persistir", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const entrada = entradaDe(guia);
+    const kv = criarKvFake();
+    kv.travarGravacao();
+    const cache = api.criarAdaptadorCacheSemantico(kv.kv);
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+    const emitidos: EventoRedigido[] = [];
+    const registrador = api.criarRegistradorRedigido((evento) => {
+      emitidos.push(evento);
+    });
+
+    vi.useFakeTimers();
+
+    let resolvido = false;
+    const promessa = api
+      .conferirGuia(guia, catalogo, {
+        interpretador: interpretador.interpretador,
+        cache,
+        registrador,
+        // Prazo EXPLICITAMENTE configurado, distinto do padrão, para fixar a
+        // configurabilidade da operação de cache.
+        timeoutCacheMs: TIMEOUT_CACHE_CONFIGURADO,
+      })
+      .then((resultado) => {
+        resolvido = true;
+        return resultado;
+      });
+
+    await vi.advanceTimersByTimeAsync(TIMEOUT_CACHE_CONFIGURADO);
+    expect(
+      resolvido,
+      "a gravação de cache precisa expirar dentro do prazo configurado",
+    ).toBe(true);
+
+    const resultado = await promessa;
+
+    // A gravação expirada não fecha a guia: a extração válida continua completa.
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(codigos(resultado)).toContain("modalidade_particular_contraditoria");
+    expect(interpretador.chamadas).toHaveLength(1);
+    expect(kv.leituras).toBe(1);
+    // A leitura imediata funcionou: só a gravação falhou.
+    expect(emitidos.filter((evento) => evento.evento === "cache_leitura_falhou")).toHaveLength(0);
+    // Nada foi persistido: a gravação foi tentada, mas nunca concluída.
+    expect(kv.tentativasGravacao).toBe(1);
+    expect(kv.gravacoes).toBe(0);
+    expect(kv.armazem.size).toBe(0);
+
+    const falhasGravacao = emitidos.filter((evento) => evento.evento === "cache_gravacao_falhou");
+    expect(falhasGravacao).toHaveLength(1);
+    expect(falhasGravacao[0].codigo).toBe("cache_indisponivel");
+    expect(falhasGravacao[0].cache_prefixo).toBe(
+      api.montarChaveCacheSemantica(entrada, contextoConfig(api)).prefixo,
+    );
+    // Nenhum campo fora do vocabulário redigido do cache: a falha de gravação
+    // exposta carrega exatamente o mesmo conjunto de chaves permitidas do evento
+    // de leitura (`evento`/`estado`/`codigo`/`cache_prefixo`), nunca o corpo nem
+    // a chave plena.
+    expect(Object.keys(falhasGravacao[0]).sort()).toEqual([
+      "cache_prefixo",
+      "codigo",
+      "estado",
+      "evento",
+    ]);
+    const serializado = JSON.stringify(emitidos);
+    expect(serializado).not.toContain(TEXTO_PARTICULAR);
+    expect(serializado).not.toContain(chaveDe(api, entrada));
   });
 });
 
