@@ -299,6 +299,18 @@
 //     pelo caminho determinístico (`PENDENTE`/`incompleta`, `inferencia_textual`
 //     nula, zero chamadas ao interpretador, zero gravações de cache e resultado
 //     limitado) para toda violação.
+// 21. Células semânticas CRUAS coerentes com o topo (correção SECURITY do
+//     fix pós-task): `montarOriginalInerte` NÃO pode sintetizar as três células
+//     semânticas de `original` a partir do valor de topo capturado — isso
+//     mascarava uma célula crua divergente, ausente ou com acessor. A porta de
+//     coerência (`snapshotCoerenteComCelulas`) recomputa `normalizarGuia` das
+//     células cruas VALIDADAS e exige igualdade EXATA com o snapshot. Logo, as
+//     três células cruas precisam ser strings de DADO próprias IGUAIS ao
+//     respectivo campo de topo; divergência, ausência ou acessor fecham o
+//     snapshot pelo caminho determinístico. Os testes TOCTOU/teto desta task
+//     foram realinhados para guias COERENTES e um novo `describe` cobre as
+//     variantes divergente/ausente/acessor para as três células (zero cache,
+//     zero quota e zero chamadas, resultado limitado).
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import regrasRaw from "../../docs/fontes/regras_convenio.json?raw";
@@ -3555,8 +3567,19 @@ describe("lt-conferencia-vazio-cache-e-falhas — reforço: campos da guia são 
       procedimentoCodigo: "G".repeat(TAMANHO_HOSTIL),
     };
 
-    const hostil = comAccessors(guiaSintetica(), (campo, leituras) =>
-      leituras === 1 ? CURTO : GIGANTES[campo],
+    // A guia-base precisa ser COERENTE com o valor que os acessores devolvem
+    // na PRIMEIRA leitura: as três células semânticas cruas de `original`
+    // (`observacao_recepcao`/`convenio`/`procedimento_codigo`) têm de ser
+    // strings de DADO próprias IGUAIS ao topo capturado (porta de coerência do
+    // snapshot). Sem isso, o snapshot fecharia antes do interpretador e o teste
+    // deixaria de exercer a captura única.
+    const hostil = comAccessors(
+      guiaSintetica({
+        observacao_recepcao: CURTO,
+        convenio: CURTO,
+        procedimento_codigo: CURTO,
+      }),
+      (campo, leituras) => (leituras === 1 ? CURTO : GIGANTES[campo]),
     );
     const quota = criarQuotaFake();
     const observador = criarObservadorFake();
@@ -3598,8 +3621,16 @@ describe("lt-conferencia-vazio-cache-e-falhas — reforço: campos da guia são 
     // teto absoluto de abuso (64 KiB); convênio e procedimento continuam
     // normais. O snapshot nasce acima do teto e falha fechada.
     const GIGANTE = `${" ".repeat(TAMANHO_HOSTIL)}a`;
-    const hostil = comAccessors(guiaSintetica(), (campo) =>
-      campo === "observacaoRecepcao" ? GIGANTE : TEXTO_PARTICULAR,
+    // A célula crua da observação carrega o MESMO gigante do topo: o snapshot
+    // permanece coerente (ambos passam pelo mesmo teto de abuso) e o que fecha
+    // é o teto, não a porta de coerência.
+    const hostil = comAccessors(
+      guiaSintetica({
+        observacao_recepcao: GIGANTE,
+        convenio: TEXTO_PARTICULAR,
+        procedimento_codigo: TEXTO_PARTICULAR,
+      }),
+      (campo) => (campo === "observacaoRecepcao" ? GIGANTE : TEXTO_PARTICULAR),
     );
     const kv = criarKvFake();
     const quota = criarQuotaFake();
@@ -3635,8 +3666,15 @@ describe("lt-conferencia-vazio-cache-e-falhas — reforço: campos da guia são 
     // devolve um valor acima do teto absoluto de abuso. O snapshot do convênio
     // nasce acima do teto e falha fechada, sem limitação nomeada nova (item 11).
     const GIGANTE = "G".repeat(TAMANHO_HOSTIL);
-    const hostil = comAccessors(guiaSintetica(), (campo) =>
-      campo === "convenio" ? GIGANTE : TEXTO_PARTICULAR,
+    // Célula crua do convênio com o MESMO gigante do topo: snapshot coerente;
+    // fecha pelo teto de abuso de contexto, não pela coerência.
+    const hostil = comAccessors(
+      guiaSintetica({
+        observacao_recepcao: TEXTO_PARTICULAR,
+        convenio: GIGANTE,
+        procedimento_codigo: TEXTO_PARTICULAR,
+      }),
+      (campo) => (campo === "convenio" ? GIGANTE : TEXTO_PARTICULAR),
     );
     const kv = criarKvFake();
     const quota = criarQuotaFake();
@@ -3689,8 +3727,17 @@ describe("lt-conferencia-vazio-cache-e-falhas — reforço: campos da guia são 
       procedimentoCodigo: 2,
     };
 
-    const hostil = comAccessors(guiaSintetica(), (campo, leituras) =>
-      leituras === LEITURA_QUE_ALIMENTA_ENTRADA[campo] ? GIGANTES[campo] : CURTO,
+    // Base COERENTE: as três células cruas valem o CURTO que a PRIMEIRA
+    // leitura (a única depois da captura) devolve; o gigante só apareceria numa
+    // leitura intermediária que a captura única eliminou.
+    const hostil = comAccessors(
+      guiaSintetica({
+        observacao_recepcao: CURTO,
+        convenio: CURTO,
+        procedimento_codigo: CURTO,
+      }),
+      (campo, leituras) =>
+        leituras === LEITURA_QUE_ALIMENTA_ENTRADA[campo] ? GIGANTES[campo] : CURTO,
     );
     const quota = criarQuotaFake();
     const observador = criarObservadorFake();
@@ -3711,6 +3758,106 @@ describe("lt-conferencia-vazio-cache-e-falhas — reforço: campos da guia são 
     // prefixo de 1024 caracteres dele): só o snapshot CURTO é entregue.
     exigirSemGigante(JSON.stringify(interpretador.chamadas), Object.values(GIGANTES));
     exigirSemGigante(JSON.stringify(resultado), Object.values(GIGANTES));
+  });
+});
+
+describe("lt-conferencia-vazio-cache-e-falhas — reforço: células semânticas cruas são coerentes com o topo", () => {
+  // A fronteira exercitada é o registro `original` de `GuiaNormalizada`
+  // entregue a `conferirGuia`. A porta de COERÊNCIA aprovada exige que as três
+  // células semânticas CRUAS (`observacao_recepcao`, `convenio`,
+  // `procedimento_codigo`) sejam strings PRIMITIVAS de DADO próprias e
+  // REcomponham EXATAMENTE o snapshot de topo (`snapshotCoerenteComCelulas`
+  // recomputa `normalizarGuia` dessas células e exige igualdade exata com os
+  // campos derivados). Em consequência, cada célula crua tem de ser IGUAL ao
+  // seu campo de topo capturado; uma célula DIVERGENTE, AUSENTE ou com ACESSOR
+  // (que lança ou devolve string) fecha o snapshot antes de cache, quota e
+  // provedor — a célula crua nunca é sintetizada do topo para mascarar a
+  // divergência. Todos os casos RESOLVEM a conferência (nunca rejeitam) pelo
+  // caminho malformado: `PENDENTE`/`incompleta`, `inferencia_textual` nula,
+  // zero chamadas, zero leituras/gravações de KV, zero quota e resultado
+  // limitado ao teto de abuso.
+  const CELULAS = [
+    { campoTopo: "observacaoRecepcao", celulaCrua: "observacao_recepcao" },
+    { campoTopo: "convenio", celulaCrua: "convenio" },
+    { campoTopo: "procedimentoCodigo", celulaCrua: "procedimento_codigo" },
+  ] as const;
+
+  // Guia COERENTE de partida: topo e células cruas valem o mesmo valor curto
+  // (strings de dado próprias).
+  function guiaCoerente(): GuiaNormalizada {
+    return guiaSintetica({
+      observacao_recepcao: TEXTO_PARTICULAR,
+      convenio: TEXTO_PARTICULAR,
+      procedimento_codigo: TEXTO_PARTICULAR,
+    });
+  }
+
+  async function exigirFalhaFechadaMalformada(guia: GuiaNormalizada): Promise<void> {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+
+    // Caminho malformado determinístico: nenhum efeito faturável.
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(resultado.inferencia_textual).toBeNull();
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(kv.leituras).toBe(0);
+    expect(kv.gravacoes).toBe(0);
+    expect(quota.consumidas).toBe(0);
+    expect(JSON.stringify(resultado).length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+  }
+
+  for (const { campoTopo, celulaCrua } of CELULAS) {
+    it(`célula crua divergente do topo (${celulaCrua}) falha fechada`, async () => {
+      const guia = guiaCoerente();
+      // O topo passa a divergir da célula CRUA, que mantém o valor original.
+      (guia as unknown as Record<string, unknown>)[campoTopo] = "valor-divergente-do-topo";
+      await exigirFalhaFechadaMalformada(guia);
+    });
+
+    it(`célula crua ausente (${celulaCrua}) falha fechada`, async () => {
+      const guia = guiaCoerente();
+      // Ausência da célula CRUA: o registro `original` fica sem a chave.
+      delete (guia.original as unknown as Record<string, unknown>)[celulaCrua];
+      await exigirFalhaFechadaMalformada(guia);
+    });
+  }
+
+  it("célula crua com acessor que lança falha fechada sem rejeitar", async () => {
+    const guia = guiaCoerente();
+    Object.defineProperty(guia.original, "observacao_recepcao", {
+      get() {
+        throw new Error("célula crua hostil");
+      },
+      enumerable: true,
+      configurable: true,
+    });
+    await exigirFalhaFechadaMalformada(guia);
+  });
+
+  it("célula crua com acessor que devolve string diverge do topo e falha fechada", async () => {
+    for (const celulaCrua of ["convenio", "procedimento_codigo"] as const) {
+      const guia = guiaCoerente();
+      // Acessor NUNCA avaliado pelo snapshot; a célula crua não é uma string de
+      // DADO própria e a conferência fecha.
+      Object.defineProperty(guia.original, celulaCrua, {
+        get() {
+          return TEXTO_ADMIN;
+        },
+        enumerable: true,
+        configurable: true,
+      });
+      await exigirFalhaFechadaMalformada(guia);
+    }
   });
 });
 
