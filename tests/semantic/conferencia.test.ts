@@ -86,8 +86,19 @@
 //    espaços acima de 4096). Não se cria código novo para convênio/procedimento:
 //    espelham o comportamento do caso 200-após-trim.
 // 3. A quota padrão vive no módulo: uma ÚNICA instância (60 chamadas / 60000 ms)
-//    usada quando `quota` é OMITIDA ou `null`, nunca criada por chamada. Este
-//    caso fica por ÚLTIMO no arquivo porque esgota a instância compartilhada.
+//    usada quando `quota` é OMITIDA ou `null`, nunca criada por chamada. A prova
+//    é determinística (não depende do consumo de casos anteriores): recarrega o
+//    módulo com `vi.resetModules()` + glob não-eager e exige EXATAMENTE 60
+//    aceites e a recusa da 61ª. Fica por ÚLTIMO no arquivo por recarregar o
+//    módulo.
+// 4. Logging best-effort (revisão final): um `RegistradorRedigido` cujo `info`
+//    sempre lança nunca pode rejeitar `conferirGuia` — em sucesso, em falha
+//    não transitória e em recusa de quota, a Promise precisa resolver no
+//    `ResultadoVerificacao` aprovado.
+// 5. Contagem única da recusa de quota (revisão final): a quota injetada NÃO
+//    self-reporta ao observador; é a orquestração que registra
+//    `registrarRecusaQuota()` uma vez e emite `quota_recusada` exatamente uma
+//    vez (dupla contagem seria indetectável pelo núcleo).
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import regrasRaw from "../../docs/fontes/regras_convenio.json?raw";
@@ -1004,9 +1015,16 @@ describe("lt-conferencia-vazio-cache-e-falhas", () => {
     const kv = criarKvFake();
     const cache = api.criarAdaptadorCacheSemantico(kv.kv);
     const observador = criarObservadorFake();
-    // A quota real é esgotada antes da conferência; a próxima tentativa é recusada.
-    const quotaReal = api.criarQuotaDeChamadas({ limite: 1, observador: observador.observador });
+    // A quota real é esgotada antes da conferência; a próxima tentativa é
+    // recusada. A quota injetada NÃO conhece o observador: a contagem única da
+    // recusa é responsabilidade da orquestração, não da quota (evita
+    // dupla contagem que a própria orquestração não tem como detectar).
+    const quotaReal = api.criarQuotaDeChamadas({ limite: 1 });
     expect(quotaReal.consumir()).toBe(true);
+    const emitidos: EventoRedigido[] = [];
+    const registrador = api.criarRegistradorRedigido((evento) => {
+      emitidos.push(evento);
+    });
     const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
 
     const resultado = await api.conferirGuia(guia, catalogo, {
@@ -1014,6 +1032,7 @@ describe("lt-conferencia-vazio-cache-e-falhas", () => {
       cache,
       quota: quotaReal,
       observador: observador.observador,
+      registrador,
     });
 
     expect(resultado.decisao).toBe("PENDENTE");
@@ -1024,7 +1043,12 @@ describe("lt-conferencia-vazio-cache-e-falhas", () => {
     // Recusa antes da chamada: zero chamadas e nenhuma tentativa registrada.
     expect(interpretador.chamadas).toHaveLength(0);
     expect(observador.chamadas).toBe(0);
+    // Contagem única da recusa: a orquestração registra a métrica uma vez e
+    // emite o evento `quota_recusada` exatamente uma vez.
     expect(observador.recusasQuota).toBe(1);
+    expect(
+      emitidos.map((evento) => evento.evento).filter((nome) => nome === "quota_recusada"),
+    ).toHaveLength(1);
     expect(resultado.inferencia_textual).toBeNull();
     // Os achados determinísticos já calculados continuam preservados.
     expect(motivo(resultado, "autorizacao_vencida")).toBeDefined();
@@ -1673,47 +1697,121 @@ describe("lt-retentativa-timeout-e-limites — reforço: tetos absolutos de cara
   });
 });
 
-describe("lt-conferencia-vazio-cache-e-falhas — reforço: quota padrão compartilhada por isolate", () => {
-  it("quota ausente ou null usa a instância padrão do módulo e recusa dentro de 61 tentativas sem chamar o modelo", async () => {
+describe("lt-conferencia-vazio-cache-e-falhas — reforço: logging best-effort nunca rejeita a conferência", () => {
+  // Um registrador cujo `info` sempre lança não pode transformar `conferirGuia`
+  // numa Promise rejeitada: o logging é best-effort e a conferência precisa
+  // devolver seu `ResultadoVerificacao` em sucesso, falha e recusa de quota.
+  const registradorHostil: RegistradorRedigido = {
+    info() {
+      throw new Error("registrador hostil");
+    },
+  };
+
+  it("sucesso com extração válida devolve completa mesmo com registrador que sempre lança", async () => {
     const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+
+    // Basta aguardar: uma rejeição por `info` que lança reprova o teste.
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      registrador: registradorHostil,
+    });
+
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(codigos(resultado)).toContain("modalidade_particular_contraditoria");
+  });
+
+  it("falha não transitória do modelo devolve PENDENTE/incompleta mesmo com registrador que sempre lança", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([new Error("provedor indisponível")]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      registrador: registradorHostil,
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(codigos(resultado)).toContain("checagem_textual_incompleta");
+  });
+
+  it("recusa de quota devolve PENDENTE/incompleta sem chamar o modelo mesmo com registrador que sempre lança", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    // Quota já esgotada: a próxima `consumir()` é recusada antes de qualquer envio.
+    const quotaEsgotada = criarQuotaFake(0);
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quotaEsgotada.quota,
+      registrador: registradorHostil,
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(resultado.limitacoes).toContain("quota_de_chamadas_excedida");
+    // A recusa antecede o modelo: nenhuma tentativa chega ao interpretador.
+    expect(interpretador.chamadas).toHaveLength(0);
+  });
+});
+
+describe("lt-conferencia-vazio-cache-e-falhas — reforço: quota padrão determinística do isolate", () => {
+  // Prova determinística da instância padrão do módulo: com um módulo RECÉM
+  // CARREGADO (`vi.resetModules` + glob não-eager) a janela da `QUOTA_PADRAO`
+  // começa vazia, então os primeiros 60 consumos são aceitos exatamente e o 61º
+  // é recusado — independentemente do que testes anteriores consumiram.
+  it("a quota padrão aceita exatamente 60 chamadas com quota omitida ou null e recusa a 61ª sem tocar o modelo", async () => {
+    vi.resetModules();
+    const carregadores = import.meta.glob("../../src/semantic/index.ts");
+    const apiFresca = (await Object.values(carregadores)[0]()) as unknown as ApiSemantica;
     const catalogo = catalogoValido();
 
-    const roteiro = Array.from({ length: 61 }, () => resposta(api, SINAIS_ADMIN));
+    const roteiro = Array.from({ length: 60 }, () => resposta(apiFresca, SINAIS_ADMIN));
     const interpretador = criarInterpretadorFake(roteiro);
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_ADMIN });
 
-    let recusa: ResultadoVerificacao | null = null;
-    let sucessos = 0;
-
-    for (let indice = 0; indice < 61 && recusa === null; indice += 1) {
-      const guia = guiaSintetica({ observacao_recepcao: TEXTO_ADMIN });
-      const chamadasAntes = interpretador.chamadas.length;
-      const opcoes: OpcoesConferencia = {
-        interpretador: interpretador.interpretador,
-      };
-      // Alterna `quota` OMITIDA e `quota: null`: ambos devem cair na mesma
-      // instância padrão do módulo, criada uma única vez e nunca por chamada.
+    // Índices 0..59: alterna `quota` OMITIDA e `quota: null`. Ambos devem cair
+    // na MESMA instância padrão do módulo e ser aceitos.
+    for (let indice = 0; indice < 60; indice += 1) {
+      const opcoes: OpcoesConferencia = { interpretador: interpretador.interpretador };
       if (indice % 2 === 1) {
         opcoes.quota = null;
       }
 
-      const resultado = await api.conferirGuia(guia, catalogo, opcoes);
+      const resultado = await apiFresca.conferirGuia(guia, catalogo, opcoes);
 
-      if (resultado.limitacoes.includes("quota_de_chamadas_excedida")) {
-        // A recusa não pode ter chegado ao modelo nesta chamada.
-        expect(interpretador.chamadas.length).toBe(chamadasAntes);
-        recusa = resultado;
-        break;
-      }
-      sucessos += 1;
+      expect(resultado.limitacoes, `chamada ${indice}`).not.toContain(
+        "quota_de_chamadas_excedida",
+      );
+      // Cada aceitação invoca o interpretador exatamente uma vez.
+      expect(interpretador.chamadas, `chamada ${indice}`).toHaveLength(indice + 1);
     }
+    expect(interpretador.chamadas).toHaveLength(60);
 
-    expect(recusa, "a quota padrão precisa recusar dentro de 61 tentativas").not.toBeNull();
-    expect(recusa!.decisao).toBe("PENDENTE");
-    expect(recusa!.checagem_textual).toBe("incompleta");
-    expect(recusa!.limitacoes).toContain("quota_de_chamadas_excedida");
-    expect(recusa!.limitacoes).toContain("checagem_textual_incompleta");
-    // Cada sucesso consumiu exatamente uma chamada e a recusa não consumiu
-    // nenhuma: o total do interpretador coincide com os sucessos contados.
-    expect(interpretador.chamadas).toHaveLength(sucessos);
+    // 61ª chamada (índice 60): a quota padrão recusa e o modelo não é tocado.
+    const recusa = await apiFresca.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+    });
+
+    expect(recusa.decisao).toBe("PENDENTE");
+    expect(recusa.checagem_textual).toBe("incompleta");
+    expect(recusa.limitacoes).toContain("quota_de_chamadas_excedida");
+    expect(recusa.limitacoes).toContain("checagem_textual_incompleta");
+    expect(interpretador.chamadas).toHaveLength(60);
   });
 });
