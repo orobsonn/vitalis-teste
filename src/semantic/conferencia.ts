@@ -13,9 +13,10 @@
  * - ÚNICOS limites SEMÂNTICOS de entrada são os TRIMADOS (1000 observação,
  *   200 contexto); o texto CRU é preservado na chave e no payload. Um teto
  *   ABSOLUTO de ABUSO em BYTES UTF-8 do texto cru (`LIMITE_TEXTO_BRUTO_BYTES`,
- *   64 KiB) recusa entradas desproporcionais antes de cache/hash/envio; o
- *   risco residual de custo/corpo cru pertence sobretudo ao limite de corpo do
- *   entrypoint HTTP (issues #4/#6), não a este contrato.
+ *   64 KiB) é aplicado POR CAMPO do payload do provedor — observação, convênio
+ *   e procedimento — recusando entradas desproporcionais antes de
+ *   cache/hash/envio; o risco residual de custo/corpo cru pertence sobretudo ao
+ *   limite de corpo do entrypoint HTTP (issues #4/#6), não a este contrato.
  * - Quota antes de cada tentativa, com uma ÚNICA instância padrão do isolate
  *   (60/60000 ms) usada quando a quota é omitida ou `null`.
  * - Cache miss/hit, timeout real por tentativa
@@ -60,11 +61,12 @@ export const LIMITE_OBSERVACAO = 1000;
 /** Teto de caracteres de convênio e de procedimento após `trim` (§3.9). */
 export const LIMITE_CONTEXTO = 200;
 /**
- * Teto ABSOLUTO de ABUSO da observação, em BYTES UTF-8 do texto CRU (§3.9),
- * medido ANTES de `trim`, cache, hash e envio. Não é um limite semântico: os
- * únicos limites semânticos de entrada continuam sendo os TRIMADOS
- * (`LIMITE_OBSERVACAO`/`LIMITE_CONTEXTO`). Alinhado ao limite de corpo HTTP
- * aprovado, recusa entradas desproporcionais sem restaurar o teto cru pequeno.
+ * Teto ABSOLUTO de ABUSO de CADA campo cru do payload do provedor, em BYTES
+ * UTF-8 (§3.9), medido ANTES de `trim`, cache, hash e envio. Não é um limite
+ * semântico: os únicos limites semânticos de entrada continuam sendo os
+ * TRIMADOS (`LIMITE_OBSERVACAO`/`LIMITE_CONTEXTO`). Alinhado ao limite de corpo
+ * HTTP aprovado, recusa entradas desproporcionais sem restaurar o teto cru
+ * pequeno. Vale para observação, convênio e procedimento.
  */
 export const LIMITE_TEXTO_BRUTO_BYTES = 64 * 1024;
 /** Teto, em bytes UTF-8, da resposta serializada do provedor (§3.9). */
@@ -137,6 +139,16 @@ const CODIFICADOR = new TextEncoder();
 /** Comprimento em bytes UTF-8 do texto serializado da resposta. */
 function bytesDoTexto(texto: string): number {
   return CODIFICADOR.encode(texto).length;
+}
+
+/**
+ * Verdadeiro quando o texto CRU de um campo do payload excede o teto absoluto
+ * de abuso em BYTES UTF-8. Medido sempre no valor cru (antes de `trim`), de
+ * modo que um campo só-espaços enorme não escape por ter comprimento trimado
+ * pequeno. O MESMO teto vale para observação, convênio e procedimento.
+ */
+function acimaDoTetoDeAbuso(texto: string): boolean {
+  return bytesDoTexto(texto) > LIMITE_TEXTO_BRUTO_BYTES;
 }
 
 /**
@@ -496,12 +508,15 @@ export async function conferirGuia(
     return resultado;
   };
 
-  // 2. Teto ABSOLUTO de abuso (§3.9): BYTES UTF-8 do texto CRU, medidos antes
-  // de cache/hash/envio e antes do limite SEMÂNTICO trimado. Uma observação
-  // vazia após `trim` já saiu pelo motor puro no passo 1; aqui, no limite ou
-  // abaixo, o texto cru é preservado e o teto trimado segue como o único
-  // limite semântico. Acima do teto, falha fechada sem cache e sem chamada.
-  if (bytesDoTexto(guia.observacaoRecepcao) > LIMITE_TEXTO_BRUTO_BYTES) {
+  // 2. Teto ABSOLUTO de abuso (§3.9): BYTES UTF-8 do texto CRU de CADA campo
+  // do payload do provedor, medidos antes de cache/hash/envio e antes do limite
+  // SEMÂNTICO trimado. Uma observação vazia após `trim` já saiu pelo motor puro
+  // no passo 1; aqui, no limite ou abaixo, o texto cru é preservado e o teto
+  // trimado segue como o único limite semântico. Acima do teto, falha fechada
+  // sem cache e sem chamada. A observação carrega a limitação nomeada; convênio
+  // e procedimento espelham o transbordo de contexto pós-trim (sem código novo
+  // de limitação, apenas `codigo: "limite_excedido"`).
+  if (acimaDoTetoDeAbuso(guia.observacaoRecepcao)) {
     return concluir(
       { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
       {
@@ -509,6 +524,15 @@ export async function conferirGuia(
         limitacoes: [LIMITACAO_OBSERVACAO_ACIMA_DO_LIMITE],
         codigo: "limite_excedido",
       },
+    );
+  }
+  if (
+    acimaDoTetoDeAbuso(guia.convenio) ||
+    acimaDoTetoDeAbuso(guia.procedimentoCodigo)
+  ) {
+    return concluir(
+      { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
+      { estado: "incompleta", codigo: "limite_excedido" },
     );
   }
 
