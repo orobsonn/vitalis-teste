@@ -3293,4 +3293,107 @@ describe("lt-retentativa-timeout-e-limites — reforço: identidade CONFIGURADA 
     });
     expect(interpretador.chamadas).toHaveLength(1);
   });
+
+  // Regressão: um valor só-espaços ACIMA do teto era `trim()`ado para vazio e
+  // recaía no padrão `MODELO_OBSERVACAO` ANTES da medição de comprimento,
+  // escapando da recusa fechada e chegando a cache/quota/provedor (além de
+  // varrer a entrada hostil). O teto deve ser medido no valor CRU.
+  it("identidade configurada só de espaços acima do teto falha fechada e não é normalizada para o padrão", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+    const modeloSoEspacos = " ".repeat(TAMANHO_HOSTIL);
+    expect(modeloSoEspacos.trim()).toBe("");
+    expect(modeloSoEspacos.length).toBeGreaterThan(LIMITE_IDENTIDADE_CONFIGURADA);
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    // Roteiro que REJEITA: se o valor só-espaços acima do teto fosse
+    // normalizado para o padrão, a jornada chegaria ao provedor e viraria
+    // `incompleta`. A recusa no valor CRU precede cache e chamada.
+    const interpretador = criarInterpretadorFake([
+      new Error("provedor não deveria ser chamado"),
+    ]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      modelo: modeloSoEspacos,
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    // Não é normalizado para o padrão: nenhuma identidade de inferência.
+    expect(resultado.inferencia_textual).toBeNull();
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(kv.leituras).toBe(0);
+    expect(kv.gravacoes).toBe(0);
+    expect(quota.consumidas).toBe(0);
+
+    // O resultado permanece limitado e não carrega a corrida de espaços.
+    const serializado = JSON.stringify(resultado);
+    expect(serializado.length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+    expect(serializado).not.toContain(modeloSoEspacos);
+    expect(serializado).not.toContain(" ".repeat(TAMANHO_PREFIXO));
+  });
+
+  it("identidade configurada só de espaços com 300 caracteres também falha fechada sem efeitos", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+    const modeloSoEspacos = " ".repeat(300);
+    expect(modeloSoEspacos.trim()).toBe("");
+    expect(modeloSoEspacos.length).toBeGreaterThan(LIMITE_IDENTIDADE_CONFIGURADA);
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const interpretador = criarInterpretadorFake([
+      new Error("provedor não deveria ser chamado"),
+    ]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      modelo: modeloSoEspacos,
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(resultado.inferencia_textual).toBeNull();
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(kv.leituras).toBe(0);
+    expect(kv.gravacoes).toBe(0);
+    expect(quota.consumidas).toBe(0);
+
+    const serializado = JSON.stringify(resultado);
+    expect(serializado.length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+    expect(serializado).not.toContain(modeloSoEspacos);
+    expect(serializado).not.toContain(" ".repeat(TAMANHO_PREFIXO));
+  });
+
+  it("identidade configurada só de espaços dentro do teto recai no padrão e conclui", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+    const modeloSoEspacos = "   ";
+    expect(modeloSoEspacos.trim()).toBe("");
+    expect(modeloSoEspacos.length).toBeLessThanOrEqual(LIMITE_IDENTIDADE_CONFIGURADA);
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const kv = criarKvFake();
+    // O provedor ecoa a identidade PADRÃO: a normalização de um valor
+    // só-espaços DENTRO do teto recai em `MODELO_OBSERVACAO`.
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      modelo: modeloSoEspacos,
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+    });
+
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(resultado.inferencia_textual).toEqual(identidadeConfig(api));
+    expect(interpretador.chamadas).toHaveLength(1);
+  });
 });
