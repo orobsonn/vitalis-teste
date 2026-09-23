@@ -69,6 +69,25 @@
 // - `quota_de_chamadas_excedida` é o nome resolvido nesta tarefa para a limitação
 //   de quota que a spec deixa sem nome literal (`observacao_acima_do_limite` é o
 //   nome literal de §3.9 para o limite de entrada).
+//
+// Regressões acrescentadas na retomada desta MESMA tarefa (revisão final):
+// 1. Retentativa exige também o `status` transitório PRÓPRIO do erro, além da
+//    classificação `transporte`: só `status` 429 ou ≥500 retenta. Um erro SEM
+//    `status`, ou com status não transitório (400), ainda que o classificador
+//    injetado diga `transporte`, não retenta e não consome o segundo roteiro
+//    (§3.9, §7.13, #ac-17).
+// 2. Tetos absolutos de caracteres CRUS, avaliados antes da leitura de
+//    cache/hash/envio e antes da comparação TRIMADA: observação com mais de
+//    4096 caracteres crus e convênio/procedimento com mais de 200 caracteres
+//    crus são recusados com zero chamadas (e zero leitura de cache para a
+//    observação). Os limites semânticos trimados (1000/200) permanecem, o 4096
+//    cru é inclusive, e a regra de vazio de §3.6 mantém precedência (vazio após
+//    `trim` continua `nao_aplicavel`; por isso não há caso de observação só com
+//    espaços acima de 4096). Não se cria código novo para convênio/procedimento:
+//    espelham o comportamento do caso 200-após-trim.
+// 3. A quota padrão vive no módulo: uma ÚNICA instância (60 chamadas / 60000 ms)
+//    usada quando `quota` é OMITIDA ou `null`, nunca criada por chamada. Este
+//    caso fica por ÚLTIMO no arquivo porque esgota a instância compartilhada.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import regrasRaw from "../../docs/fontes/regras_convenio.json?raw";
@@ -1501,5 +1520,200 @@ describe("lt-jornadas-administrativa-particular-falha", () => {
     for (const espiao of espioes) {
       expect(espiao).not.toHaveBeenCalled();
     }
+  });
+});
+
+describe("lt-retentativa-timeout-e-limites — reforço: retentativa exige status transitório próprio do erro", () => {
+  it("erro sem status cujo classificador diz transporte não retenta nem consome o segundo roteiro", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    const erroSemStatus = new Error("falha sem status mas classificada como transporte");
+    const interpretador = criarInterpretadorFake([
+      erroSemStatus,
+      resposta(api, SINAIS_PARTICULAR),
+    ]);
+
+    const classificados: unknown[] = [];
+    const classificarFalha = (erro: unknown): ClassificacaoFalha => {
+      classificados.push(erro);
+      return "transporte";
+    };
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      classificarFalha,
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    // O classificador injetado foi consultado, mas a classificação `transporte`
+    // sozinha não autoriza retentativa: falta o `status` transitório próprio.
+    expect(classificados).toEqual([erroSemStatus]);
+    // Uma única chamada: o segundo passo do roteiro nunca é consumido.
+    expect(interpretador.chamadas).toHaveLength(1);
+    expect(interpretador.eventos).toEqual(["inicio:1", "fim:1"]);
+  });
+
+  it("erro com status próprio não transitório (400) e classificador transporte também não retenta", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    const erroQuatrocentos = Object.assign(new Error("recusado"), { status: 400 });
+    const interpretador = criarInterpretadorFake([
+      erroQuatrocentos,
+      resposta(api, SINAIS_PARTICULAR),
+    ]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      classificarFalha: () => "transporte",
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(resultado.limitacoes).toContain("checagem_textual_incompleta");
+    expect(interpretador.chamadas).toHaveLength(1);
+    expect(interpretador.eventos).toEqual(["inicio:1", "fim:1"]);
+  });
+});
+
+describe("lt-retentativa-timeout-e-limites — reforço: tetos absolutos de caracteres CRUS", () => {
+  const LIMITE_OBSERVACAO_CRU = 4096;
+  const LIMITE_CONTEXTO_CRU = 200;
+
+  it("observação com 4097 caracteres CRUS e 1000 trimados é recusada antes do cache e do modelo", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    const observacaoCrua = " ".repeat(3097) + "a".repeat(LIMITE_ENTRADA);
+    expect(observacaoCrua).toHaveLength(LIMITE_OBSERVACAO_CRU + 1);
+    expect(observacaoCrua.trim()).toHaveLength(LIMITE_ENTRADA);
+
+    const guia = guiaSintetica({ observacao_recepcao: observacaoCrua });
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(resultado.limitacoes).toContain("observacao_acima_do_limite");
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(resultado.inferencia_textual).toBeNull();
+    // O teto cru precede a leitura de cache: nenhuma chave é lida/calculada.
+    expect(kv.leituras).toBe(0);
+  });
+
+  it("observação com exatamente 4096 caracteres CRUS e 1000 trimados continua sendo enviada", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    const observacaoCrua = " ".repeat(3096) + "a".repeat(LIMITE_ENTRADA);
+    expect(observacaoCrua).toHaveLength(LIMITE_OBSERVACAO_CRU);
+    expect(observacaoCrua.trim()).toHaveLength(LIMITE_ENTRADA);
+
+    const guia = guiaSintetica({ observacao_recepcao: observacaoCrua });
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+    });
+
+    // O teto cru é "acima de 4096", não "a partir de 4096": 4096 é enviado.
+    expect(interpretador.chamadas).toHaveLength(1);
+  });
+
+  it("convênio ou procedimento com 201 caracteres CRUS e ≤200 trimados é recusado sem código novo", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    const convenioCru = " ".repeat(LIMITE_CONTEXTO_CRU) + "C";
+    const procedimentoCru = " ".repeat(LIMITE_CONTEXTO_CRU) + "9";
+    expect(convenioCru).toHaveLength(LIMITE_CONTEXTO_CRU + 1);
+    expect(convenioCru.trim()).toHaveLength(1);
+    expect(procedimentoCru).toHaveLength(LIMITE_CONTEXTO_CRU + 1);
+    expect(procedimentoCru.trim()).toHaveLength(1);
+
+    const casos: Array<Partial<Record<Coluna, string>>> = [
+      { convenio: convenioCru },
+      { procedimento_codigo: procedimentoCru },
+    ];
+
+    for (const overrides of casos) {
+      const rotulo = Object.keys(overrides)[0];
+      const guia = guiaSintetica({ observacao_recepcao: TEXTO_ADMIN, ...overrides });
+      const kv = criarKvFake();
+      const interpretador = criarInterpretadorFake([resposta(api, SINAIS_ADMIN)]);
+
+      const resultado = await api.conferirGuia(guia, catalogo, {
+        interpretador: interpretador.interpretador,
+        cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      });
+
+      expect(resultado.decisao, rotulo).toBe("PENDENTE");
+      expect(resultado.checagem_textual, rotulo).toBe("incompleta");
+      expect(interpretador.chamadas, rotulo).toHaveLength(0);
+      expect(resultado.inferencia_textual, rotulo).toBeNull();
+      // Sem código novo: convênio/procedimento espelham o caso 200-após-trim e
+      // não recebem a limitação nomeada reservada à observação.
+      expect(resultado.limitacoes, rotulo).not.toContain("observacao_acima_do_limite");
+    }
+  });
+});
+
+describe("lt-conferencia-vazio-cache-e-falhas — reforço: quota padrão compartilhada por isolate", () => {
+  it("quota ausente ou null usa a instância padrão do módulo e recusa dentro de 61 tentativas sem chamar o modelo", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    const roteiro = Array.from({ length: 61 }, () => resposta(api, SINAIS_ADMIN));
+    const interpretador = criarInterpretadorFake(roteiro);
+
+    let recusa: ResultadoVerificacao | null = null;
+    let sucessos = 0;
+
+    for (let indice = 0; indice < 61 && recusa === null; indice += 1) {
+      const guia = guiaSintetica({ observacao_recepcao: TEXTO_ADMIN });
+      const chamadasAntes = interpretador.chamadas.length;
+      const opcoes: OpcoesConferencia = {
+        interpretador: interpretador.interpretador,
+      };
+      // Alterna `quota` OMITIDA e `quota: null`: ambos devem cair na mesma
+      // instância padrão do módulo, criada uma única vez e nunca por chamada.
+      if (indice % 2 === 1) {
+        opcoes.quota = null;
+      }
+
+      const resultado = await api.conferirGuia(guia, catalogo, opcoes);
+
+      if (resultado.limitacoes.includes("quota_de_chamadas_excedida")) {
+        // A recusa não pode ter chegado ao modelo nesta chamada.
+        expect(interpretador.chamadas.length).toBe(chamadasAntes);
+        recusa = resultado;
+        break;
+      }
+      sucessos += 1;
+    }
+
+    expect(recusa, "a quota padrão precisa recusar dentro de 61 tentativas").not.toBeNull();
+    expect(recusa!.decisao).toBe("PENDENTE");
+    expect(recusa!.checagem_textual).toBe("incompleta");
+    expect(recusa!.limitacoes).toContain("quota_de_chamadas_excedida");
+    expect(recusa!.limitacoes).toContain("checagem_textual_incompleta");
+    // Cada sucesso consumiu exatamente uma chamada e a recusa não consumiu
+    // nenhuma: o total do interpretador coincide com os sucessos contados.
+    expect(interpretador.chamadas).toHaveLength(sucessos);
   });
 });
