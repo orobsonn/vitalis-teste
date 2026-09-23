@@ -37,6 +37,7 @@ export type {
 } from "./workers-ai";
 
 export {
+  LIMITE_VALOR_CACHE_BYTES,
   NAMESPACE_CACHE_SEMANTICO,
   TTL_PADRAO_CACHE_SEGUNDOS,
   criarAdaptadorCacheSemantico,

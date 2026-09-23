@@ -3,8 +3,11 @@
  *
  * Responsabilidade única: derivar a chave `semantico:v1:` a partir do JSON
  * canônico dos campos que decidem a interpretação e guardar/ler a resposta
- * **já validada** (`SinaisObservacao`). Não há timeout, retentativa, quota nem
- * logging aqui — essas políticas pertencem às camadas de orquestração.
+ * **já validada** (`SinaisObservacao`). Não há timeout, retentativa nem quota
+ * aqui — essas políticas pertencem às camadas de orquestração. As únicas
+ * observações emitidas são os eventos redigidos
+ * `cache_leitura_falhou`/`cache_gravacao_falhou` (§3.10), limitados a estado,
+ * código e prefixo da chave.
  *
  * Garantias do contrato (§3.8, §3.1, §3.10):
  * - A chave é o `sha256` do JSON canônico de
@@ -24,6 +27,7 @@
 import { textoCanonico } from "../shared/json-canonico";
 import { sha256Hex } from "../shared/sha256";
 import type { EntradaObservacao, SinaisObservacao } from "./contratos";
+import type { RegistradorRedigido } from "./observabilidade";
 import { validarExtracao } from "./validacao";
 
 /** Namespace próprio do cache semântico, versionado para permitir rotação. */
@@ -32,8 +36,19 @@ export const NAMESPACE_CACHE_SEMANTICO = "semantico:v1:";
 /** TTL padrão do cache em segundos: 24 h, retenção curta por causa do texto livre (§3.1). */
 export const TTL_PADRAO_CACHE_SEGUNDOS = 86400;
 
+/** Teto, em bytes UTF-8, do valor lido do cache antes da revalidação (§3.9). */
+export const LIMITE_VALOR_CACHE_BYTES = 16 * 1024;
+
 /** Comprimento máximo do prefixo observável da chave, em caracteres hex (§3.10). */
 const COMPRIMENTO_PREFIXO = 12;
+
+/** Codificador usado para medir o teto de bytes UTF-8 do valor persistido. */
+const CODIFICADOR = new TextEncoder();
+
+/** Comprimento em bytes UTF-8 do valor bruto lido do cache. */
+function bytesDoValor(valor: string): number {
+  return CODIFICADOR.encode(valor).length;
+}
 
 /**
  * Contexto de inferência que participa da chave. `promptHash` é o `sha256` do
@@ -67,6 +82,12 @@ export interface BindingCacheSemantico {
 export interface OpcoesAdaptadorCacheSemantico {
   /** TTL de retenção em segundos; padrão `TTL_PADRAO_CACHE_SEGUNDOS` (24 h). */
   ttlSegundos?: number;
+  /**
+   * Registrador redigido opcional das falhas isoladas do KV (§3.10). Recebe
+   * apenas `estado`, `codigo` e `cache_prefixo` — nunca o erro cru, a chave
+   * completa nem o texto livre da observação.
+   */
+  registrador?: RegistradorRedigido;
 }
 
 /** Adaptador de cache injetável consumido pela orquestração. */
@@ -118,20 +139,48 @@ export function criarAdaptadorCacheSemantico(
   opcoes?: OpcoesAdaptadorCacheSemantico,
 ): AdaptadorCacheSemantico {
   const ttlSegundos = opcoes?.ttlSegundos ?? TTL_PADRAO_CACHE_SEGUNDOS;
+  const registrador = opcoes?.registrador;
 
   return {
     async ler(entrada, contexto) {
-      const { chave } = montarChaveCacheSemantica(entrada, contexto);
+      const { chave, prefixo } = montarChaveCacheSemantica(entrada, contexto);
 
       let valor: string | null;
       try {
         valor = await kv.get(chave);
       } catch {
-        // KV indisponível na leitura: miss, sem exceção fatal.
+        // KV indisponível na leitura: miss, sem exceção fatal. O evento
+        // redigido expõe só estado, código e prefixo da chave (§3.10). A
+        // própria emissão é best-effort: registrador indisponível é engolido
+        // para não substituir a degradação para miss.
+        try {
+          registrador?.info("cache_leitura_falhou", {
+            estado: "incompleta",
+            codigo: "cache_indisponivel",
+            cache_prefixo: prefixo,
+          });
+        } catch {
+          // Registrador indisponível não pode fechar a guia (§3.8).
+        }
         return null;
       }
 
       if (typeof valor !== "string") {
+        return null;
+      }
+
+      // Rejeição barata antes de codificar: em UTF-8 o comprimento nunca é
+      // menor que o número de code units UTF-16, então `valor.length` acima do
+      // teto já é excesso certo e evita materializar/codificar o valor inteiro
+      // (§3.9). Só o que passa por esse crivo é medido em bytes para preservar
+      // a fronteira exata (`>`).
+      if (valor.length > LIMITE_VALOR_CACHE_BYTES) {
+        return null;
+      }
+
+      // Teto de bytes antes do parse: valor acima do limite é miss sobrescrevível
+      // e nunca chega ao `JSON.parse` da revalidação (§3.9, §3.8).
+      if (bytesDoValor(valor) > LIMITE_VALOR_CACHE_BYTES) {
         return null;
       }
 
@@ -142,11 +191,23 @@ export function criarAdaptadorCacheSemantico(
     },
 
     async gravar(entrada, contexto, sinais) {
-      const { chave } = montarChaveCacheSemantica(entrada, contexto);
+      const { chave, prefixo } = montarChaveCacheSemantica(entrada, contexto);
       try {
         await kv.put(chave, JSON.stringify(sinais), { expirationTtl: ttlSegundos });
       } catch {
-        // KV indisponível na gravação: fluxo segue sem persistência.
+        // KV indisponível na gravação: fluxo segue sem persistência. O evento
+        // redigido expõe só estado, código e prefixo da chave (§3.10). A
+        // própria emissão é best-effort: registrador indisponível é engolido
+        // para não fechar a guia nem impedir a conclusão sem persistência.
+        try {
+          registrador?.info("cache_gravacao_falhou", {
+            estado: "incompleta",
+            codigo: "cache_indisponivel",
+            cache_prefixo: prefixo,
+          });
+        } catch {
+          // Registrador indisponível não pode fechar a guia (§3.8).
+        }
       }
     },
   };
