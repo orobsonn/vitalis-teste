@@ -7,16 +7,19 @@
  * da resposta e entrega textual ao motor.
  *
  * Garantias do contrato:
- * - Observação vazia após `trim` sai pelo motor puro (`nao_aplicavel`), sem
- *   cache, sem quota e sem inferência; o texto CRU é preservado na chave e no
- *   payload, e o `trim` serve apenas para vazio e limites.
+ * - O teto ABSOLUTO de ABUSO em BYTES UTF-8 do texto CRU
+ *   (`LIMITE_TEXTO_BRUTO_BYTES`, 64 KiB) é aplicado POR CAMPO do payload do
+ *   provedor — observação, convênio e procedimento — ANTES de qualquer `trim()`
+ *   e ANTES do ramo de observação vazia, recusando entradas desproporcionais
+ *   antes de cache/hash/envio; o risco residual de custo/corpo cru pertence
+ *   sobretudo ao limite de corpo do entrypoint HTTP (issues #4/#6), não a este
+ *   contrato.
+ * - Observação vazia após `trim` (ABAIXO dos tetos de abuso) sai pelo motor puro
+ *   (`nao_aplicavel`), sem cache, sem quota e sem inferência; o texto CRU é
+ *   preservado na chave e no payload, e o `trim` serve apenas para vazio e
+ *   limites.
  * - ÚNICOS limites SEMÂNTICOS de entrada são os TRIMADOS (1000 observação,
- *   200 contexto); o texto CRU é preservado na chave e no payload. Um teto
- *   ABSOLUTO de ABUSO em BYTES UTF-8 do texto cru (`LIMITE_TEXTO_BRUTO_BYTES`,
- *   64 KiB) é aplicado POR CAMPO do payload do provedor — observação, convênio
- *   e procedimento — recusando entradas desproporcionais antes de
- *   cache/hash/envio; o risco residual de custo/corpo cru pertence sobretudo ao
- *   limite de corpo do entrypoint HTTP (issues #4/#6), não a este contrato.
+ *   200 contexto); o texto CRU é preservado na chave e no payload.
  * - Quota antes de cada tentativa, com uma ÚNICA instância padrão do isolate
  *   (60/60000 ms) usada quando a quota é omitida ou `null`.
  * - Cache miss/hit, timeout real por tentativa
@@ -510,30 +513,6 @@ export async function conferirGuia(
   const inicio = lerRelogio(agora);
   let tentativas = 0;
 
-  // 1. Observação vazia após `trim`: motor puro, sem cache, quota ou inferência.
-  // O motor recebe uma representação LIMITADA (`guiaComCamposLimitados`): um
-  // convênio/procedimento acima do teto de abuso é trocado por um marcador fixo,
-  // de modo que `motivos[].evidencia` nunca embute o corpo rejeitado; a
-  // semântica `nao_aplicavel`, os códigos determinísticos (`*_nao_catalogado`)
-  // e o zero de cache/quota/modelo permanecem idênticos.
-  if (guia.observacaoRecepcao.trim() === "") {
-    const resultado = verificarGuia(guiaComCamposLimitados(guia), catalogo, { referenciaTemporal });
-    const duracao = medirDuracao(inicio, agora);
-    emitir(registrador, "conferencia_concluida", {
-      estado: "nao_aplicavel",
-      ...(duracao === undefined ? {} : { duracao_ms: duracao }),
-      tentativas: 0,
-    });
-    return resultado;
-  }
-
-  const entrada: EntradaObservacao = {
-    observacao_recepcao: guia.observacaoRecepcao,
-    convenio: guia.convenio,
-    procedimento_codigo: guia.procedimentoCodigo,
-  };
-  const contexto = contextoDaConfiguracao(normalizarModelo(opcoes.modelo));
-
   const concluir = (
     textual: TextualValidado,
     extras: {
@@ -567,19 +546,20 @@ export async function conferirGuia(
     return resultado;
   };
 
-  // 2. Teto ABSOLUTO de abuso (§3.9): BYTES UTF-8 do texto CRU de CADA campo
-  // do payload do provedor, medidos antes de cache/hash/envio e antes do limite
-  // SEMÂNTICO trimado. Uma observação vazia após `trim` já saiu pelo motor puro
-  // no passo 1; aqui, no limite ou abaixo, o texto cru é preservado e o teto
-  // trimado segue como o único limite semântico. Acima do teto, falha fechada
-  // sem cache e sem chamada. A observação carrega a limitação nomeada; convênio
-  // e procedimento espelham o transbordo de contexto pós-trim (sem código novo
-  // de limitação, apenas `codigo: "limite_excedido"`). O motor recebe uma
-  // representação LIMITADA (`guiaComCamposLimitados`): o campo acima do teto é
-  // trocado por um marcador fixo antes de `verificarGuia`, de modo que a
-  // evidência determinística (`O convênio "…" não consta no catálogo.`) nunca
-  // embute o corpo rejeitado nem um prefixo dele; cache, quota e provedor
-  // permanecem intactos (zero leitura/gravação e zero consumo).
+  // 1. Teto ABSOLUTO de abuso (§3.9): BYTES UTF-8 do texto CRU de CADA campo
+  // do payload do provedor, medidos ANTES de qualquer `trim()` e ANTES do ramo
+  // de observação vazia — um campo só-espaços enorme não escapa por ter
+  // comprimento trimado pequeno. Dentro do teto, o texto cru é preservado e o
+  // teto trimado segue como o único limite semântico. Acima do teto, falha
+  // fechada sem cache e sem chamada. A observação carrega a limitação nomeada;
+  // convênio e procedimento espelham o transbordo de contexto pós-trim (sem
+  // código novo de limitação, apenas `codigo: "limite_excedido"`). O motor
+  // recebe uma representação LIMITADA (`guiaComCamposLimitados`): o campo
+  // acima do teto é trocado por um marcador fixo antes de `verificarGuia`, de
+  // modo que a evidência determinística (`O convênio "…" não consta no
+  // catálogo.`) nunca embute o corpo rejeitado nem um prefixo dele; cache,
+  // quota e provedor permanecem intactos (zero leitura/gravação e zero
+  // consumo).
   if (acimaDoTetoDeAbuso(guia.observacaoRecepcao)) {
     return concluir(
       { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
@@ -601,6 +581,31 @@ export async function conferirGuia(
       guiaComCamposLimitados(guia),
     );
   }
+
+  // 2. Observação vazia após `trim`: motor puro, sem cache, quota ou
+  // inferência. Só é alcançado ABAIXO dos tetos de abuso do passo 1. O motor
+  // recebe uma representação LIMITADA (`guiaComCamposLimitados`): um
+  // convênio/procedimento acima do teto de abuso é trocado por um marcador
+  // fixo, de modo que `motivos[].evidencia` nunca embute o corpo rejeitado; a
+  // semântica `nao_aplicavel`, os códigos determinísticos
+  // (`*_nao_catalogado`) e o zero de cache/quota/modelo permanecem idênticos.
+  if (guia.observacaoRecepcao.trim() === "") {
+    const resultado = verificarGuia(guiaComCamposLimitados(guia), catalogo, { referenciaTemporal });
+    const duracao = medirDuracao(inicio, agora);
+    emitir(registrador, "conferencia_concluida", {
+      estado: "nao_aplicavel",
+      ...(duracao === undefined ? {} : { duracao_ms: duracao }),
+      tentativas: 0,
+    });
+    return resultado;
+  }
+
+  const entrada: EntradaObservacao = {
+    observacao_recepcao: guia.observacaoRecepcao,
+    convenio: guia.convenio,
+    procedimento_codigo: guia.procedimentoCodigo,
+  };
+  const contexto = contextoDaConfiguracao(normalizarModelo(opcoes.modelo));
 
   // 3. Limites semânticos de entrada (após `trim`), ainda sem cache ou chamada.
   if (guia.observacaoRecepcao.trim().length > LIMITE_OBSERVACAO) {
