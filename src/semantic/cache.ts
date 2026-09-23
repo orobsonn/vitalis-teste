@@ -26,6 +26,7 @@
 
 import { textoCanonico } from "../shared/json-canonico";
 import { sha256Hex } from "../shared/sha256";
+import { campoTemTamanhoDeAbuso } from "./contratos";
 import type { EntradaObservacao, SinaisObservacao } from "./contratos";
 import type { RegistradorRedigido } from "./observabilidade";
 import { validarExtracao } from "./validacao";
@@ -130,6 +131,21 @@ export function montarChaveCacheSemantica(
 }
 
 /**
+ * Teto de abuso por campo cru (§3.9): qualquer um dos três campos acima de
+ * 64 KiB em bytes UTF-8 recusa a entrada. A checagem precede
+ * `montarChaveCacheSemantica`, de modo que a entrada abusiva não dispara a
+ * serialização canônica nem o `sha256`. É degradação, não falha de KV: não
+ * emite evento redigido.
+ */
+function entradaTemCampoDeAbuso(entrada: EntradaObservacao): boolean {
+  return (
+    campoTemTamanhoDeAbuso(entrada.observacao_recepcao) ||
+    campoTemTamanhoDeAbuso(entrada.convenio) ||
+    campoTemTamanhoDeAbuso(entrada.procedimento_codigo)
+  );
+}
+
+/**
  * Cria o adaptador de cache sobre um binding KV estrutural. O adaptador nunca
  * lança: leitura degrada para miss e gravação falha sem persistir, preservando
  * o fluxo da guia (§3.8).
@@ -143,6 +159,9 @@ export function criarAdaptadorCacheSemantico(
 
   return {
     async ler(entrada, contexto) {
+      if (entradaTemCampoDeAbuso(entrada)) {
+        return null;
+      }
       const { chave, prefixo } = montarChaveCacheSemantica(entrada, contexto);
 
       let valor: string | null;
@@ -191,6 +210,9 @@ export function criarAdaptadorCacheSemantico(
     },
 
     async gravar(entrada, contexto, sinais) {
+      if (entradaTemCampoDeAbuso(entrada)) {
+        return;
+      }
       const { chave, prefixo } = montarChaveCacheSemantica(entrada, contexto);
       try {
         await kv.put(chave, JSON.stringify(sinais), { expirationTtl: ttlSegundos });
