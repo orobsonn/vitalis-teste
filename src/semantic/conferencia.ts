@@ -10,9 +10,10 @@
  * - Observação vazia após `trim` sai pelo motor puro (`nao_aplicavel`), sem
  *   cache, sem quota e sem inferência; o texto CRU é preservado na chave e no
  *   payload, e o `trim` serve apenas para vazio e limites.
- * - Tetos ABSOLUTOS de caracteres CRUS (observação 4096, convênio/procedimento
- *   200) são checados antes de `trim`, hash, cache e envio; os limites
- *   semânticos após `trim` (1000 observação, 200 contexto) permanecem.
+ * - ÚNICOS limites de entrada são os TRIMADOS (1000 observação, 200 contexto);
+ *   o texto CRU é preservado sem teto de caracteres crus. O risco residual de
+ *   custo/corpo cru pertence ao limite de corpo do entrypoint HTTP
+ *   (issues #4/#6), não a este contrato.
  * - Quota antes de cada tentativa, com uma ÚNICA instância padrão do isolate
  *   (60/60000 ms) usada quando a quota é omitida ou `null`.
  * - Cache miss/hit, timeout real por tentativa
@@ -56,17 +57,6 @@ import { MODELO_OBSERVACAO } from "./workers-ai";
 export const LIMITE_OBSERVACAO = 1000;
 /** Teto de caracteres de convênio e de procedimento após `trim` (§3.9). */
 export const LIMITE_CONTEXTO = 200;
-/**
- * Teto ABSOLUTO de caracteres CRUS da observação (§3.9), avaliado antes de
- * `trim`, hash, cache e envio. Exclusivo: exatamente 4096 ainda é enviado.
- */
-export const LIMITE_OBSERVACAO_CRU = 4096;
-/**
- * Teto ABSOLUTO de caracteres CRUS de convênio e de procedimento, avaliado
- * antes do `trim`. Exclusivo e sem código/limitação novo: espelha o teto
- * semântico `LIMITE_CONTEXTO`.
- */
-export const LIMITE_CONTEXTO_CRU = 200;
 /** Teto, em bytes UTF-8, da resposta serializada do provedor (§3.9). */
 export const LIMITE_RESPOSTA_BYTES = 16 * 1024;
 /** Timeout padrão por tentativa, em milissegundos (§3.9). */
@@ -172,6 +162,34 @@ function normalizarTimeout(valor: unknown): number {
   return typeof valor === "number" && Number.isFinite(valor) && valor > 0
     ? valor
     : TIMEOUT_PADRAO_MS;
+}
+
+/**
+ * Leitura best-effort do relógio: `agora()` alimenta APENAS a telemetria de
+ * `duracao_ms`. Um relógio que lance ou devolva valor não finito degrada para
+ * `null` sem nunca rejeitar a conferência nem alterar decisões, chamadas,
+ * cache, quota ou resultado; só a duração telemetrável se perde.
+ */
+function lerRelogio(agora: () => number): number | null {
+  try {
+    const instante = agora();
+    return typeof instante === "number" && Number.isFinite(instante) ? instante : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Duração telemetrável entre dois instantes válidos. Devolve `undefined`
+ * quando qualquer leitura falha ou é não finita, para que o campo `duracao_ms`
+ * seja OMITIDO do evento em vez de emitir `NaN` ou uma duração fictícia.
+ */
+function medirDuracao(inicio: number | null, agora: () => number): number | undefined {
+  if (inicio === null) {
+    return undefined;
+  }
+  const fim = lerRelogio(agora);
+  return fim === null ? undefined : Math.max(0, fim - inicio);
 }
 
 /** Código estável de observabilidade para uma classificação de falha (§3.10). */
@@ -350,15 +368,16 @@ export async function conferirGuia(
   const registrador = opcoes.registrador;
   const observador = opcoes.observador;
   const agora = opcoes.agora ?? Date.now;
-  const inicio = agora();
+  const inicio = lerRelogio(agora);
   let tentativas = 0;
 
   // 1. Observação vazia após `trim`: motor puro, sem cache, quota ou inferência.
   if (guia.observacaoRecepcao.trim() === "") {
     const resultado = verificarGuia(guia, catalogo, { referenciaTemporal });
+    const duracao = medirDuracao(inicio, agora);
     emitir(registrador, "conferencia_concluida", {
       estado: "nao_aplicavel",
-      duracao_ms: Math.max(0, agora() - inicio),
+      ...(duracao === undefined ? {} : { duracao_ms: duracao }),
       tentativas: 0,
     });
     return resultado;
@@ -385,47 +404,25 @@ export async function conferirGuia(
         resultado.limitacoes.push(limitacao);
       }
     }
-    const duracao_ms = Math.max(0, agora() - inicio);
+    const duracao = medirDuracao(inicio, agora);
     if (extras.estado === "incompleta") {
       emitir(registrador, "conferencia_falhou", {
         estado: "incompleta",
         ...(extras.codigo ? { codigo: extras.codigo } : {}),
-        duracao_ms,
+        ...(duracao === undefined ? {} : { duracao_ms: duracao }),
         tentativas,
       });
     } else {
       emitir(registrador, "conferencia_concluida", {
         estado: "completa",
-        duracao_ms,
+        ...(duracao === undefined ? {} : { duracao_ms: duracao }),
         tentativas,
       });
     }
     return resultado;
   };
 
-  // 2. Tetos ABSOLUTOS de caracteres CRUS, antes de `trim`, hash, cache e de
-  //    qualquer envio. Exclusivos: exatamente o teto segue adiante.
-  if (guia.observacaoRecepcao.length > LIMITE_OBSERVACAO_CRU) {
-    return concluir(
-      { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
-      {
-        estado: "incompleta",
-        limitacoes: [LIMITACAO_OBSERVACAO_ACIMA_DO_LIMITE],
-        codigo: "limite_excedido",
-      },
-    );
-  }
-  if (
-    guia.convenio.length > LIMITE_CONTEXTO_CRU ||
-    guia.procedimentoCodigo.length > LIMITE_CONTEXTO_CRU
-  ) {
-    return concluir(
-      { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
-      { estado: "incompleta", codigo: "limite_excedido" },
-    );
-  }
-
-  // 3. Limites semânticos de entrada (após `trim`), ainda sem cache ou chamada.
+  // 2. Limites semânticos de entrada (após `trim`), ainda sem cache ou chamada.
   if (guia.observacaoRecepcao.trim().length > LIMITE_OBSERVACAO) {
     return concluir(
       { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
@@ -446,7 +443,7 @@ export async function conferirGuia(
     );
   }
 
-  // 4. Cache semântico: hit válido entrega `completa` sem modelo nem quota.
+  // 3. Cache semântico: hit válido entrega `completa` sem modelo nem quota.
   const cache = opcoes.cache ?? null;
   if (cache) {
     let sinais: SinaisObservacao | null = null;
@@ -474,7 +471,7 @@ export async function conferirGuia(
     }
   }
 
-  // 5. Configuração ausente: sem tentativa e sem identidade de inferência.
+  // 4. Configuração ausente: sem tentativa e sem identidade de inferência.
   const interpretador = opcoes.interpretador ?? null;
   if (!interpretador) {
     return concluir(
@@ -489,7 +486,7 @@ export async function conferirGuia(
   // do isolate (nunca uma nova instância por chamada).
   const quota = opcoes.quota ?? QUOTA_PADRAO;
 
-  // 6. Tentativas estritamente sequenciais, com no máximo uma retentativa.
+  // 5. Tentativas estritamente sequenciais, com no máximo uma retentativa.
   for (;;) {
     // Quota consultada sob guarda: um `consumir()` que lance (por exemplo, um
     // observador hostil injetado na quota) é tratado como recusa fechada e cai
@@ -504,19 +501,15 @@ export async function conferirGuia(
       }
     }
     if (!quotaAutorizou) {
-      // Contagem única da recusa: a orquestração (não a quota injetada) registra
-      // a métrica e emite `quota_recusada` — antes de `registrarChamada()` e de
-      // qualquer envio — e retorna imediatamente, sem segunda contagem.
-      //
-      // LIMITAÇÃO CONHECIDA (propriedade da tarefa da quota, `quota.ts`): a
-      // orquestração conta a recusa por quotas que NÃO se auto-reportam (a quota
-      // padrão compartilhada do isolate não tem observador). Como
-      // `QuotaDeChamadas` expõe apenas `consumir()`, o núcleo não tem como
-      // detectar que uma quota injetada, criada com o MESMO observador, já
-      // reportou a mesma recusa em `consumir()`. Chamadores não devem conectar o
-      // mesmo observador nos dois lados; o alinhamento rigoroso exatamente-uma-
-      // vez pertence à tarefa dona de `src/semantic/quota.ts`.
-      notificarObservador(observador, (o) => o.registrarRecusaQuota());
+      // Contagem única da recusa: quando a quota JÁ se auto-reporta ao
+      // observador (`notificaRecusaNoObservador === true`), a orquestração não
+      // conta de novo; só quotas sem esse marcador (plain/fake, sem observador)
+      // são contadas aqui. Em ambos os casos emite exatamente um
+      // `quota_recusada` — antes de `registrarChamada()` e de qualquer envio —
+      // e retorna imediatamente, sem segunda contagem.
+      if (quota.notificaRecusaNoObservador !== true) {
+        notificarObservador(observador, (o) => o.registrarRecusaQuota());
+      }
       emitir(registrador, "quota_recusada", {
         estado: "incompleta",
         codigo: "quota_excedida",
