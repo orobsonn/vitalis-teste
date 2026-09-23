@@ -17,7 +17,8 @@
 //
 // Superfície exercitada (contrato da task): `validarExtracao`, `normalizarEvidencia`,
 // os limites numéricos, `hashDoPrompt`/`PROMPT_HASH`/`VERSAO_PROMPT`/`TEXTO_PROMPT`/
-// `versaoEfetivaDoPrompt`, `TIPOS_SINAL` e `TIPOS_AMBIGUIDADE`.
+// `versaoEfetivaDoPrompt`, `TIPOS_SINAL`, `TIPOS_AMBIGUIDADE` e a fonte canônica
+// `VALORES_SITUACAO`/`LITERAIS_SITUACAO` (a mesma que o schema Zod consome).
 import { describe, expect, it } from "vitest";
 
 interface Sinal {
@@ -47,9 +48,18 @@ type ResultadoValidacaoExtracao =
   | { ok: true; sinais: SinaisObservacao }
   | { ok: false; erro: string };
 
+interface ValoresSituacao {
+  autorizacao: readonly string[];
+  modalidade: readonly string[];
+  procedimento: readonly string[];
+  reagendamento: readonly string[];
+}
+
 interface ApiAprovada {
   TIPOS_SINAL: readonly string[];
   TIPOS_AMBIGUIDADE: readonly string[];
+  VALORES_SITUACAO: ValoresSituacao;
+  LITERAIS_SITUACAO: readonly string[];
   LIMITE_SINAIS: number;
   LIMITE_AMBIGUIDADES: number;
   LIMITE_EVIDENCIA: number;
@@ -366,5 +376,145 @@ describe("lt-limite-da-evidencia-literal", () => {
       ok: false,
       erro: "evidencia_invalida",
     });
+  });
+});
+
+// Extensão travada do acoplamento prompt/schema para os literais de `situacao`
+// (contrato §3.3; revisão final adversarial MEDIUM). O schema `.strict()` exige
+// valores literais, mas o prompt precisa entregá-los ao modelo como tokens
+// próprios, senão respostas plausíveis viram `incompleta` (fail-closed).
+//
+// O teste NÃO duplica a enumeração: deriva do contrato exportado pelo barrel
+// (`VALORES_SITUACAO`/`LITERAIS_SITUACAO`), a mesma fonte canônica que o schema
+// Zod consome. Se o enum mudar, o acoplamento com o prompt e o hash quebram
+// aqui. O fallback vazio mantém a falha como asserção (nunca de coleta).
+const VALORES_SITUACAO_AUSENTE: ValoresSituacao = {
+  autorizacao: [],
+  modalidade: [],
+  procedimento: [],
+  reagendamento: [],
+};
+
+const valoresSituacao = api?.VALORES_SITUACAO ?? VALORES_SITUACAO_AUSENTE;
+const literaisSituacao = api?.LITERAIS_SITUACAO ?? [];
+
+const MAPEAMENTO_SINAL_SITUACAO: ReadonlyArray<readonly [string, string]> = [
+  ["autorizacao_nova_nao_cadastrada", "nova_nao_cadastrada"],
+  ["autorizacao_verbal_sem_numero", "verbal_sem_numero"],
+  ["decisao_por_particular", "particular_decidido"],
+  ["pergunta_sobre_preco_particular", "somente_pergunta"],
+  ["procedimento_realizado_divergente", "realizado_divergente"],
+  ["reagendamento_mencionado", "mencionado"],
+];
+
+// Reconhece o literal como token próprio, tolerando cercas como `` ou "".
+// Assim `nova_nao_cadastrada` NÃO é satisfeito pelo sufixo de
+// `autorizacao_nova_nao_cadastrada`.
+function contemTokenProprio(texto: string, token: string): boolean {
+  const escapado = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![A-Za-z0-9_])${escapado}(?![A-Za-z0-9_])`).test(texto);
+}
+
+function linhaLigaTokens(texto: string, a: string, b: string): boolean {
+  return texto
+    .split(/\r?\n/)
+    .some((linha) => contemTokenProprio(linha, a) && contemTokenProprio(linha, b));
+}
+
+describe("lt-prompt-acoplado-e-anti-injecao > situação textual", () => {
+  it("exporta a fonte canônica dos literais de situação", () => {
+    const valores = api?.VALORES_SITUACAO;
+    expect(valores, "VALORES_SITUACAO ausente no barrel").toBeDefined();
+    expect(Object.keys(valores ?? {}).sort()).toEqual([
+      "autorizacao",
+      "modalidade",
+      "procedimento",
+      "reagendamento",
+    ]);
+
+    const campos: ReadonlyArray<readonly string[]> = [
+      valoresSituacao.autorizacao,
+      valoresSituacao.modalidade,
+      valoresSituacao.procedimento,
+      valoresSituacao.reagendamento,
+    ];
+    for (const campo of campos) {
+      expect(Array.isArray(campo)).toBe(true);
+      expect(campo.length).toBeGreaterThanOrEqual(2);
+      for (const literal of campo) {
+        expect(typeof literal).toBe("string");
+        expect(literal.length).toBeGreaterThan(0);
+      }
+      expect(new Set(campo).size).toBe(campo.length);
+    }
+
+    const planos: string[] = [];
+    for (const campo of campos) {
+      planos.push(...campo);
+    }
+    const uniao = new Set(planos);
+    const literais = api?.LITERAIS_SITUACAO ?? [];
+    expect(uniao.size).toBeGreaterThan(0);
+    expect(literais.length).toBeGreaterThan(0);
+    // LITERAIS_SITUACAO é a união única dos quatro campos, sem duplicatas.
+    expect(new Set(literais).size).toBe(literais.length);
+    expect(literais.length).toBe(uniao.size);
+    for (const literal of uniao) {
+      expect(literais).toContain(literal);
+    }
+  });
+
+  it("documenta cada literal de situação do contrato como token próprio", () => {
+    expect(typeof promptCanonico).toBe("string");
+    expect(literaisSituacao.length).toBeGreaterThan(0);
+    const ausentes = literaisSituacao.filter(
+      (token) => !contemTokenProprio(promptCanonico ?? "", token),
+    );
+    expect(ausentes, `literais de situacao ausentes no prompt: ${ausentes.join(", ")}`).toEqual(
+      [],
+    );
+  });
+
+  it("distingue o token do sufixo do nome de sinal", () => {
+    // Guarda o que o helper promete: o sufixo de `autorizacao_nova_nao_cadastrada`
+    // não conta como o literal isolado de `situacao`.
+    expect(contemTokenProprio("autorizacao_nova_nao_cadastrada", "nova_nao_cadastrada")).toBe(
+      false,
+    );
+    expect(contemTokenProprio("`nova_nao_cadastrada`", "nova_nao_cadastrada")).toBe(true);
+  });
+
+  it("mapeia cada sinal material ao valor de situação na mesma linha", () => {
+    expect(typeof promptCanonico).toBe("string");
+    // O par local documenta o prompt, mas precisa permanecer alinhado à fonte
+    // canônica: mudar o enum quebra o teste se o par não acompanhar.
+    expect(literaisSituacao.length).toBeGreaterThan(0);
+    for (const [sinal, valor] of MAPEAMENTO_SINAL_SITUACAO) {
+      expect(api?.TIPOS_SINAL).toContain(sinal);
+      expect(literaisSituacao).toContain(valor);
+    }
+    const semLinha = MAPEAMENTO_SINAL_SITUACAO.filter(
+      ([sinal, valor]) => !linhaLigaTokens(promptCanonico ?? "", sinal, valor),
+    ).map(([sinal, valor]) => `${sinal}->${valor}`);
+    expect(semLinha, `pares sinal->situacao sem linha no prompt: ${semLinha.join(", ")}`).toEqual(
+      [],
+    );
+  });
+
+  it("amarra o hash ao conteúdo cru que carrega os enums de situação", () => {
+    expect(typeof promptCanonico).toBe("string");
+    const texto = promptCanonico ?? "";
+    // O hash é o sha256 do conteúdo cru do arquivo, então cobre o que o modelo lê.
+    expect(api?.PROMPT_HASH).toBe(sha?.sha256Hex(texto));
+    // Remover cada literal muda o conteúdo e, portanto, o hash: trocar o prompt
+    // invalida o cache pela versão efetiva.
+    expect(literaisSituacao.length).toBeGreaterThan(0);
+    const semCobertura = literaisSituacao.filter(
+      (token) => api?.hashDoPrompt(texto.replace(new RegExp(token, "g"), "")) === api?.PROMPT_HASH,
+    );
+    expect(
+      semCobertura,
+      `literais de situacao cuja remocao nao altera o hash: ${semCobertura.join(", ")}`,
+    ).toEqual([]);
   });
 });
