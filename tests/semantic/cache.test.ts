@@ -615,6 +615,27 @@ describe("teto-de-bytes-do-valor-de-cache", () => {
     }
   });
 
+  it("rejeita valor acima do teto sem materializar/codificar o valor inteiro", async () => {
+    expect(typeof api?.criarAdaptadorCacheSemantico).toBe("function");
+    expect(api!.LIMITE_VALOR_CACHE_BYTES).toBe(LIMITE_VALOR_CACHE_BYTES_ESPERADO);
+
+    expect(bytesUtf8(GIGANTE)).toBeGreaterThan(LIMITE_VALOR_CACHE_BYTES_ESPERADO);
+
+    const { kv } = criarKvFake({ [chaveDe(ENTRADA, BASE)]: GIGANTE });
+    const cache = api!.criarAdaptadorCacheSemantico!(kv);
+
+    // A guarda não pode codificar o valor gigante para descobrir que ele é
+    // excessivo: isso negaria o propósito do teto (§3.9).
+    const espiaoEncode = vi.spyOn(TextEncoder.prototype, "encode");
+    try {
+      await expect(cache.ler(ENTRADA, BASE)).resolves.toBeNull();
+      expect(espiaoEncode.mock.calls.map((chamada) => chamada[0])).not.toContain(GIGANTE);
+      expect(espiaoEncode).not.toHaveBeenCalled();
+    } finally {
+      espiaoEncode.mockRestore();
+    }
+  });
+
   it("volta a gravar e a servir um hit normal depois do miss por tamanho", async () => {
     expect(api!.LIMITE_VALOR_CACHE_BYTES).toBe(LIMITE_VALOR_CACHE_BYTES_ESPERADO);
 
@@ -643,5 +664,40 @@ describe("teto-de-bytes-do-valor-de-cache", () => {
     const cache = api!.criarAdaptadorCacheSemantico!(kv);
 
     expect(await cache.ler(ENTRADA, BASE)).toEqual(SINAIS_VALIDOS);
+  });
+});
+
+// Robustez do registrador injetado: a promessa "nunca lança" (§3.8) cobre
+// também a falha do próprio registrador. Se `info` (ou seu destino) lança, o
+// adaptador ainda degrada para miss na leitura e segue sem persistir na gravação.
+describe("robustez-do-registrador", () => {
+  const registradorQueLanca: RegistradorLocal = {
+    info() {
+      throw new Error("registrador indisponível");
+    },
+  };
+
+  it("degrada para miss quando o próprio registrador lança na leitura", async () => {
+    expect(typeof api?.criarAdaptadorCacheSemantico).toBe("function");
+
+    const { kv, falharLeitura } = criarKvFake();
+    falharLeitura(new Error("KV fora do ar na leitura"));
+    const cache = api!.criarAdaptadorCacheSemantico!(kv, { registrador: registradorQueLanca });
+
+    // A falha do registrador não pode substituir a degradação para miss.
+    await expect(cache.ler(ENTRADA, BASE)).resolves.toBeNull();
+  });
+
+  it("segue sem persistir quando o próprio registrador lança na gravação", async () => {
+    expect(typeof api?.criarAdaptadorCacheSemantico).toBe("function");
+
+    const { kv, armazem, falharGravacao } = criarKvFake();
+    falharGravacao(new Error("KV fora do ar na gravação"));
+    const cache = api!.criarAdaptadorCacheSemantico!(kv, { registrador: registradorQueLanca });
+
+    const lancou = await semLancar(() => cache.gravar(ENTRADA, BASE, SINAIS_VALIDOS));
+
+    expect(lancou).toBe(false);
+    expect(armazem.size).toBe(0);
   });
 });
