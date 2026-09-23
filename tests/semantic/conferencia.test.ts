@@ -2161,6 +2161,46 @@ describe("lt-retentativa-timeout-e-limites — reforço: teto absoluto de ABUSO 
     expect(quota.consumidas).toBe(0);
   });
 
+  it("observação só de espaços MULTIBYTE acima do teto bruto em bytes é recusada antes do trim", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // 40000 NBSP (U+00A0): 40000 unidades UTF-16 de `String.length` (ABAIXO do
+    // teto de 65536) mas 80000 BYTES UTF-8 (ACIMA do teto), e removida por
+    // `trim()`, ficando vazia após o trim. Uma checagem baseada em unidades
+    // UTF-16 (`String.length`) ou pós-`trim` deixaria passar este texto e o
+    // ramo de observação vazia o engoliria como `nao_aplicavel`; a medição em
+    // BYTES UTF-8 ANTES do `trim` e ANTES do ramo vazio o recusa como abuso.
+    const soEspacosMultibyte = "\u00A0".repeat(40000);
+    expect(soEspacosMultibyte.trim()).toBe("");
+    expect(soEspacosMultibyte.length).toBe(40000);
+    expect(new TextEncoder().encode(soEspacosMultibyte).length).toBeGreaterThan(
+      LIMITE_TEXTO_BRUTO_BYTES,
+    );
+
+    const guia = guiaSintetica({ observacao_recepcao: soEspacosMultibyte });
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(resultado.limitacoes).toContain("observacao_acima_do_limite");
+    expect(resultado.limitacoes).toContain("checagem_textual_incompleta");
+    expect(resultado.inferencia_textual).toBeNull();
+    // Nenhum efeito faturável: zero modelo, zero leitura/gravação, zero quota.
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(kv.leituras).toBe(0);
+    expect(kv.gravacoes).toBe(0);
+    expect(quota.consumidas).toBe(0);
+  });
+
   it("observação abaixo do teto com espaços nas pontas continua sendo enviada", async () => {
     const api = exigirSemantica();
     const catalogo = catalogoValido();
