@@ -268,6 +268,76 @@ describe("lt-schema-e-evidencia-fechados > fronteiras astrais", () => {
   });
 });
 
+// Surrogates divididos e não pareados (#ac-16, lt-schema-e-evidencia-fechados).
+// A fronteira de palavra é julgada sobre o code point completo: uma ocorrência
+// que começa ou termina DENTRO de um par surrogate válido corta um code point
+// astral e, por isso, não é uma citação contígua de verdade.
+//
+// O par dividido é travado desde o commit c5ddc18: `evidenciaEhLiteral` passou a
+// descartar a ocorrência que começa/termina no meio de um par e a seguir para a
+// próxima, fail-closed no fim do laço. PoC registrada na época — pré-fix, o texto
+// "\u{10400}abcdef" com a evidência "\uDC00abcdef" retornava { ok: true } (bug);
+// pós-fix retorna { ok: false, erro: "evidencia_invalida" }, como os casos 1–2.
+// Os casos 3–4 discriminam: um surrogate NÃO pareado não é meio de par, então a
+// fronteira é julgada sobre o code unit disponível e a evidência é aceita — só
+// um par válido (high + low adjacentes) pode marcar "meio de par".
+describe("lt-schema-e-evidencia-fechados > par surrogate dividido e não pareado", () => {
+  const EVIDENCIA = "abcdef";
+  const LETRA_ASTRAL = "\u{10400}"; // \uD801\uDC00, um par surrogate válido
+  const ALTO_ASTRAL = "\uD801";
+  const BAIXO_ASTRAL = "\uDC00";
+
+  function respostaNota(evidencia: string) {
+    return {
+      sinais: [{ tipo: "nota_administrativa", evidencia }],
+      situacao: SITUACAO_NEUTRA,
+      ambiguidades: [],
+    };
+  }
+
+  it("recusa evidência que começa no meio de um par surrogate (corta o astral)", () => {
+    // Texto "\uD801\uDC00abcdef": a evidência "\uDC00abcdef" só casa começando
+    // no low surrogate, isto é, no meio do par válido.
+    const resposta = respostaNota(`${BAIXO_ASTRAL}${EVIDENCIA}`);
+    expect(validar(resposta, `${LETRA_ASTRAL}${EVIDENCIA}`)).toEqual({
+      ok: false,
+      erro: "evidencia_invalida",
+    });
+  });
+
+  it("recusa evidência que termina no meio de um par surrogate (corta o astral)", () => {
+    // Texto "abcdef\uD801\uDC00": a evidência "abcdef\uD801" só casa terminando
+    // no high surrogate, isto é, no meio do par válido.
+    const resposta = respostaNota(`${EVIDENCIA}${ALTO_ASTRAL}`);
+    expect(validar(resposta, `${EVIDENCIA}${LETRA_ASTRAL}`)).toEqual({
+      ok: false,
+      erro: "evidencia_invalida",
+    });
+  });
+
+  it("aceita evidência seguida de high surrogate isolado (não forma par)", () => {
+    // "\uD800" sozinho não é par válido e não é \p{L}/\p{N}: a fronteira de
+    // palavra à direita é legítima.
+    const resposta = respostaNota(EVIDENCIA);
+    expect(validar(resposta, `${EVIDENCIA}\uD800`)).toEqual({
+      ok: true,
+      sinais: resposta,
+    });
+  });
+
+  it("aceita evidência precedida de low surrogate isolado (não forma par)", () => {
+    // Discriminador decisivo: "\uDC00abcdef" tem um low surrogate imediatamente
+    // antes da palavra. Se qualquer surrogate contasse como meio de par, a
+    // evidência seria recusada; como só um par válido conta, a fronteira à
+    // esquerda é válida e a evidência é aceita.
+    const resposta = respostaNota(EVIDENCIA);
+    expect(validar(resposta, `${BAIXO_ASTRAL}${EVIDENCIA}`)).toEqual({
+      ok: true,
+      sinais: resposta,
+    });
+  });
+});
+
 describe("lt-prompt-acoplado-e-anti-injecao", () => {
   it("usa a versão canônica e o hash do conteúdo do prompt", () => {
     expect(api?.VERSAO_PROMPT).toBe("observacao-v1");
@@ -518,6 +588,114 @@ describe("lt-prompt-acoplado-e-anti-injecao > situação textual", () => {
       semCobertura,
       `literais de situacao cuja remocao nao altera o hash: ${semCobertura.join(", ")}`,
     ).toEqual([]);
+  });
+});
+
+// Imutabilidade da fonte canônica de `situacao` (#ac-3; revisão final MEDIUM).
+// O `Object.freeze` PROFUNDO foi congelado no commit 9c18d07 (`VALORES_SITUACAO`,
+// cada lista e `LITERAIS_SITUACAO`). PoC registrada na época: `push` lançava
+// `TypeError` e `Object.isFrozen` era `true` em todos os níveis. `as const`/
+// `readonly` só restringem o TypeScript; sem o freeze em runtime um consumidor do
+// barrel mutaria a fonte e ela divergiria do schema Zod já construído no load do
+// módulo e do prompt versionado.
+//
+// Este bloco NÃO reenumera os literais: deriva de `valoresSituacao`,
+// `literaisSituacao` e `MAPEAMENTO_SINAL_SITUACAO` (a mesma fonte canônica) e
+// prova que o conteúdo congelado é exatamente o que o schema fechado aceita.
+describe("lt-prompt-acoplado-e-anti-injecao > fonte canônica imutável", () => {
+  const CAMPOS: ReadonlyArray<keyof ValoresSituacao> = [
+    "autorizacao",
+    "modalidade",
+    "procedimento",
+    "reagendamento",
+  ];
+
+  function campoDoValor(valor: string): keyof ValoresSituacao | undefined {
+    return CAMPOS.find((campo) => valoresSituacao[campo].includes(valor));
+  }
+
+  function situacaoCom(campo: keyof ValoresSituacao, valor: string): SituacaoTextual {
+    const situacao: SituacaoTextual = { ...SITUACAO_NEUTRA };
+    if (campo === "autorizacao") situacao.autorizacao = valor;
+    if (campo === "modalidade") situacao.modalidade = valor;
+    if (campo === "procedimento") situacao.procedimento = valor;
+    if (campo === "reagendamento") situacao.reagendamento = valor;
+    return situacao;
+  }
+
+  it("congela a fonte canônica em todos os níveis", () => {
+    // Guardas de não-vacuidade: sem elas, `Object.isFrozen(undefined)` devolveria
+    // `true` e o teste poderia passar vazio.
+    expect(api?.VALORES_SITUACAO, "VALORES_SITUACAO ausente no barrel").toBeDefined();
+    expect(literaisSituacao.length).toBeGreaterThan(0);
+    for (const campo of CAMPOS) {
+      expect(valoresSituacao[campo].length).toBeGreaterThan(0);
+    }
+
+    expect(Object.isFrozen(api?.VALORES_SITUACAO)).toBe(true);
+    for (const campo of CAMPOS) {
+      expect(Object.isFrozen(valoresSituacao[campo]), `${campo} não congelado`).toBe(true);
+    }
+    expect(Object.isFrozen(api?.LITERAIS_SITUACAO)).toBe(true);
+  });
+
+  it("rejeita mutação sem alterar o conteúdo canônico", () => {
+    expect(valoresSituacao.autorizacao.length).toBeGreaterThan(0);
+    expect(literaisSituacao.length).toBeGreaterThan(0);
+
+    const snapshotValores = JSON.parse(JSON.stringify(valoresSituacao)) as ValoresSituacao;
+    const snapshotLiterais = [...literaisSituacao];
+
+    // Módulos ES são estritos, então o esperado é `TypeError`; a asserção abaixo,
+    // porém, aceita tanto "lançou" quanto "Não alterou" — o proibido é o conteúdo
+    // mudar. Nada aqui depende do erro lançado.
+    try {
+      (valoresSituacao.autorizacao as unknown as string[]).push("valor_fora_do_contrato");
+      (valoresSituacao.autorizacao as unknown as string[])[0] = "valor_fora_do_contrato";
+      (valoresSituacao as unknown as Record<string, string[]>).autorizacao = ["mutado"];
+      (literaisSituacao as unknown as string[]).push("valor_fora_do_contrato");
+      (literaisSituacao as unknown as string[]).splice(0, 1);
+      (literaisSituacao as unknown as string[])[0] = "mutado";
+    } catch {
+      // Mutação bloqueada pelo freeze é o caminho esperado.
+    }
+
+    expect(valoresSituacao).toEqual(snapshotValores);
+    expect(literaisSituacao).toEqual(snapshotLiterais);
+  });
+
+  it("mantém aceito pelo schema fechado exatamente o conteúdo congelado", () => {
+    expect(literaisSituacao.length).toBeGreaterThan(0);
+    const evidencia = "documento novo apresentado";
+
+    for (const [sinal, valor] of MAPEAMENTO_SINAL_SITUACAO) {
+      const campo = campoDoValor(valor);
+      expect(campo, `campo de ${valor} ausente na fonte canônica`).toBeDefined();
+      if (campo === undefined) continue;
+
+      // O valor congelado, usado no par sinal->situacao, continua sendo aceito.
+      const resposta = {
+        sinais: [{ tipo: sinal, evidencia }],
+        situacao: situacaoCom(campo, valor),
+        ambiguidades: [],
+      };
+      expect(validar(resposta, evidencia), `par ${sinal}->${valor} recusado`).toEqual({
+        ok: true,
+        sinais: resposta,
+      });
+
+      // Qualquer valor fora do contrato no mesmo campo é recusado: a fonte
+      // congelada coincide com o enum fechado do schema.
+      const foraDoContrato = {
+        sinais: [{ tipo: sinal, evidencia }],
+        situacao: situacaoCom(campo, "valor_fora_do_contrato"),
+        ambiguidades: [],
+      };
+      expect(
+        validar(foraDoContrato, evidencia),
+        `valor fora do contrato aceito em ${campo}`,
+      ).toEqual({ ok: false, erro: "estrutura_invalida" });
+    }
   });
 });
 
