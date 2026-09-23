@@ -48,7 +48,9 @@
 //     quota?: QuotaDeChamadas | null;                    // consumida antes da chamada
 //     registrador?: RegistradorRedigido;                 // eventos da allowlist
 //     observador?: ObservadorContadores;                 // chamadas e cache hits efetivos
-//     timeoutMs?: number;                                // padrão 5000
+//     timeoutMs?: number;                                // padrão 5000 (por tentativa)
+//     timeoutCacheMs?: number;                           // padrão 5000 (por operação de
+//                                                        // cache: leitura e gravação)
 //     agora?: () => number;                              // relógio monotônico injetável
 //     classificarFalha?: (erro: unknown) => ClassificacaoFalha; // fechado e injetável
 //   }
@@ -69,6 +71,141 @@
 // - `quota_de_chamadas_excedida` é o nome resolvido nesta tarefa para a limitação
 //   de quota que a spec deixa sem nome literal (`observacao_acima_do_limite` é o
 //   nome literal de §3.9 para o limite de entrada).
+//
+// Regressões acrescentadas na retomada desta MESMA tarefa (revisão final):
+// 1. Retentativa exige também o `status` transitório PRÓPRIO do erro, além da
+//    classificação `transporte`: só `status` 429 ou ≥500 retenta. Um erro SEM
+//    `status`, ou com status não transitório (400), ainda que o classificador
+//    injetado diga `transporte`, não retenta e não consome o segundo roteiro
+//    (§3.9, §7.13, #ac-17).
+// 2. O único limite SEMÂNTICO de entrada do contrato §3.9 é o TRIMADO: 1000
+//    caracteres para a observação (após `trim`) e 200 para
+//    convênio/procedimento (após `trim`). Preservar o texto original é o
+//    julgamento aprovado e `trim` serve apenas para vazio e limites. Uma
+//    observação com 4097 caracteres crus mas exatamente 1000 após `trim` é
+//    enviada ao modelo — fica ABAIXO do teto absoluto de ABUSO documentado no
+//    item 11. O risco residual de custo/entrada crua pertence sobretudo ao
+//    limite de corpo do entrypoint HTTP (issues #4/#6); o teto absoluto apenas
+//    fecha o caso patológico sem reintroduzir o teto cru pequeno da 3ª rodada.
+// 3. A quota padrão vive no módulo: uma ÚNICA instância (60 chamadas / 60000 ms)
+//    usada quando `quota` é OMITIDA ou `null`, nunca criada por chamada. A prova
+//    é determinística (não depende do consumo de casos anteriores): recarrega o
+//    módulo com `vi.resetModules()` + glob não-eager e exige EXATAMENTE 60
+//    aceites e a recusa da 61ª. Fica por ÚLTIMO no arquivo por recarregar o
+//    módulo.
+// 4. Logging best-effort (revisão final): um `RegistradorRedigido` cujo `info`
+//    sempre lança nunca pode rejeitar `conferirGuia` — em sucesso, em falha
+//    não transitória e em recusa de quota, a Promise precisa resolver no
+//    `ResultadoVerificacao` aprovado.
+// 5. Contagem única da recusa de quota (revisão final): a orquestração
+//    registra `registrarRecusaQuota()` e emite `quota_recusada` exatamente uma
+//    vez por recusa. Uma quota fake/não reportante ainda precisa ser contada
+//    pela orquestração; já uma quota criada COM o observador se auto-reporta
+//    (`notificaRecusaNoObservador === true`) e a orquestração NÃO pode contar
+//    de novo — com o MESMO observador nos dois lados, uma recusa é uma recusa.
+// 6. Relógio hostil (revisão final): `agora()` alimenta apenas telemetria
+//    (`duracao_ms`); um relógio que lança é degradável com segurança — a
+//    conferência resolve no `ResultadoVerificacao` aprovado em sucesso e em
+//    falha, nunca rejeita a Promise.
+// 7. Cache que nunca responde (5ª revisão) — §3.8 determina degradação
+//    best-effort também para o cache: `cache.ler` e `cache.gravar` são
+//    aguardados com um limite temporal CONFIGURÁVEL por operação
+//    (`timeoutCacheMs`, padrão 5000 ms), o mesmo já usado por tentativa. Uma
+//    leitura que não responde dentro do prazo vira MISS sem rejeitar; uma
+//    gravação que não responde é ABANDONADA dentro do prazo — a conferência
+//    não a aguarda mais, devolve o resultado `completa` da extração válida e
+//    emite `cache_gravacao_falhou`. Um KV que aceita a chamada e NUNCA resolve
+//    não pode bloquear a conferência indefinidamente. Os eventos redigidos
+//    `cache_leitura_falhou`/`cache_gravacao_falhou` (estado/código
+//    `cache_indisponivel`/prefixo da chave, sem corpo nem chave plena) e a
+//    regra de nunca lançar continuam válidos; por isso ficam por ÚLTIMO os
+//    testes que recarregam o módulo.
+//
+// 8. Persistência tardia honesta (6ª revisão): `timeoutCacheMs` limita a
+//    ESPERA, não a operação de armazenamento. Como o timeout não cancela
+//    `cache.gravar`, uma gravação cujo `put` só conclua DEPOIS do prazo ainda
+//    pode persistir best-effort. O comportamento fixado é: (a) a conferência
+//    abandona a espera no prazo, resolve `completa` e emite EXATAMENTE um
+//    `cache_gravacao_falhou` (`cache_indisponivel`); (b) o resultado já
+//    devolvido e o evento emitido nunca mudam por causa da conclusão tardia;
+//    (c) a persistência tardia pode ocorrer, sem rejeição e sem nova chamada.
+//    A redação anterior ("conclui sem persistir") prometia mais do que o
+//    mecanismo de corrida pode garantir.
+//
+// 9. Adaptador de cache malformado devolvendo não-Promise (6ª revisão): o
+//    contrato do adaptador é `Promise`-retornante; um `ler`/`gravar` estrutural
+//    que devolva `null`/`undefined` precisa ser ASSIMILADO como valor resolvido
+//    (miss / gravação best-effort normal), nunca virar `TypeError` que escapa de
+//    `conferirGuia`. Um não-Promise não pode rejeitar a conferência: a
+//    interpretação segue e o resultado permanece `completa`.
+//
+// 10. Valor de cache LIDO mas INVÁLIDO (7ª revisão): mesmo um `ler` estrutural
+//     que RESOLVA um valor truthy que não é `SinaisObservacao` (`{}`, ou a forma
+//     esperada com campos `undefined`) precisa passar pela MESMA validação de
+//     schema/evidência que §3.8 exige para a leitura de cache. Um valor
+//     inválido/hostil é MISS, nunca decisão: nada de `TypeError` de acesso a
+//     propriedade escapando de `conferirGuia` nem de hit aceito só por
+//     truthiness. A conferência degrada para a extração, invoca o interpretador
+//     EXATAMENTE uma vez e entrega `completa`.
+//
+// 11. Teto ABSOLUTO de ABUSO em BYTES UTF-8 (reconciliação das visões
+//     anteriores), aplicado POR CAMPO CRU enviado ao provedor (observação,
+//     convênio e procedimento): `LIMITE_TEXTO_BRUTO_BYTES = 64 * 1024` (65536)
+//     é um teto de abuso sobre o texto CRU de CADA campo, medido em BYTES UTF-8
+//     (nunca em unidades UTF-16 de `String.length`) ANTES de trim/cache/hash/
+//     envio. Acima dele a conferência falha fechada sem nenhuma chamada ao
+//     modelo e sem nenhuma leitura de cache; a observação acima do teto carrega
+//     `observacao_acima_do_limite`, enquanto convênio/procedimento acima do teto
+//     NÃO introduzem código novo de limitação (espelham o transbordo de contexto
+//     pós-trim: `incompleta` + `checagem_textual_incompleta` apenas). No limite
+//     ou abaixo, nada muda: o texto cru é preservado na chave e no payload e os
+//     limites SEMÂNTICOS trimados (1000 observação, 200 contexto) continuam
+//     sendo os únicos limites de entrada — 4097 crus com 1000 trimados e um
+//     convênio de ~1009 crus com 9 trimados seguem enviados (não se restaura o
+//     teto cru pequeno da 3ª rodada, que recusava entradas válidas). O teto roda
+//     ANTES de qualquer `trim()` e ANTES do ramo de observação vazia: uma
+//     observação acima do teto — inclusive uma composta SÓ de espaços — produz
+//     `incompleta` com `observacao_acima_do_limite`, e um contexto acima do teto
+//     produz `incompleta` MESMO quando a observação fica vazia após `trim`. No
+//     limite ou abaixo dele, nada muda: a observação vazia após `trim` continua
+//     `nao_aplicavel` (§3.6) e os limites SEMÂNTICOS trimados (1000/200)
+//     continuam sendo os únicos limites de entrada.
+// 12. Rejeição de ABUSO produz resultado LIMITADO (revisão de segurança):
+//     quando convênio/procedimento excedem o teto de bytes, o motor
+//     determinístico NÃO pode receber o campo cru para interpolar em
+//     `motivos[].evidencia` (`O convênio "<campo>" não consta no catálogo.`).
+//     Caso contrário um campo de vários MB rejeitado gera um resultado de
+//     vários MB (amplificação de memória/resposta) e devolve o corpo rejeitado
+//     ao cliente. A correção aprovada preserva os códigos determinísticos
+//     (`PENDENTE`/`incompleta`/`checagem_textual_incompleta`) com uma
+//     representação LIMITADA, sem expor o valor acima do teto, mantendo
+//     intactos cache, quota e provedor (zero leituras e zero chamadas).
+//
+// 13. O teto de abuso precede trim E o ramo vazio — representação LIMITADA
+//     (revisão de segurança MEDIUM + reconciliação da 7ª rodada): o teto de
+//     abuso roda ANTES de qualquer `trim()` e ANTES do ramo de observação vazia,
+//     para TODOS os três campos (observação, convênio, procedimento).
+//     Consequência aprovada: um contexto acima do teto com observação vazia
+//     após `trim` (inclusive só-espaços) NÃO sai mais pelo motor puro
+//     `nao_aplicavel`; produz `PENDENTE`/`incompleta` +
+//     `checagem_textual_incompleta`, sem inferência e sem efeitos faturáveis. Se
+//     o caminho recusado passasse a guia CRUA ao motor, o campo gigante de
+//     convênio/procedimento ainda seria interpolado em `motivos[].evidencia`
+//     (`O convênio "<campo>" não consta no catálogo.`), devolvendo o corpo
+//     rejeitado ao cliente. A correção preserva os códigos determinísticos
+//     (`convenio_nao_catalogado`/`procedimento_nao_catalogado`, sem falso
+//     `*_ausente`) com uma representação LIMITADA (marcador fixo): o corpo
+//     rejeitado nunca é interpolado nem exposto. Abaixo do teto, a precedência
+//     do vazio (§3.6) continua: observação só-espaços segue `nao_aplicavel`.
+// 14. Envelope malformado do provedor (reforço da revisão adversarial): a
+//     resposta RESOLVIDA pelo `extrair` é entrada NÃO CONFIÁVEL e a fronteira é
+//     a resposta do provedor, não o objeto interno. `null`, um primitivo ou um
+//     objeto com acessor que lança em `texto`/`modelo`/`promptVersao` é uma
+//     resposta SCHEMA-INVÁLIDA e precisa fechar como `PENDENTE`/`incompleta`
+//     com o motivo determinístico `checagem_textual_incompleta` — NUNCA
+//     rejeitar a Promise de `conferirGuia`. A tentativa ACONTECEU, então
+//     `inferencia_textual` vem da IDENTIDADE CONFIGURADA (a do envelope é
+//     ilegível), sem retentativa (exatamente UMA chamada) e sem gravar cache.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import regrasRaw from "../../docs/fontes/regras_convenio.json?raw";
@@ -265,6 +402,16 @@ interface OpcoesConferencia {
   registrador?: RegistradorRedigido;
   observador?: ObservadorContadores;
   timeoutMs?: number;
+  /**
+   * Limite temporal, em ms, de CADA operação de cache (leitura e gravação);
+   * padrão `TIMEOUT_PADRAO_MS` (5000). Limita a ESPERA: um cache que não
+   * responda no prazo degrada para miss (leitura) ou é ABANDONADO (gravação,
+   * com `cache_gravacao_falhou`), sempre com resultado `completa`/degradado —
+   * nunca falha da conferência. O timeout não cancela a operação de
+   * armazenamento: uma conclusão tardia pode persistir best-effort, sem
+   * alterar o resultado já devolvido nem os eventos emitidos.
+   */
+  timeoutCacheMs?: number;
   agora?: () => number;
   classificarFalha?: (erro: unknown) => ClassificacaoFalha;
 }
@@ -507,12 +654,18 @@ interface KvFake {
   tentativasGravacao: number;
   falharLeitura(erro?: unknown): void;
   falharGravacao(erro?: unknown): void;
+  travarLeitura(): void;
+  travarGravacao(): void;
 }
 
 function criarKvFake(inicial: Record<string, string> = {}): KvFake {
   const armazem = new Map<string, string>(Object.entries(inicial));
   let erroLeitura: unknown = null;
   let erroGravacao: unknown = null;
+  // Operações que aceitam a chamada e NUNCA resolvem: exercitam o limite
+  // temporal por operação de cache sem tocar os demais testes.
+  let leituraPendente = false;
+  let gravacaoPendente = false;
   const estado = {
     leituras: 0,
     gravacoes: 0,
@@ -522,6 +675,9 @@ function criarKvFake(inicial: Record<string, string> = {}): KvFake {
   const kv: BindingCacheSemantico = {
     async get(chave) {
       estado.leituras += 1;
+      if (leituraPendente) {
+        return new Promise<string | null>(() => {});
+      }
       if (erroLeitura) {
         throw erroLeitura;
       }
@@ -529,6 +685,9 @@ function criarKvFake(inicial: Record<string, string> = {}): KvFake {
     },
     async put(chave, valor) {
       estado.tentativasGravacao += 1;
+      if (gravacaoPendente) {
+        return new Promise<void>(() => {});
+      }
       if (erroGravacao) {
         throw erroGravacao;
       }
@@ -557,6 +716,12 @@ function criarKvFake(inicial: Record<string, string> = {}): KvFake {
     },
     falharGravacao(erro = new Error("KV indisponível na gravação")) {
       erroGravacao = erro;
+    },
+    travarLeitura() {
+      leituraPendente = true;
+    },
+    travarGravacao() {
+      gravacaoPendente = true;
     },
   };
 }
@@ -985,9 +1150,16 @@ describe("lt-conferencia-vazio-cache-e-falhas", () => {
     const kv = criarKvFake();
     const cache = api.criarAdaptadorCacheSemantico(kv.kv);
     const observador = criarObservadorFake();
-    // A quota real é esgotada antes da conferência; a próxima tentativa é recusada.
-    const quotaReal = api.criarQuotaDeChamadas({ limite: 1, observador: observador.observador });
+    // A quota real é esgotada antes da conferência; a próxima tentativa é
+    // recusada. A quota injetada NÃO conhece o observador: a contagem única da
+    // recusa é responsabilidade da orquestração, não da quota (evita
+    // dupla contagem que a própria orquestração não tem como detectar).
+    const quotaReal = api.criarQuotaDeChamadas({ limite: 1 });
     expect(quotaReal.consumir()).toBe(true);
+    const emitidos: EventoRedigido[] = [];
+    const registrador = api.criarRegistradorRedigido((evento) => {
+      emitidos.push(evento);
+    });
     const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
 
     const resultado = await api.conferirGuia(guia, catalogo, {
@@ -995,6 +1167,7 @@ describe("lt-conferencia-vazio-cache-e-falhas", () => {
       cache,
       quota: quotaReal,
       observador: observador.observador,
+      registrador,
     });
 
     expect(resultado.decisao).toBe("PENDENTE");
@@ -1005,7 +1178,12 @@ describe("lt-conferencia-vazio-cache-e-falhas", () => {
     // Recusa antes da chamada: zero chamadas e nenhuma tentativa registrada.
     expect(interpretador.chamadas).toHaveLength(0);
     expect(observador.chamadas).toBe(0);
+    // Contagem única da recusa: a orquestração registra a métrica uma vez e
+    // emite o evento `quota_recusada` exatamente uma vez.
     expect(observador.recusasQuota).toBe(1);
+    expect(
+      emitidos.map((evento) => evento.evento).filter((nome) => nome === "quota_recusada"),
+    ).toHaveLength(1);
     expect(resultado.inferencia_textual).toBeNull();
     // Os achados determinísticos já calculados continuam preservados.
     expect(motivo(resultado, "autorizacao_vencida")).toBeDefined();
@@ -1501,5 +1679,1409 @@ describe("lt-jornadas-administrativa-particular-falha", () => {
     for (const espiao of espioes) {
       expect(espiao).not.toHaveBeenCalled();
     }
+  });
+});
+
+describe("lt-retentativa-timeout-e-limites — reforço: retentativa exige status transitório próprio do erro", () => {
+  it("erro sem status cujo classificador diz transporte não retenta nem consome o segundo roteiro", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    const erroSemStatus = new Error("falha sem status mas classificada como transporte");
+    const interpretador = criarInterpretadorFake([
+      erroSemStatus,
+      resposta(api, SINAIS_PARTICULAR),
+    ]);
+
+    const classificados: unknown[] = [];
+    const classificarFalha = (erro: unknown): ClassificacaoFalha => {
+      classificados.push(erro);
+      return "transporte";
+    };
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      classificarFalha,
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    // O classificador injetado foi consultado, mas a classificação `transporte`
+    // sozinha não autoriza retentativa: falta o `status` transitório próprio.
+    expect(classificados).toEqual([erroSemStatus]);
+    // Uma única chamada: o segundo passo do roteiro nunca é consumido.
+    expect(interpretador.chamadas).toHaveLength(1);
+    expect(interpretador.eventos).toEqual(["inicio:1", "fim:1"]);
+  });
+
+  it("erro com status próprio não transitório (400) e classificador transporte também não retenta", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    const erroQuatrocentos = Object.assign(new Error("recusado"), { status: 400 });
+    const interpretador = criarInterpretadorFake([
+      erroQuatrocentos,
+      resposta(api, SINAIS_PARTICULAR),
+    ]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      classificarFalha: () => "transporte",
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(resultado.limitacoes).toContain("checagem_textual_incompleta");
+    expect(interpretador.chamadas).toHaveLength(1);
+    expect(interpretador.eventos).toEqual(["inicio:1", "fim:1"]);
+  });
+});
+
+describe("lt-retentativa-timeout-e-limites — reforço: 4097 crus com 1000 trimados ficam abaixo do teto de ABUSO", () => {
+  // §3.9 fixa o limite SEMÂNTICO TRIMADO de 1000 caracteres para a observação
+  // (e 200 para convênio/procedimento). O texto original é preservado e este
+  // caso (4097 crus com 1000 trimados) fica ABAIXO do teto absoluto de ABUSO
+  // (`LIMITE_TEXTO_BRUTO_BYTES`, 64 KiB UTF-8) exercido no describe seguinte —
+  // não se restaura o teto cru pequeno da 3ª rodada. O risco residual de
+  // custo/corpo pertence sobretudo ao limite do entrypoint HTTP (issues
+  // #4/#6).
+  it("observação com 4097 caracteres CRUS e exatamente 1000 trimados é enviada ao modelo", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    const observacaoCrua = " ".repeat(3097) + "a".repeat(LIMITE_ENTRADA);
+    expect(observacaoCrua).toHaveLength(4097);
+    expect(observacaoCrua.trim()).toHaveLength(LIMITE_ENTRADA);
+
+    const guia = guiaSintetica({ observacao_recepcao: observacaoCrua });
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+    });
+
+    // Acima de 4096 caracteres crus, mas com 1000 trimados: sem teto cru, a
+    // observação segue para o modelo exatamente uma vez.
+    expect(interpretador.chamadas).toHaveLength(1);
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(resultado.limitacoes).not.toContain("observacao_acima_do_limite");
+  });
+});
+
+describe("lt-retentativa-timeout-e-limites — reforço: teto absoluto de ABUSO em bytes UTF-8", () => {
+  // Reconciliação das visões anteriores: NÃO se restaura o teto cru pequeno da
+  // 3ª rodada (que recusava entradas válidas como 4097 crus com 1000 após
+  // `trim`); em vez disso há um teto ABSOLUTO de abuso alinhado ao limite de
+  // corpo HTTP aprovado. `LIMITE_TEXTO_BRUTO_BYTES = 64 * 1024` (65536) BYTES
+  // UTF-8 medidos no texto CRU de CADA campo do payload do provedor
+  // (observação, convênio, procedimento) antes de trim/cache/hash/envio e ANTES
+  // do ramo de observação vazia (§3.6). Acima
+  // dele: `incompleta` sem chamada ao modelo e sem leitura de cache. Na
+  // observação a limitação é `observacao_acima_do_limite`; em convênio/
+  // procedimento não há código novo (só `checagem_textual_incompleta`, como no
+  // transbordo pós-trim de 200). No limite ou abaixo, nada muda: o texto cru é
+  // preservado na chave/payload e os limites SEMÂNTICOS trimados (1000/200)
+  // continuam sendo os únicos limites de entrada. A medição é em BYTES UTF-8,
+  // nunca em unidades UTF-16 de `String.length`: `á` custa 2 bytes.
+  const LIMITE_TEXTO_BRUTO_BYTES = 64 * 1024;
+
+  it("padding de espaços acima do teto absoluto não lê cache, não chama o modelo e produz incompleta", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // 65537 espaços + 1 letra: 65538 BYTES UTF-8 crus, mas comprimento TRIMADO
+    // 1 (passaria o limite semântico). Construído por `repeat`, sem concatenar
+    // strings gigantes.
+    const observacaoCrua = " ".repeat(LIMITE_TEXTO_BRUTO_BYTES + 1) + "a";
+    expect(observacaoCrua).toHaveLength(LIMITE_TEXTO_BRUTO_BYTES + 2);
+    expect(observacaoCrua.trim()).toHaveLength(1);
+
+    const guia = guiaSintetica({ observacao_recepcao: observacaoCrua });
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(resultado.limitacoes).toContain("observacao_acima_do_limite");
+    // O teto precede o modelo: nenhuma tentativa chega ao interpretador.
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(resultado.inferencia_textual).toBeNull();
+    // E precede também a leitura de cache (e o hash que ela recalcula).
+    expect(kv.leituras).toBe(0);
+  });
+
+  it("4097 caracteres crus com exatamente 1000 trimados ficam abaixo do teto e são enviados", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    const observacaoCrua = " ".repeat(3097) + "a".repeat(LIMITE_ENTRADA);
+    expect(observacaoCrua).toHaveLength(4097);
+    expect(observacaoCrua.trim()).toHaveLength(LIMITE_ENTRADA);
+    // Abaixo do teto absoluto de abuso: o limite SEMÂNTICO trimado é o único.
+    expect(observacaoCrua.length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+
+    const guia = guiaSintetica({ observacao_recepcao: observacaoCrua });
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+    });
+
+    expect(interpretador.chamadas).toHaveLength(1);
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(resultado.limitacoes).not.toContain("observacao_acima_do_limite");
+  });
+
+  it("o teto mede BYTES UTF-8: 66000 bytes em 65000 unidades UTF-16 é recusado", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // 64000 espaços + 1000 `á`: 65000 unidades UTF-16 (ABAIXO de 65536) mas
+    // 64000 + 2*1000 = 66000 BYTES UTF-8 (ACIMA do teto). Só uma medição em
+    // bytes UTF-8 recusa este caso; `String.length` o enviaria ao modelo.
+    const observacaoCrua = " ".repeat(64000) + "á".repeat(1000);
+    expect(observacaoCrua).toHaveLength(65000);
+    expect(new TextEncoder().encode(observacaoCrua)).toHaveLength(66000);
+
+    const guia = guiaSintetica({ observacao_recepcao: observacaoCrua });
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(resultado.limitacoes).toContain("observacao_acima_do_limite");
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(resultado.inferencia_textual).toBeNull();
+    expect(kv.leituras).toBe(0);
+  });
+
+  it("exatamente 65536 BYTES UTF-8 e 1000 após trim continua sendo enviado (limite honesto)", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // 63536 espaços + 1000 `á`: 63536 + 2000 = 65536 BYTES UTF-8, exatamente no
+    // teto (não acima) e exatamente 1000 após `trim`. O limite é honesto: a
+    // observação ainda é enviada.
+    const observacaoCrua = " ".repeat(63536) + "á".repeat(1000);
+    expect(new TextEncoder().encode(observacaoCrua)).toHaveLength(LIMITE_TEXTO_BRUTO_BYTES);
+    expect(observacaoCrua.trim()).toHaveLength(LIMITE_ENTRADA);
+
+    const guia = guiaSintetica({ observacao_recepcao: observacaoCrua });
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+    });
+
+    expect(interpretador.chamadas).toHaveLength(1);
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(resultado.limitacoes).not.toContain("observacao_acima_do_limite");
+  });
+
+  it("convênio com padding de espaços acima do teto de abuso falha fechada sem nova limitação de contexto", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // 65537 espaços + `X`: 65538 BYTES UTF-8 crus no campo de convênio, mas
+    // comprimento TRIMADO 1 (passaria o limite semântico de 200). O payload do
+    // provedor serializa convênio e procedimento além da observação, então o
+    // mesmo teto de abuso mede CADA campo cru.
+    const convenioCru = " ".repeat(LIMITE_TEXTO_BRUTO_BYTES + 1) + "X";
+    expect(new TextEncoder().encode(convenioCru)).toHaveLength(LIMITE_TEXTO_BRUTO_BYTES + 2);
+    expect(convenioCru.trim()).toHaveLength(1);
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_ADMIN, convenio: convenioCru });
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_ADMIN)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    // O teto precede cache e modelo: nada é lido e nada é enviado.
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(kv.leituras).toBe(0);
+    expect(resultado.inferencia_textual).toBeNull();
+    // Transbordo de contexto NÃO introduz código novo: só a incompletude textual.
+    expect(resultado.limitacoes).toContain("checagem_textual_incompleta");
+    expect(resultado.limitacoes).not.toContain("observacao_acima_do_limite");
+  });
+
+  it("procedimento com padding de espaços acima do teto de abuso falha fechada sem nova limitação de contexto", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // 65537 espaços + `9`: 65538 BYTES UTF-8 crus no campo de procedimento, com
+    // comprimento TRIMADO 1.
+    const procedimentoCru = " ".repeat(LIMITE_TEXTO_BRUTO_BYTES + 1) + "9";
+    expect(new TextEncoder().encode(procedimentoCru)).toHaveLength(LIMITE_TEXTO_BRUTO_BYTES + 2);
+    expect(procedimentoCru.trim()).toHaveLength(1);
+
+    const guia = guiaSintetica({
+      observacao_recepcao: TEXTO_ADMIN,
+      procedimento_codigo: procedimentoCru,
+    });
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_ADMIN)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(kv.leituras).toBe(0);
+    expect(resultado.inferencia_textual).toBeNull();
+    expect(resultado.limitacoes).toContain("checagem_textual_incompleta");
+    expect(resultado.limitacoes).not.toContain("observacao_acima_do_limite");
+  });
+
+  it("convênio com padding abaixo do teto continua sendo enviado (não restaura o teto cru pequeno)", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // ~1009 BYTES UTF-8 crus, mas 9 após `trim` ("Vitalcard"): MUITO abaixo do
+    // teto de abuso. O teto apenas limita o abuso; NÃO restaura o teto cru
+    // pequeno removido na 3ª rodada (que recusava entradas válidas).
+    const convenioCru = " ".repeat(1000) + "Vitalcard";
+    expect(convenioCru).toHaveLength(1009);
+    expect(convenioCru.trim()).toBe("Vitalcard");
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_ADMIN, convenio: convenioCru });
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_ADMIN)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+    });
+
+    // Abaixo do teto: o convênio CRU é enviado ao provedor exatamente uma vez.
+    expect(interpretador.chamadas).toHaveLength(1);
+    expect(interpretador.chamadas[0]?.convenio).toBe(convenioCru);
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(resultado.limitacoes).not.toContain("observacao_acima_do_limite");
+  });
+
+  it("convênio ou procedimento acima do teto produz resultado LIMITADO que não expõe o corpo rejeitado", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // Sentinela genuinamente grande: 200000 espaços + `X` ≈ 200001 BYTES UTF-8
+    // crus no campo (bem acima de 64 KiB), mas comprimento TRIMADO 1 (passaria
+    // o limite SEMÂNTICO de 200). O motor determinístico interpola o campo cru
+    // em `motivos[].evidencia` (`O convênio "<campo>" não consta no
+    // catálogo.`); sem a correção, o resultado rejeitado carrega o corpo
+    // inteiro de ~200 kB (amplificação de memória/resposta). Construído por
+    // `repeat`, sem concatenar strings gigantes.
+    const gigante = " ".repeat(200_000) + "X";
+    expect(new TextEncoder().encode(gigante).length).toBeGreaterThan(64 * 1024);
+    expect(gigante.trim()).toHaveLength(1);
+
+    const casos: Array<{
+      rotulo: string;
+      codigoEsperado: string;
+      overrides: Partial<Record<Coluna, string>>;
+    }> = [
+      {
+        rotulo: "convênio",
+        codigoEsperado: "convenio_nao_catalogado",
+        overrides: { observacao_recepcao: TEXTO_ADMIN, convenio: gigante },
+      },
+      {
+        rotulo: "procedimento",
+        codigoEsperado: "procedimento_nao_catalogado",
+        overrides: { observacao_recepcao: TEXTO_ADMIN, procedimento_codigo: gigante },
+      },
+    ];
+
+    for (const caso of casos) {
+      const guia = guiaSintetica(caso.overrides);
+      const kv = criarKvFake();
+      const quota = criarQuotaFake();
+      const interpretador = criarInterpretadorFake([resposta(api, SINAIS_ADMIN)]);
+
+      const resultado = await api.conferirGuia(guia, catalogo, {
+        interpretador: interpretador.interpretador,
+        cache: api.criarAdaptadorCacheSemantico(kv.kv),
+        quota: quota.quota,
+      });
+
+      // O teto precede cache e modelo: nada é lido, nada é gravado, nada é
+      // enviado e nenhuma quota é consumida.
+      expect(interpretador.chamadas, caso.rotulo).toHaveLength(0);
+      expect(kv.leituras, caso.rotulo).toBe(0);
+      expect(kv.gravacoes, caso.rotulo).toBe(0);
+      expect(quota.consumidas, caso.rotulo).toBe(0);
+      expect(resultado.inferencia_textual, caso.rotulo).toBeNull();
+
+      // Códigos determinísticos preservados: fail-closed com a limitação textual.
+      expect(resultado.decisao, caso.rotulo).toBe("PENDENTE");
+      expect(resultado.checagem_textual, caso.rotulo).toBe("incompleta");
+      expect(resultado.limitacoes, caso.rotulo).toContain("checagem_textual_incompleta");
+      expect(codigos(resultado), caso.rotulo).toContain(caso.codigoEsperado);
+
+      // A representação é LIMITADA: o campo rejeitado nunca chega à evidência,
+      // nem truncado no prefixo longo.
+      const serializado = JSON.stringify(resultado);
+      expect(serializado.length, caso.rotulo).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+      expect(serializado, caso.rotulo).not.toContain(gigante);
+      expect(serializado, caso.rotulo).not.toContain(gigante.slice(0, 1024));
+    }
+  });
+
+  it("observação vazia com convênio ou procedimento acima do teto devolve resultado LIMITADO sem expor o corpo", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // Reconciliação da 7ª rodada: o teto de abuso roda ANTES de qualquer `trim()`
+    // e ANTES do ramo de observação vazia, para os três campos. Então um contexto
+    // acima do teto com observação vazia após `trim` NÃO sai mais pelo motor puro
+    // `nao_aplicavel`: produz `PENDENTE`/`incompleta` + `checagem_textual_incompleta`,
+    // sem inferência e sem efeitos faturáveis. E o caminho recusado NÃO pode
+    // passar a guia CRUA ao motor: um convênio/procedimento acima do teto seria
+    // interpolado em `motivos[].evidencia` e devolveria o corpo rejeitado.
+    // Sentinela genuinamente grande: 200000 espaços + `X` ≈ 200001 BYTES UTF-8
+    // crus (bem acima de 64 KiB), mas comprimento TRIMADO 1. Construído por
+    // `repeat`, sem concatenar strings gigantes.
+    const gigante = " ".repeat(200_000) + "X";
+    expect(new TextEncoder().encode(gigante).length).toBeGreaterThan(64 * 1024);
+    expect(gigante.trim()).toHaveLength(1);
+
+    const casos: Array<{
+      rotulo: string;
+      codigoEsperado: string;
+      codigoAusenteProibido: string;
+      overrides: Partial<Record<Coluna, string>>;
+    }> = [
+      {
+        rotulo: "convênio",
+        codigoEsperado: "convenio_nao_catalogado",
+        codigoAusenteProibido: "convenio_ausente",
+        overrides: { observacao_recepcao: "   ", convenio: gigante },
+      },
+      {
+        rotulo: "procedimento",
+        codigoEsperado: "procedimento_nao_catalogado",
+        codigoAusenteProibido: "procedimento_ausente",
+        overrides: { observacao_recepcao: "   ", procedimento_codigo: gigante },
+      },
+    ];
+
+    for (const caso of casos) {
+      const guia = guiaSintetica(caso.overrides);
+      const kv = criarKvFake();
+      const quota = criarQuotaFake();
+      const interpretador = criarInterpretadorFake([resposta(api, SINAIS_ADMIN)]);
+
+      const resultado = await api.conferirGuia(guia, catalogo, {
+        interpretador: interpretador.interpretador,
+        cache: api.criarAdaptadorCacheSemantico(kv.kv),
+        quota: quota.quota,
+      });
+
+      // O teto precede cache, quota e modelo; a observação vazia NÃO resgata a
+      // recusa: `incompleta` com a limitação textual, sem inferência e sem
+      // qualquer efeito colateral faturável.
+      expect(resultado.decisao, caso.rotulo).toBe("PENDENTE");
+      expect(resultado.checagem_textual, caso.rotulo).toBe("incompleta");
+      expect(resultado.limitacoes, caso.rotulo).toContain("checagem_textual_incompleta");
+      expect(resultado.inferencia_textual, caso.rotulo).toBeNull();
+      expect(interpretador.chamadas, caso.rotulo).toHaveLength(0);
+      expect(kv.leituras, caso.rotulo).toBe(0);
+      expect(kv.gravacoes, caso.rotulo).toBe(0);
+      expect(quota.consumidas, caso.rotulo).toBe(0);
+
+      // O marcador limitado é não vazio e não catalogado: o código
+      // determinístico é preservado e nenhum falso `*_ausente` aparece.
+      expect(codigos(resultado), caso.rotulo).toContain(caso.codigoEsperado);
+      expect(codigos(resultado), caso.rotulo).not.toContain(caso.codigoAusenteProibido);
+
+      // A representação é LIMITADA: o campo rejeitado nunca chega à evidência,
+      // nem truncado no prefixo longo.
+      const serializado = JSON.stringify(resultado);
+      expect(serializado.length, caso.rotulo).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+      expect(serializado, caso.rotulo).not.toContain(gigante);
+      expect(serializado, caso.rotulo).not.toContain(gigante.slice(0, 1024));
+    }
+  });
+
+  it("observação composta só de espaços acima do teto bruto é recusada antes do trim e do ramo vazio", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // 70000 espaços: 70000 BYTES UTF-8 crus (> 65536) e VAZIA após `trim`. Se o
+    // ramo vazio (ou o trim) precedesse o teto, sairia `nao_aplicavel`; com o
+    // teto ANTES do `trim` e do ramo vazio, é recusada como abuso. Construído
+    // por `repeat`.
+    const observacaoSoEspacos = " ".repeat(70000);
+    expect(new TextEncoder().encode(observacaoSoEspacos).length).toBeGreaterThan(
+      LIMITE_TEXTO_BRUTO_BYTES,
+    );
+    expect(observacaoSoEspacos.trim()).toHaveLength(0);
+
+    const guia = guiaSintetica({ observacao_recepcao: observacaoSoEspacos });
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(resultado.limitacoes).toContain("observacao_acima_do_limite");
+    expect(resultado.limitacoes).toContain("checagem_textual_incompleta");
+    expect(resultado.inferencia_textual).toBeNull();
+    // Nenhum efeito faturável: zero modelo, zero leitura/gravação, zero quota.
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(kv.leituras).toBe(0);
+    expect(kv.gravacoes).toBe(0);
+    expect(quota.consumidas).toBe(0);
+  });
+
+  it("observação só de espaços MULTIBYTE acima do teto bruto em bytes é recusada antes do trim", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // 40000 NBSP (U+00A0): 40000 unidades UTF-16 de `String.length` (ABAIXO do
+    // teto de 65536) mas 80000 BYTES UTF-8 (ACIMA do teto), e removida por
+    // `trim()`, ficando vazia após o trim. Uma checagem baseada em unidades
+    // UTF-16 (`String.length`) ou pós-`trim` deixaria passar este texto e o
+    // ramo de observação vazia o engoliria como `nao_aplicavel`; a medição em
+    // BYTES UTF-8 ANTES do `trim` e ANTES do ramo vazio o recusa como abuso.
+    const soEspacosMultibyte = "\u00A0".repeat(40000);
+    expect(soEspacosMultibyte.trim()).toBe("");
+    expect(soEspacosMultibyte.length).toBe(40000);
+    expect(new TextEncoder().encode(soEspacosMultibyte).length).toBeGreaterThan(
+      LIMITE_TEXTO_BRUTO_BYTES,
+    );
+
+    const guia = guiaSintetica({ observacao_recepcao: soEspacosMultibyte });
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(resultado.limitacoes).toContain("observacao_acima_do_limite");
+    expect(resultado.limitacoes).toContain("checagem_textual_incompleta");
+    expect(resultado.inferencia_textual).toBeNull();
+    // Nenhum efeito faturável: zero modelo, zero leitura/gravação, zero quota.
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(kv.leituras).toBe(0);
+    expect(kv.gravacoes).toBe(0);
+    expect(quota.consumidas).toBe(0);
+  });
+
+  it("observação abaixo do teto com espaços nas pontas continua sendo enviada", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // 4000 espaços + TEXTO_ADMIN + 4000 espaços: ~8035 BYTES UTF-8 crus (abaixo
+    // de 64 KiB) e `trim()` igual a TEXTO_ADMIN (abaixo do limite semântico de
+    // 1000). Abaixo do teto, nada muda: o texto cru é enviado ao modelo.
+    const observacao = " ".repeat(4000) + TEXTO_ADMIN + " ".repeat(4000);
+    expect(new TextEncoder().encode(observacao).length).toBeLessThanOrEqual(
+      LIMITE_TEXTO_BRUTO_BYTES,
+    );
+    expect(observacao.trim()).toBe(TEXTO_ADMIN);
+
+    const guia = guiaSintetica({ observacao_recepcao: observacao });
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_ADMIN)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+    });
+
+    expect(interpretador.chamadas).toHaveLength(1);
+    expect(resultado.limitacoes).not.toContain("observacao_acima_do_limite");
+  });
+});
+
+describe("lt-retentativa-timeout-e-limites — reforço: relógio hostil não rejeita a conferência", () => {
+  // `agora()` alimenta apenas telemetria (`duracao_ms`). Um relógio que lança
+  // deve degradar de forma segura: a Promise resolve no `ResultadoVerificacao`
+  // aprovado, em sucesso e em falha — nunca rejeita.
+  const relogioHostil = (): number => {
+    throw new Error("relógio hostil");
+  };
+
+  it("sucesso com extração válida resolve completa mesmo com relógio que lança", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+
+    // Basta aguardar: uma rejeição por `agora()` reprova o teste.
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      agora: relogioHostil,
+    });
+
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(codigos(resultado)).toContain("modalidade_particular_contraditoria");
+  });
+
+  it("falha não transitória do modelo resolve PENDENTE/incompleta mesmo com relógio que lança", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([new Error("provedor indisponível")]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      agora: relogioHostil,
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(codigos(resultado)).toContain("checagem_textual_incompleta");
+  });
+});
+
+describe("lt-conferencia-vazio-cache-e-falhas — reforço: logging best-effort nunca rejeita a conferência", () => {
+  // Um registrador cujo `info` sempre lança não pode transformar `conferirGuia`
+  // numa Promise rejeitada: o logging é best-effort e a conferência precisa
+  // devolver seu `ResultadoVerificacao` em sucesso, falha e recusa de quota.
+  const registradorHostil: RegistradorRedigido = {
+    info() {
+      throw new Error("registrador hostil");
+    },
+  };
+
+  it("sucesso com extração válida devolve completa mesmo com registrador que sempre lança", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+
+    // Basta aguardar: uma rejeição por `info` que lança reprova o teste.
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      registrador: registradorHostil,
+    });
+
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(codigos(resultado)).toContain("modalidade_particular_contraditoria");
+  });
+
+  it("falha não transitória do modelo devolve PENDENTE/incompleta mesmo com registrador que sempre lança", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([new Error("provedor indisponível")]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      registrador: registradorHostil,
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(codigos(resultado)).toContain("checagem_textual_incompleta");
+  });
+
+  it("recusa de quota devolve PENDENTE/incompleta sem chamar o modelo mesmo com registrador que sempre lança", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    // Quota já esgotada: a próxima `consumir()` é recusada antes de qualquer envio.
+    const quotaEsgotada = criarQuotaFake(0);
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quotaEsgotada.quota,
+      registrador: registradorHostil,
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(resultado.limitacoes).toContain("quota_de_chamadas_excedida");
+    // A recusa antecede o modelo: nenhuma tentativa chega ao interpretador.
+    expect(interpretador.chamadas).toHaveLength(0);
+  });
+});
+
+describe("lt-conferencia-vazio-cache-e-falhas — reforço: recusa auto-reportante é contada uma única vez", () => {
+  // A quota criada COM o observador já notifica `registrarRecusaQuota()` em
+  // `consumir() === false` e expõe `notificaRecusaNoObservador === true`. Com o
+  // MESMO observador nos dois lados, a orquestração NÃO pode contabilizar de
+  // novo: exatamente uma recusa, um evento `quota_recusada` e zero chamadas.
+  it("quota que já se auto-reporta ao mesmo observador não é contada duas vezes pela orquestração", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({
+      observacao_recepcao: TEXTO_PARTICULAR,
+      autorizacao_validade: "2026-08-09",
+    });
+    const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    const observador = criarObservadorFake();
+    // Mesmo observador na quota e na conferência: a quota esgota e auto-reporta.
+    const quota = api.criarQuotaDeChamadas({ limite: 1, observador: observador.observador });
+    expect(quota.consumir()).toBe(true);
+    const emitidos: EventoRedigido[] = [];
+    const registrador = api.criarRegistradorRedigido((evento) => {
+      emitidos.push(evento);
+    });
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota,
+      observador: observador.observador,
+      registrador,
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(resultado.limitacoes).toContain("quota_de_chamadas_excedida");
+    // Recusa antes da chamada: zero chamadas e nenhuma tentativa registrada.
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(observador.chamadas).toBe(0);
+    // Contagem única, embora a quota também reporte a mesma recusa.
+    expect(observador.recusasQuota).toBe(1);
+    expect(
+      emitidos.map((evento) => evento.evento).filter((nome) => nome === "quota_recusada"),
+    ).toHaveLength(1);
+    expect(resultado.inferencia_textual).toBeNull();
+  });
+});
+
+describe("lt-conferencia-vazio-cache-e-falhas — reforço: cache que nunca responde expira dentro do prazo", () => {
+  // §3.8: leitura e gravação de cache são best-effort. Um KV que aceita a
+  // chamada e NUNCA resolve não pode bloquear a conferência indefinidamente:
+  // cada operação de cache tem um limite temporal CONFIGURÁVEL (padrão 5000 ms),
+  // o mesmo já aplicado a cada tentativa. Leitura expirada vira MISS; gravação
+  // expirada é ABANDONADA — a conferência não a aguarda e segue `completa`. O
+  // timeout limita só a ESPERA: como não cancela o armazenamento, uma conclusão
+  // posterior pode persistir best-effort, sem alterar o resultado devolvido nem
+  // os eventos já emitidos. Em nenhum caso a Promise rejeita ou trava. Os
+  // eventos redigidos de falha continuam no formato fechado (sem corpo da
+  // observação e sem chave plena).
+  const TIMEOUT_CACHE_CONFIGURADO = 1200;
+
+  it("leitura de cache que nunca resolve expira no padrão e a extração válida ainda produz completa", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const entrada = entradaDe(guia);
+    const kv = criarKvFake();
+    kv.travarLeitura();
+    const cache = api.criarAdaptadorCacheSemantico(kv.kv);
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+    const emitidos: EventoRedigido[] = [];
+    const registrador = api.criarRegistradorRedigido((evento) => {
+      emitidos.push(evento);
+    });
+
+    vi.useFakeTimers();
+
+    let resolvido = false;
+    const promessa = api
+      .conferirGuia(guia, catalogo, {
+        interpretador: interpretador.interpretador,
+        cache,
+        registrador,
+      })
+      .then((resultado) => {
+        resolvido = true;
+        return resultado;
+      });
+
+    // Prazo PADRÃO (TIMEOUT_PADRAO_MS = 5000): a leitura precisa expirar dentro
+    // dele. Hoje a leitura é aguardada direto, então `resolvido` continua falso.
+    await vi.advanceTimersByTimeAsync(TIMEOUT_PADRAO_MS);
+    expect(resolvido, "a leitura de cache precisa expirar dentro do prazo padrão").toBe(true);
+
+    const resultado = await promessa;
+
+    // Leitura expirada = miss: a extração é aplicada e a guia fica completa.
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(codigos(resultado)).toContain("modalidade_particular_contraditoria");
+    // Exatamente uma tentativa: nenhuma chamada extra ao modelo pelo timeout da leitura.
+    expect(interpretador.chamadas).toHaveLength(1);
+    expect(kv.leituras).toBe(1);
+
+    const falhasLeitura = emitidos.filter((evento) => evento.evento === "cache_leitura_falhou");
+    expect(falhasLeitura).toHaveLength(1);
+    const falha = falhasLeitura[0];
+    expect(falha.codigo).toBe("cache_indisponivel");
+    // Prefixo curto e observável: no máximo 12 hex, igual ao prefixo da chave,
+    // nunca a chave completa.
+    expect(falha.cache_prefixo).toMatch(/^[0-9a-f]{1,12}$/);
+    expect(falha.cache_prefixo).toBe(
+      api.montarChaveCacheSemantica(entrada, contextoConfig(api)).prefixo,
+    );
+    // Nenhum campo fora do vocabulário redigido do cache.
+    for (const chave of Object.keys(falha)) {
+      expect(["evento", "estado", "codigo", "cache_prefixo"].includes(chave)).toBe(true);
+    }
+    const serializado = JSON.stringify(emitidos);
+    expect(serializado).not.toContain(TEXTO_PARTICULAR);
+    expect(serializado).not.toContain(chaveDe(api, entrada));
+  });
+
+  it("gravação de cache que nunca resolve é abandonada no prazo configurado e conclui completa (nada persistido neste instante)", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const entrada = entradaDe(guia);
+    const kv = criarKvFake();
+    kv.travarGravacao();
+    const cache = api.criarAdaptadorCacheSemantico(kv.kv);
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+    const emitidos: EventoRedigido[] = [];
+    const registrador = api.criarRegistradorRedigido((evento) => {
+      emitidos.push(evento);
+    });
+
+    vi.useFakeTimers();
+
+    let resolvido = false;
+    const promessa = api
+      .conferirGuia(guia, catalogo, {
+        interpretador: interpretador.interpretador,
+        cache,
+        registrador,
+        // Prazo EXPLICITAMENTE configurado, distinto do padrão, para fixar a
+        // configurabilidade da operação de cache.
+        timeoutCacheMs: TIMEOUT_CACHE_CONFIGURADO,
+      })
+      .then((resultado) => {
+        resolvido = true;
+        return resultado;
+      });
+
+    await vi.advanceTimersByTimeAsync(TIMEOUT_CACHE_CONFIGURADO);
+    expect(
+      resolvido,
+      "a gravação de cache precisa expirar dentro do prazo configurado",
+    ).toBe(true);
+
+    const resultado = await promessa;
+
+    // A gravação expirada não fecha a guia: a extração válida continua completa.
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(codigos(resultado)).toContain("modalidade_particular_contraditoria");
+    expect(interpretador.chamadas).toHaveLength(1);
+    expect(kv.leituras).toBe(1);
+    // A leitura imediata funcionou: só a gravação falhou.
+    expect(emitidos.filter((evento) => evento.evento === "cache_leitura_falhou")).toHaveLength(0);
+    // Neste instante nada foi persistido: a gravação foi tentada e NUNCA
+    // resolve, então a conferência já abandonou a espera.
+    expect(kv.tentativasGravacao).toBe(1);
+    expect(kv.gravacoes).toBe(0);
+    expect(kv.armazem.size).toBe(0);
+
+    const falhasGravacao = emitidos.filter((evento) => evento.evento === "cache_gravacao_falhou");
+    expect(falhasGravacao).toHaveLength(1);
+    expect(falhasGravacao[0].codigo).toBe("cache_indisponivel");
+    expect(falhasGravacao[0].cache_prefixo).toBe(
+      api.montarChaveCacheSemantica(entrada, contextoConfig(api)).prefixo,
+    );
+    // Nenhum campo fora do vocabulário redigido do cache: a falha de gravação
+    // exposta carrega exatamente o mesmo conjunto de chaves permitidas do evento
+    // de leitura (`evento`/`estado`/`codigo`/`cache_prefixo`), nunca o corpo nem
+    // a chave plena.
+    expect(Object.keys(falhasGravacao[0]).sort()).toEqual([
+      "cache_prefixo",
+      "codigo",
+      "estado",
+      "evento",
+    ]);
+    const serializado = JSON.stringify(emitidos);
+    expect(serializado).not.toContain(TEXTO_PARTICULAR);
+    expect(serializado).not.toContain(chaveDe(api, entrada));
+  });
+
+  it("gravação de cache que conclui TARDE persiste best-effort após o prazo, sem alterar o resultado já devolvido", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const entrada = entradaDe(guia);
+    const chave = chaveDe(api, entrada);
+    const armazem = new Map<string, string>();
+    let tentativasGravacao = 0;
+    let gravacoes = 0;
+
+    // KV estrutural cujo `put` só CONCLUI um `timeoutCacheMs` depois do prazo
+    // que a conferência aguarda. O timeout limita a ESPERA, não a operação de
+    // armazenamento: a persistência pode concluir tardiamente, sem rejeitar a
+    // Promise nem alterar o resultado já entregue.
+    const kv: BindingCacheSemantico = {
+      async get() {
+        return null;
+      },
+      put(valorChave, valor) {
+        tentativasGravacao += 1;
+        return new Promise<void>((resolver) => {
+          setTimeout(() => {
+            gravacoes += 1;
+            armazem.set(valorChave, valor);
+            resolver();
+          }, 2 * TIMEOUT_CACHE_CONFIGURADO);
+        });
+      },
+    };
+
+    const cache = api.criarAdaptadorCacheSemantico(kv);
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+    const emitidos: EventoRedigido[] = [];
+    const registrador = api.criarRegistradorRedigido((evento) => {
+      emitidos.push(evento);
+    });
+
+    vi.useFakeTimers();
+
+    let resolvido = false;
+    const promessa = api
+      .conferirGuia(guia, catalogo, {
+        interpretador: interpretador.interpretador,
+        cache,
+        registrador,
+        timeoutCacheMs: TIMEOUT_CACHE_CONFIGURADO,
+      })
+      .then((resultado) => {
+        resolvido = true;
+        return resultado;
+      });
+
+    // Primeiro prazo: a conferência abandona a espera pela gravação e resolve.
+    await vi.advanceTimersByTimeAsync(TIMEOUT_CACHE_CONFIGURADO);
+    expect(
+      resolvido,
+      "a gravação de cache precisa ser abandonada dentro do prazo configurado",
+    ).toBe(true);
+
+    // Resultado capturado ANTES do segundo avanço, para provar que a
+    // persistência tardia não o altera.
+    const resultado = await promessa;
+
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(codigos(resultado)).toContain("modalidade_particular_contraditoria");
+    expect(interpretador.chamadas).toHaveLength(1);
+    expect(tentativasGravacao).toBe(1);
+    // Neste instante NADA foi persistido: a gravação ainda não concluiu.
+    expect(gravacoes).toBe(0);
+    expect(armazem.size).toBe(0);
+    const falhasGravacao = emitidos.filter((evento) => evento.evento === "cache_gravacao_falhou");
+    expect(falhasGravacao).toHaveLength(1);
+    expect(falhasGravacao[0].codigo).toBe("cache_indisponivel");
+
+    // Segundo prazo: a operação de armazenamento abandonada ainda conclui e
+    // persiste best-effort. O resultado JÁ DEVOLVIDO e o evento permanecem
+    // intactos — a conferência não muda por causa da conclusão tardia.
+    await vi.advanceTimersByTimeAsync(TIMEOUT_CACHE_CONFIGURADO);
+    expect(gravacoes).toBe(1);
+    expect(armazem.get(chave)).toBe(JSON.stringify(SINAIS_PARTICULAR));
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(codigos(resultado)).toContain("modalidade_particular_contraditoria");
+    expect(interpretador.chamadas).toHaveLength(1);
+    expect(emitidos.filter((evento) => evento.evento === "cache_gravacao_falhou")).toHaveLength(1);
+  });
+
+  it("cache estrutural cujo `ler` devolve não-Promise é assimilado como miss, sem rejeitar a conferência", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+    const emitidos: EventoRedigido[] = [];
+    const registrador = api.criarRegistradorRedigido((evento) => {
+      emitidos.push(evento);
+    });
+
+    // Adaptador ESTRUTURAL malformado: `ler` devolve `null` (não uma Promise).
+    // O contrato exige assimilação como valor resolvido (miss), nunca rejeição.
+    const cache = {
+      ler() {
+        return null;
+      },
+      async gravar() {},
+    } as unknown as AdaptadorCacheSemantico;
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache,
+      registrador,
+    });
+
+    // Sem rejeição: a conferência resolve no resultado aprovado e o não-Promise
+    // é tratado como MISS.
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(codigos(resultado)).toContain("modalidade_particular_contraditoria");
+    expect(interpretador.chamadas).toHaveLength(1);
+    // Miss simples não é falha de leitura: nenhum `cache_leitura_falhou`.
+    expect(emitidos.filter((evento) => evento.evento === "cache_leitura_falhou")).toHaveLength(0);
+  });
+
+  it("cache estrutural cujo `gravar` devolve não-Promise é assimilado como gravação best-effort normal, sem rejeitar", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+    const emitidos: EventoRedigido[] = [];
+    const registrador = api.criarRegistradorRedigido((evento) => {
+      emitidos.push(evento);
+    });
+
+    // Adaptador ESTRUTURAL malformado: `gravar` devolve `undefined` (não uma
+    // Promise). A assimilação como valor resolvido mantém a gravação como
+    // best-effort normal, sem falha e sem rejeição.
+    const cache = {
+      async ler() {
+        return null;
+      },
+      gravar() {
+        return undefined;
+      },
+    } as unknown as AdaptadorCacheSemantico;
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache,
+      registrador,
+    });
+
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(codigos(resultado)).toContain("modalidade_particular_contraditoria");
+    expect(interpretador.chamadas).toHaveLength(1);
+    // Gravação best-effort normal: nenhum `cache_gravacao_falhou`.
+    expect(emitidos.filter((evento) => evento.evento === "cache_gravacao_falhou")).toHaveLength(0);
+  });
+
+  it("cache estrutural cujo `ler` resolve valor truthy malformado degrada para miss sem rejeitar a conferência", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+
+    // Dois valores truthy que NÃO são `SinaisObservacao`: o objeto vazio e a
+    // forma esperada com todos os campos `undefined`. A truthiness sozinha não
+    // pode selecionar o caminho de hit; §3.8 exige a mesma validação de
+    // schema/evidência da leitura de cache, então ambos são MISS.
+    const valoresMalformados: unknown[] = [
+      {},
+      { sinais: undefined, situacao: undefined, ambiguidades: undefined },
+    ];
+
+    for (const valor of valoresMalformados) {
+      const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+      const emitidos: EventoRedigido[] = [];
+      const registrador = api.criarRegistradorRedigido((evento) => {
+        emitidos.push(evento);
+      });
+
+      // Adaptador ESTRUTURAL malformado: `ler` RESOLVE (Promise legítima) um
+      // valor truthy inválido. O valor inválido não pode virar decisão nem
+      // lançar por acesso a propriedade que escapa de `conferirGuia`.
+      const cache = {
+        async ler() {
+          return valor as SinaisObservacao;
+        },
+        async gravar() {},
+      } as unknown as AdaptadorCacheSemantico;
+
+      const resultado = await api.conferirGuia(guia, catalogo, {
+        interpretador: interpretador.interpretador,
+        cache,
+        registrador,
+      });
+
+      // Sem rejeição: resolve no resultado aprovado. O valor inválido degrada
+      // para MISS, então a extração injetada é entregue `completa`.
+      expect(resultado.checagem_textual).toBe("completa");
+      expect(codigos(resultado)).toContain("modalidade_particular_contraditoria");
+      // EXATAMENTE uma chamada ao interpretador: nem hit aceito por truthiness
+      // (que não chamaria o modelo) nem nova tentativa pelo valor inválido.
+      expect(interpretador.chamadas).toHaveLength(1);
+    }
+  });
+});
+
+describe("lt-conferencia-vazio-cache-e-falhas — reforço: quota padrão determinística do isolate", () => {
+  // Prova determinística da instância padrão do módulo: com um módulo RECÉM
+  // CARREGADO (`vi.resetModules` + glob não-eager) a janela da `QUOTA_PADRAO`
+  // começa vazia, então os primeiros 60 consumos são aceitos exatamente e o 61º
+  // é recusado — independentemente do que testes anteriores consumiram.
+  it("a quota padrão aceita exatamente 60 chamadas com quota omitida ou null e recusa a 61ª sem tocar o modelo", async () => {
+    vi.resetModules();
+    const carregadores = import.meta.glob("../../src/semantic/index.ts");
+    const apiFresca = (await Object.values(carregadores)[0]()) as unknown as ApiSemantica;
+    const catalogo = catalogoValido();
+
+    const roteiro = Array.from({ length: 60 }, () => resposta(apiFresca, SINAIS_ADMIN));
+    const interpretador = criarInterpretadorFake(roteiro);
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_ADMIN });
+
+    // Índices 0..59: alterna `quota` OMITIDA e `quota: null`. Ambos devem cair
+    // na MESMA instância padrão do módulo e ser aceitos.
+    for (let indice = 0; indice < 60; indice += 1) {
+      const opcoes: OpcoesConferencia = { interpretador: interpretador.interpretador };
+      if (indice % 2 === 1) {
+        opcoes.quota = null;
+      }
+
+      const resultado = await apiFresca.conferirGuia(guia, catalogo, opcoes);
+
+      expect(resultado.limitacoes, `chamada ${indice}`).not.toContain(
+        "quota_de_chamadas_excedida",
+      );
+      // Cada aceitação invoca o interpretador exatamente uma vez.
+      expect(interpretador.chamadas, `chamada ${indice}`).toHaveLength(indice + 1);
+    }
+    expect(interpretador.chamadas).toHaveLength(60);
+
+    // 61ª chamada (índice 60): a quota padrão recusa e o modelo não é tocado.
+    const recusa = await apiFresca.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+    });
+
+    expect(recusa.decisao).toBe("PENDENTE");
+    expect(recusa.checagem_textual).toBe("incompleta");
+    expect(recusa.limitacoes).toContain("quota_de_chamadas_excedida");
+    expect(recusa.limitacoes).toContain("checagem_textual_incompleta");
+    expect(interpretador.chamadas).toHaveLength(60);
+  });
+});
+
+describe("lt-conferencia-vazio-cache-e-falhas — reforço: observador hostil nunca rejeita a conferência", () => {
+  // Toda notificação de contadores (`registrarChamada`, `registrarCacheHit`,
+  // `registrarRecusaQuota`) passa por `notificarObservador` sob try/catch. Um
+  // `ObservadorContadores` cujo método lança NUNCA pode transformar
+  // `conferirGuia` numa Promise rejeitada nem suprimir o resultado fechado da
+  // recusa de quota: a telemetria é best-effort e as decisões permanecem as
+  // mesmas. Distinto do registrador hostil já coberto: aqui o alvo é o
+  // observador de contadores.
+  const observadorHostil: ObservadorContadores = {
+    registrarChamada() {
+      throw new Error("observador hostil");
+    },
+    registrarCacheHit() {
+      throw new Error("observador hostil");
+    },
+    registrarRecusaQuota() {
+      throw new Error("observador hostil");
+    },
+  };
+
+  it("hit de cache resolve completa, com o motivo cacheado e zero chamadas, mesmo com observador que sempre lança", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const entrada = entradaDe(guia);
+    const kv = criarKvFake({ [chaveDe(api, entrada)]: JSON.stringify(SINAIS_PARTICULAR) });
+    const cache = api.criarAdaptadorCacheSemantico(kv.kv);
+    const interpretador = criarInterpretadorFake([]);
+
+    // Basta aguardar: uma rejeição por `registrarCacheHit()` reprova o teste.
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache,
+      observador: observadorHostil,
+    });
+
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(codigos(resultado)).toContain("modalidade_particular_contraditoria");
+    expect(interpretador.chamadas).toHaveLength(0);
+  });
+
+  it("miss com extração válida resolve completa, com exatamente uma chamada, mesmo com observador que sempre lança", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    const cache = api.criarAdaptadorCacheSemantico(kv.kv);
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+
+    // Basta aguardar: uma rejeição por `registrarChamada()` reprova o teste.
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache,
+      observador: observadorHostil,
+    });
+
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(codigos(resultado)).toContain("modalidade_particular_contraditoria");
+    expect(interpretador.chamadas).toHaveLength(1);
+  });
+
+  it("recusa de quota resolve PENDENTE/incompleta sem chamar o modelo mesmo com observador que sempre lança", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    const cache = api.criarAdaptadorCacheSemantico(kv.kv);
+    // Quota já esgotada: a próxima `consumir()` é recusada antes de qualquer envio.
+    const quotaEsgotada = criarQuotaFake(0);
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+
+    // A recusa lança em `registrarRecusaQuota()`: o resultado fechado ainda
+    // precisa ser produzido apesar do observador hostil.
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache,
+      quota: quotaEsgotada.quota,
+      observador: observadorHostil,
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(resultado.limitacoes).toContain("quota_de_chamadas_excedida");
+    expect(resultado.limitacoes).toContain("checagem_textual_incompleta");
+    // A recusa antecede o modelo: nenhuma tentativa chega ao interpretador.
+    expect(interpretador.chamadas).toHaveLength(0);
+  });
+});
+
+describe("lt-conferencia-vazio-cache-e-falhas — reforço: timeoutCacheMs inválido recai no prazo padrão", () => {
+  // A normalização de `timeoutCacheMs` é a MESMA do timeout por tentativa: só
+  // número finito positivo vale; `NaN`, `0`, negativo e `Infinity` recaem no
+  // padrão `TIMEOUT_PADRAO_MS` (5000). Um valor inválido não pode desligar nem
+  // corromper a espera limitada do cache: um KV que aceita a leitura e nunca
+  // resolve continua expirando apenas no prazo padrão.
+  const INVALIDOS = [Number.NaN, 0, -100, Number.POSITIVE_INFINITY];
+
+  it("NaN, 0, negativo e Infinity recaem no prazo padrão de 5000 ms para a leitura de cache", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    for (const valor of INVALIDOS) {
+      const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+      const entrada = entradaDe(guia);
+      const kv = criarKvFake();
+      kv.travarLeitura();
+      const cache = api.criarAdaptadorCacheSemantico(kv.kv);
+      const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+      const emitidos: EventoRedigido[] = [];
+      const registrador = api.criarRegistradorRedigido((evento) => {
+        emitidos.push(evento);
+      });
+
+      vi.useFakeTimers();
+
+      let resolvido = false;
+      const promessa = api
+        .conferirGuia(guia, catalogo, {
+          interpretador: interpretador.interpretador,
+          cache,
+          registrador,
+          timeoutCacheMs: valor,
+        })
+        .then((resultado) => {
+          resolvido = true;
+          return resultado;
+        });
+
+      // 1000 ms < padrão: o valor inválido NÃO pode ser honrado como timeout
+      // imediato/zero/negativo — a conferência ainda não pode ter resolvido.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(
+        resolvido,
+        `timeoutCacheMs=${String(valor)} não pode expirar em 1000 ms`,
+      ).toBe(false);
+
+      // Total 5000 = TIMEOUT_PADRAO_MS: a leitura expira no padrão e a
+      // conferência conclui (miss degradado + extração válida).
+      await vi.advanceTimersByTimeAsync(4000);
+      expect(
+        resolvido,
+        `timeoutCacheMs=${String(valor)} precisa expirar no prazo padrão`,
+      ).toBe(true);
+
+      const resultado = await promessa;
+      expect(resultado.checagem_textual).toBe("completa");
+      expect(codigos(resultado)).toContain("modalidade_particular_contraditoria");
+      expect(interpretador.chamadas).toHaveLength(1);
+      expect(kv.leituras).toBe(1);
+
+      const falhasLeitura = emitidos.filter((evento) => evento.evento === "cache_leitura_falhou");
+      expect(falhasLeitura, `timeoutCacheMs=${String(valor)}`).toHaveLength(1);
+      expect(falhasLeitura[0].codigo).toBe("cache_indisponivel");
+      expect(falhasLeitura[0].cache_prefixo).toBe(
+        api.montarChaveCacheSemantica(entrada, contextoConfig(api)).prefixo,
+      );
+
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("lt-conferencia-vazio-cache-e-falhas — reforço: resposta malformada do interpretador falha fechada", () => {
+  // A fronteira exercitada é a RESPOSTA RESOLVIDA pelo `extrair` injetado, não
+  // o objeto interno de uma exceção. Um envelope que NÃO é `RespostaBruta`
+  // (`null`, primitivo, ou objeto com acessor que lança em `texto`/`modelo`)
+  // é uma resposta schema-inválida do provedor: fecha como `incompleta` com o
+  // motivo determinístico `checagem_textual_incompleta`, jamais rejeita a
+  // Promise de `conferirGuia`. Como a tentativa aconteceu mas a identidade do
+  // envelope é ilegível, `inferencia_textual` vem da CONFIGURAÇÃO. Uma única
+  // chamada ao interpretador (sem retentativa) e nenhuma gravação de cache.
+  //
+  // Quota própria por caso: o envelope malformado não pertence à janela
+  // compartilhada do isolate, e a contagem exata de "uma tentativa" não pode
+  // depender do saldo de outros testes.
+
+  function interpretadorQueResolve(valor: unknown): {
+    interpretador: InterpretadorObservacao;
+    chamadas: () => number;
+  } {
+    let chamadas = 0;
+    const interpretador = {
+      async extrair(_entrada: EntradaObservacao): Promise<unknown> {
+        chamadas += 1;
+        return valor;
+      },
+    } as unknown as InterpretadorObservacao;
+    return { interpretador, chamadas: () => chamadas };
+  }
+
+  function objetoComAcessorQueLanca(
+    propriedade: "texto" | "modelo" | "promptVersao",
+    base: Record<string, unknown> = {},
+  ): unknown {
+    const alvo: Record<string, unknown> = { ...base };
+    Object.defineProperty(alvo, propriedade, {
+      enumerable: true,
+      configurable: true,
+      get(): never {
+        throw new Error(`acessor hostil em ${propriedade}`);
+      },
+    });
+    return alvo;
+  }
+
+  async function conferirEnvelopeMalformado(valor: unknown): Promise<void> {
+    const api = exigirSemantica();
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    const cache = api.criarAdaptadorCacheSemantico(kv.kv);
+    const observador = criarObservadorFake();
+    const quota = criarQuotaFake();
+    const provedor = interpretadorQueResolve(valor);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: provedor.interpretador,
+      cache,
+      quota: quota.quota,
+      observador: observador.observador,
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(codigos(resultado)).toContain("checagem_textual_incompleta");
+    expect(resultado.limitacoes).toContain("checagem_textual_incompleta");
+    // A tentativa ocorreu, mas a identidade do envelope é ilegível: vale a
+    // identidade configurada, nunca propriedades extraídas do envelope sujo.
+    expect(resultado.inferencia_textual).toEqual(identidadeConfig(api));
+    // Exatamente UMA chamada ao interpretador: envelope malformado não retenta.
+    expect(provedor.chamadas()).toBe(1);
+    expect(kv.leituras).toBe(1);
+    expect(kv.gravacoes).toBe(0);
+  }
+
+  it("resposta nula do interpretador falha fechada como schema inválido, sem rejeitar", async () => {
+    await conferirEnvelopeMalformado(null);
+  });
+
+  it("resposta primitiva do interpretador falha fechada como schema inválido, sem rejeitar", async () => {
+    await conferirEnvelopeMalformado("texto qualquer");
+    await conferirEnvelopeMalformado(42);
+  });
+
+  it("acessor hostil em `texto` (objeto sem identidade) falha fechada como schema inválido, sem rejeitar", async () => {
+    await conferirEnvelopeMalformado(objetoComAcessorQueLanca("texto"));
+  });
+
+  it("acessor hostil em `texto` com identidade válida falha fechada antes do teto de bytes, sem rejeitar", async () => {
+    // Este caso passa pela identidade configurada e, no caminho atual, chega a
+    // ler `texto` para o teto de bytes: o acessor hostil ainda precisa fechar
+    // como schema inválido, sem rejeitar a Promise.
+    const api = exigirSemantica();
+    await conferirEnvelopeMalformado(
+      objetoComAcessorQueLanca("texto", {
+        modelo: api.MODELO_OBSERVACAO,
+        promptVersao: api.versaoEfetivaDoPrompt(),
+      }),
+    );
+  });
+
+  it("acessor hostil em `modelo` falha fechada como schema inválido, sem rejeitar", async () => {
+    await conferirEnvelopeMalformado(objetoComAcessorQueLanca("modelo"));
+  });
+
+  it("acessor hostil em `promptVersao` com modelo válido falha fechada como schema inválido, sem rejeitar", async () => {
+    // `modelo` válido garante que o getter de `promptVersao` seja realmente
+    // alcançado na checagem de identidade antes de qualquer teto de bytes.
+    const api = exigirSemantica();
+    await conferirEnvelopeMalformado(
+      objetoComAcessorQueLanca("promptVersao", {
+        modelo: api.MODELO_OBSERVACAO,
+      }),
+    );
   });
 });

@@ -10,7 +10,7 @@
 
 import { z } from "zod";
 
-import { TIPOS_AMBIGUIDADE, TIPOS_SINAL } from "./contratos";
+import { TIPOS_AMBIGUIDADE, TIPOS_SINAL, VALORES_SITUACAO } from "./contratos";
 import type { SinaisObservacao } from "./contratos";
 
 /** Cardinalidade máxima de sinais por extração. */
@@ -51,10 +51,10 @@ const AMBIGUIDADE_SCHEMA = z.strictObject({
 });
 
 const SITUACAO_SCHEMA = z.strictObject({
-  autorizacao: z.enum(["nenhuma", "nova_nao_cadastrada", "verbal_sem_numero"]),
-  modalidade: z.enum(["nenhuma", "particular_decidido", "somente_pergunta"]),
-  procedimento: z.enum(["nenhuma", "realizado_divergente"]),
-  reagendamento: z.enum(["nenhum", "mencionado"]),
+  autorizacao: z.enum(VALORES_SITUACAO.autorizacao),
+  modalidade: z.enum(VALORES_SITUACAO.modalidade),
+  procedimento: z.enum(VALORES_SITUACAO.procedimento),
+  reagendamento: z.enum(VALORES_SITUACAO.reagendamento),
 });
 
 const EXTRACAO_SCHEMA = z.strictObject({

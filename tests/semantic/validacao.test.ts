@@ -17,7 +17,8 @@
 //
 // Superfície exercitada (contrato da task): `validarExtracao`, `normalizarEvidencia`,
 // os limites numéricos, `hashDoPrompt`/`PROMPT_HASH`/`VERSAO_PROMPT`/`TEXTO_PROMPT`/
-// `versaoEfetivaDoPrompt`, `TIPOS_SINAL` e `TIPOS_AMBIGUIDADE`.
+// `versaoEfetivaDoPrompt`, `TIPOS_SINAL`, `TIPOS_AMBIGUIDADE` e a fonte canônica
+// `VALORES_SITUACAO`/`LITERAIS_SITUACAO` (a mesma que o schema Zod consome).
 import { describe, expect, it } from "vitest";
 
 interface Sinal {
@@ -47,12 +48,23 @@ type ResultadoValidacaoExtracao =
   | { ok: true; sinais: SinaisObservacao }
   | { ok: false; erro: string };
 
+interface ValoresSituacao {
+  autorizacao: readonly string[];
+  modalidade: readonly string[];
+  procedimento: readonly string[];
+  reagendamento: readonly string[];
+}
+
 interface ApiAprovada {
   TIPOS_SINAL: readonly string[];
   TIPOS_AMBIGUIDADE: readonly string[];
+  VALORES_SITUACAO: ValoresSituacao;
+  LITERAIS_SITUACAO: readonly string[];
   LIMITE_SINAIS: number;
   LIMITE_AMBIGUIDADES: number;
   LIMITE_EVIDENCIA: number;
+  LIMITE_TEXTO_BRUTO_BYTES: number;
+  campoTemTamanhoDeAbuso(valor: string): boolean;
   MIN_CARACTERES_EVIDENCIA: number;
   MIN_LETRAS_DIGITOS_EVIDENCIA: number;
   VERSAO_PROMPT: string;
@@ -366,5 +378,226 @@ describe("lt-limite-da-evidencia-literal", () => {
       ok: false,
       erro: "evidencia_invalida",
     });
+  });
+});
+
+// Extensão travada do acoplamento prompt/schema para os literais de `situacao`
+// (contrato §3.3; revisão final adversarial MEDIUM). O schema `.strict()` exige
+// valores literais, mas o prompt precisa entregá-los ao modelo como tokens
+// próprios, senão respostas plausíveis viram `incompleta` (fail-closed).
+//
+// O teste NÃO duplica a enumeração: deriva do contrato exportado pelo barrel
+// (`VALORES_SITUACAO`/`LITERAIS_SITUACAO`), a mesma fonte canônica que o schema
+// Zod consome. Se o enum mudar, o acoplamento com o prompt e o hash quebram
+// aqui. O fallback vazio mantém a falha como asserção (nunca de coleta).
+const VALORES_SITUACAO_AUSENTE: ValoresSituacao = {
+  autorizacao: [],
+  modalidade: [],
+  procedimento: [],
+  reagendamento: [],
+};
+
+const valoresSituacao = api?.VALORES_SITUACAO ?? VALORES_SITUACAO_AUSENTE;
+const literaisSituacao = api?.LITERAIS_SITUACAO ?? [];
+
+const MAPEAMENTO_SINAL_SITUACAO: ReadonlyArray<readonly [string, string]> = [
+  ["autorizacao_nova_nao_cadastrada", "nova_nao_cadastrada"],
+  ["autorizacao_verbal_sem_numero", "verbal_sem_numero"],
+  ["decisao_por_particular", "particular_decidido"],
+  ["pergunta_sobre_preco_particular", "somente_pergunta"],
+  ["procedimento_realizado_divergente", "realizado_divergente"],
+  ["reagendamento_mencionado", "mencionado"],
+];
+
+// Reconhece o literal como token próprio, tolerando cercas como `` ou "".
+// Assim `nova_nao_cadastrada` NÃO é satisfeito pelo sufixo de
+// `autorizacao_nova_nao_cadastrada`.
+function contemTokenProprio(texto: string, token: string): boolean {
+  const escapado = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![A-Za-z0-9_])${escapado}(?![A-Za-z0-9_])`).test(texto);
+}
+
+function linhaLigaTokens(texto: string, a: string, b: string): boolean {
+  return texto
+    .split(/\r?\n/)
+    .some((linha) => contemTokenProprio(linha, a) && contemTokenProprio(linha, b));
+}
+
+describe("lt-prompt-acoplado-e-anti-injecao > situação textual", () => {
+  it("exporta a fonte canônica dos literais de situação", () => {
+    const valores = api?.VALORES_SITUACAO;
+    expect(valores, "VALORES_SITUACAO ausente no barrel").toBeDefined();
+    expect(Object.keys(valores ?? {}).sort()).toEqual([
+      "autorizacao",
+      "modalidade",
+      "procedimento",
+      "reagendamento",
+    ]);
+
+    const campos: ReadonlyArray<readonly string[]> = [
+      valoresSituacao.autorizacao,
+      valoresSituacao.modalidade,
+      valoresSituacao.procedimento,
+      valoresSituacao.reagendamento,
+    ];
+    for (const campo of campos) {
+      expect(Array.isArray(campo)).toBe(true);
+      expect(campo.length).toBeGreaterThanOrEqual(2);
+      for (const literal of campo) {
+        expect(typeof literal).toBe("string");
+        expect(literal.length).toBeGreaterThan(0);
+      }
+      expect(new Set(campo).size).toBe(campo.length);
+    }
+
+    const planos: string[] = [];
+    for (const campo of campos) {
+      planos.push(...campo);
+    }
+    const uniao = new Set(planos);
+    const literais = api?.LITERAIS_SITUACAO ?? [];
+    expect(uniao.size).toBeGreaterThan(0);
+    expect(literais.length).toBeGreaterThan(0);
+    // LITERAIS_SITUACAO é a união única dos quatro campos, sem duplicatas.
+    expect(new Set(literais).size).toBe(literais.length);
+    expect(literais.length).toBe(uniao.size);
+    for (const literal of uniao) {
+      expect(literais).toContain(literal);
+    }
+  });
+
+  it("documenta cada literal de situação do contrato como token próprio", () => {
+    expect(typeof promptCanonico).toBe("string");
+    expect(literaisSituacao.length).toBeGreaterThan(0);
+    const ausentes = literaisSituacao.filter(
+      (token) => !contemTokenProprio(promptCanonico ?? "", token),
+    );
+    expect(ausentes, `literais de situacao ausentes no prompt: ${ausentes.join(", ")}`).toEqual(
+      [],
+    );
+  });
+
+  it("distingue o token do sufixo do nome de sinal", () => {
+    // Guarda o que o helper promete: o sufixo de `autorizacao_nova_nao_cadastrada`
+    // não conta como o literal isolado de `situacao`.
+    expect(contemTokenProprio("autorizacao_nova_nao_cadastrada", "nova_nao_cadastrada")).toBe(
+      false,
+    );
+    expect(contemTokenProprio("`nova_nao_cadastrada`", "nova_nao_cadastrada")).toBe(true);
+  });
+
+  it("mapeia cada sinal material ao valor de situação na mesma linha", () => {
+    expect(typeof promptCanonico).toBe("string");
+    // O par local documenta o prompt, mas precisa permanecer alinhado à fonte
+    // canônica: mudar o enum quebra o teste se o par não acompanhar.
+    expect(literaisSituacao.length).toBeGreaterThan(0);
+    for (const [sinal, valor] of MAPEAMENTO_SINAL_SITUACAO) {
+      expect(api?.TIPOS_SINAL).toContain(sinal);
+      expect(literaisSituacao).toContain(valor);
+    }
+    const semLinha = MAPEAMENTO_SINAL_SITUACAO.filter(
+      ([sinal, valor]) => !linhaLigaTokens(promptCanonico ?? "", sinal, valor),
+    ).map(([sinal, valor]) => `${sinal}->${valor}`);
+    expect(semLinha, `pares sinal->situacao sem linha no prompt: ${semLinha.join(", ")}`).toEqual(
+      [],
+    );
+  });
+
+  it("amarra o hash ao conteúdo cru que carrega os enums de situação", () => {
+    expect(typeof promptCanonico).toBe("string");
+    const texto = promptCanonico ?? "";
+    // O hash é o sha256 do conteúdo cru do arquivo, então cobre o que o modelo lê.
+    expect(api?.PROMPT_HASH).toBe(sha?.sha256Hex(texto));
+    // Remover cada literal muda o conteúdo e, portanto, o hash: trocar o prompt
+    // invalida o cache pela versão efetiva.
+    expect(literaisSituacao.length).toBeGreaterThan(0);
+    const semCobertura = literaisSituacao.filter(
+      (token) => api?.hashDoPrompt(texto.replace(new RegExp(token, "g"), "")) === api?.PROMPT_HASH,
+    );
+    expect(
+      semCobertura,
+      `literais de situacao cuja remocao nao altera o hash: ${semCobertura.join(", ")}`,
+    ).toEqual([]);
+  });
+});
+
+// Limite de abuso do texto bruto enviado ao provedor (revisão final MEDIUM):
+// o teto de 64 KiB precisa viver no contrato compartilhado (`src/semantic/contratos.ts`)
+// e ser reexportado pelo barrel, para valer em TODOS os adaptadores públicos e não
+// só no caminho de validação. O teto é medido em BYTES UTF-8 por campo bruto
+// (`observacao_recepcao`, `convenio`, `procedimento_codigo`) e a função é pura e
+// barata: decide pela pré-checagem de code units UTF-16 (`.length`) antes de
+// codificar, para não materializar o encode de strings gigantes.
+//
+// O acesso ao barrel usa `api?.campoTemTamanhoDeAbuso?.(valor)` (fallback seguro
+// para RED): enquanto o símbolo não for exportado o valor é `undefined` e a
+// asserção falha — nunca há PASS vacuoso.
+function temTamanhoDeAbuso(valor: string): boolean {
+  return api?.campoTemTamanhoDeAbuso?.(valor) as boolean;
+}
+
+describe("lt-limite-de-abuso-do-texto-bruto", () => {
+  // Teto de abuso, em bytes UTF-8, por campo bruto enviado ao provedor.
+  const TETO = 64 * 1024;
+
+  it("expõe a constante de teto do texto bruto no contrato compartilhado", () => {
+    expect(api?.LIMITE_TEXTO_BRUTO_BYTES).toBe(TETO);
+    expect(api?.LIMITE_TEXTO_BRUTO_BYTES).toBe(65536);
+  });
+
+  it("aceita exatamente o teto e rejeita um byte acima (ASCII)", () => {
+    // Em ASCII 1 code unit = 1 byte; a fronteira fica no próprio teto.
+    expect("a".repeat(TETO)).toHaveLength(TETO);
+    expect(temTamanhoDeAbuso("a".repeat(TETO))).toBe(false);
+    expect(temTamanhoDeAbuso("a".repeat(TETO + 1))).toBe(true);
+  });
+
+  it("mede multibyte em BYTES UTF-8, não em code units UTF-16", () => {
+    // "é" (U+00E9) ocupa 2 bytes UTF-8 e 1 code unit UTF-16.
+    const noTeto = "é".repeat(32768);
+    expect(noTeto).toHaveLength(32768);
+    // 2 * 32768 = 65536 bytes ⇒ exatamente o teto.
+    expect(temTamanhoDeAbuso(noTeto)).toBe(false);
+
+    // 2 * 32769 = 65538 bytes ⇒ 2 bytes acima do teto.
+    expect(temTamanhoDeAbuso(`${noTeto}é`)).toBe(true);
+
+    // Prova explícita de que a medição é em bytes: aqui os code units (40000)
+    // estão MUITO abaixo do teto de 65536, mas os bytes (80000) o excedem.
+    const muitosBytes = "é".repeat(40000);
+    expect(muitosBytes.length).toBeLessThan(api?.LIMITE_TEXTO_BRUTO_BYTES ?? 0);
+    expect(temTamanhoDeAbuso(muitosBytes)).toBe(true);
+  });
+
+  it("trata astrais (4 bytes por 2 code units) pela contagem em bytes", () => {
+    // "\u{10400}" (U+10400) ocupa 4 bytes UTF-8 e 2 code units UTF-16.
+    const astral = "\u{10400}";
+    expect(astral).toHaveLength(2);
+
+    const noTeto = astral.repeat(16384);
+    expect(noTeto).toHaveLength(32768);
+    // 4 * 16384 = 65536 bytes ⇒ exatamente o teto.
+    expect(temTamanhoDeAbuso(noTeto)).toBe(false);
+
+    // 4 * 16385 = 65540 bytes ⇒ 4 bytes acima do teto.
+    expect(temTamanhoDeAbuso(`${noTeto}${astral}`)).toBe(true);
+  });
+
+  it("não marca strings curtas nem vazias como abuso", () => {
+    expect(temTamanhoDeAbuso("")).toBe(false);
+    expect(temTamanhoDeAbuso("confirmado")).toBe(false);
+  });
+
+  it("decide string gigante sem materializar o encode completo", () => {
+    // 20 milhões de code units ASCII: a pré-checagem por `.length` já excede o
+    // teto e decide sem codificar. O caminho alternativo — codificar 20 milhões
+    // de code units em JS puro — levaria segundos; o limite de tempo generoso é
+    // o observável disponível para "não materializa o encode".
+    const gigante = "a".repeat(20_000_000);
+    const inicio = performance.now();
+    const resultado = temTamanhoDeAbuso(gigante);
+    const decorridoMs = performance.now() - inicio;
+    expect(resultado).toBe(true);
+    expect(decorridoMs).toBeLessThan(1000);
   });
 });
