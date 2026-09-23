@@ -831,7 +831,9 @@ export async function conferirGuia(
       }
 
       // Identidade efetiva do provedor: só a configurada é aceita. Mismatch
-      // fecha sem gravar cache, sem retentar e sem relabelar como padrão.
+      // fecha sem gravar cache, sem retentar e sem relabelar como padrão. Os
+      // metadados do envelope são ENTRADA NÃO CONFIÁVEL e nunca são ecoados; a
+      // identidade relatada é sempre a CONFIGURADA, mesmo no mismatch.
       if (!identidadeConfere(resposta, contexto)) {
         emitir(registrador, "extracao_falhou", {
           estado: "incompleta",
@@ -841,8 +843,8 @@ export async function conferirGuia(
           {
             estado: "incompleta",
             sinais: null,
-            modelo: resposta.modelo,
-            prompt_versao: resposta.promptVersao,
+            modelo: contexto.modelo,
+            prompt_versao: contexto.promptVersao,
           },
           { estado: "incompleta" },
         );
