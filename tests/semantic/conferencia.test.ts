@@ -76,15 +76,15 @@
 //    `status`, ou com status não transitório (400), ainda que o classificador
 //    injetado diga `transporte`, não retenta e não consome o segundo roteiro
 //    (§3.9, §7.13, #ac-17).
-// 2. Tetos absolutos de caracteres CRUS, avaliados antes da leitura de
-//    cache/hash/envio e antes da comparação TRIMADA: observação com mais de
-//    4096 caracteres crus e convênio/procedimento com mais de 200 caracteres
-//    crus são recusados com zero chamadas (e zero leitura de cache para a
-//    observação). Os limites semânticos trimados (1000/200) permanecem, o 4096
-//    cru é inclusive, e a regra de vazio de §3.6 mantém precedência (vazio após
-//    `trim` continua `nao_aplicavel`; por isso não há caso de observação só com
-//    espaços acima de 4096). Não se cria código novo para convênio/procedimento:
-//    espelham o comportamento do caso 200-após-trim.
+// 2. Os ÚNICOS limites de entrada do contrato §3.9 são os TRIMADOS: 1000
+//    caracteres para a observação (após `trim`) e 200 para
+//    convênio/procedimento (após `trim`). Não existe teto de caracteres CRUS:
+//    preservar o texto original é o julgamento aprovado e `trim` serve apenas
+//    para vazio e limites. Uma observação com 4097 caracteres crus mas
+//    exatamente 1000 após `trim` é enviada ao modelo. O risco residual de
+//    custo/entrada crua pertence ao limite de corpo do entrypoint HTTP
+//    (issues #4/#6), não a este contrato — por isso não há mais testes de teto
+//    cru neste arquivo.
 // 3. A quota padrão vive no módulo: uma ÚNICA instância (60 chamadas / 60000 ms)
 //    usada quando `quota` é OMITIDA ou `null`, nunca criada por chamada. A prova
 //    é determinística (não depende do consumo de casos anteriores): recarrega o
@@ -95,10 +95,16 @@
 //    sempre lança nunca pode rejeitar `conferirGuia` — em sucesso, em falha
 //    não transitória e em recusa de quota, a Promise precisa resolver no
 //    `ResultadoVerificacao` aprovado.
-// 5. Contagem única da recusa de quota (revisão final): a quota injetada NÃO
-//    self-reporta ao observador; é a orquestração que registra
-//    `registrarRecusaQuota()` uma vez e emite `quota_recusada` exatamente uma
-//    vez (dupla contagem seria indetectável pelo núcleo).
+// 5. Contagem única da recusa de quota (revisão final): a orquestração
+//    registra `registrarRecusaQuota()` e emite `quota_recusada` exatamente uma
+//    vez por recusa. Uma quota fake/não reportante ainda precisa ser contada
+//    pela orquestração; já uma quota criada COM o observador se auto-reporta
+//    (`notificaRecusaNoObservador === true`) e a orquestração NÃO pode contar
+//    de novo — com o MESMO observador nos dois lados, uma recusa é uma recusa.
+// 6. Relógio hostil (revisão final): `agora()` alimenta apenas telemetria
+//    (`duracao_ms`); um relógio que lança é degradável com segurança — a
+//    conferência resolve no `ResultadoVerificacao` aprovado em sucesso e em
+//    falha, nunca rejeita a Promise.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import regrasRaw from "../../docs/fontes/regras_convenio.json?raw";
@@ -1608,16 +1614,17 @@ describe("lt-retentativa-timeout-e-limites — reforço: retentativa exige statu
   });
 });
 
-describe("lt-retentativa-timeout-e-limites — reforço: tetos absolutos de caracteres CRUS", () => {
-  const LIMITE_OBSERVACAO_CRU = 4096;
-  const LIMITE_CONTEXTO_CRU = 200;
-
-  it("observação com 4097 caracteres CRUS e 1000 trimados é recusada antes do cache e do modelo", async () => {
+describe("lt-retentativa-timeout-e-limites — reforço: entrada só tem os limites TRIMADOS (sem teto cru)", () => {
+  // §3.9 fixa apenas o limite TRIMADO de 1000 caracteres para a observação (e
+  // 200 para convênio/procedimento). O texto original é preservado e não há
+  // teto de caracteres CRUS; o risco residual de corpo cru pertence ao limite
+  // do entrypoint HTTP (issues #4/#6), não a este contrato.
+  it("observação com 4097 caracteres CRUS e exatamente 1000 trimados é enviada ao modelo", async () => {
     const api = exigirSemantica();
     const catalogo = catalogoValido();
 
     const observacaoCrua = " ".repeat(3097) + "a".repeat(LIMITE_ENTRADA);
-    expect(observacaoCrua).toHaveLength(LIMITE_OBSERVACAO_CRU + 1);
+    expect(observacaoCrua).toHaveLength(4097);
     expect(observacaoCrua.trim()).toHaveLength(LIMITE_ENTRADA);
 
     const guia = guiaSintetica({ observacao_recepcao: observacaoCrua });
@@ -1629,71 +1636,58 @@ describe("lt-retentativa-timeout-e-limites — reforço: tetos absolutos de cara
       cache: api.criarAdaptadorCacheSemantico(kv.kv),
     });
 
-    expect(resultado.decisao).toBe("PENDENTE");
-    expect(resultado.checagem_textual).toBe("incompleta");
-    expect(resultado.limitacoes).toContain("observacao_acima_do_limite");
-    expect(interpretador.chamadas).toHaveLength(0);
-    expect(resultado.inferencia_textual).toBeNull();
-    // O teto cru precede a leitura de cache: nenhuma chave é lida/calculada.
-    expect(kv.leituras).toBe(0);
+    // Acima de 4096 caracteres crus, mas com 1000 trimados: sem teto cru, a
+    // observação segue para o modelo exatamente uma vez.
+    expect(interpretador.chamadas).toHaveLength(1);
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(resultado.limitacoes).not.toContain("observacao_acima_do_limite");
   });
+});
 
-  it("observação com exatamente 4096 caracteres CRUS e 1000 trimados continua sendo enviada", async () => {
+describe("lt-retentativa-timeout-e-limites — reforço: relógio hostil não rejeita a conferência", () => {
+  // `agora()` alimenta apenas telemetria (`duracao_ms`). Um relógio que lança
+  // deve degradar de forma segura: a Promise resolve no `ResultadoVerificacao`
+  // aprovado, em sucesso e em falha — nunca rejeita.
+  const relogioHostil = (): number => {
+    throw new Error("relógio hostil");
+  };
+
+  it("sucesso com extração válida resolve completa mesmo com relógio que lança", async () => {
     const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
     const catalogo = catalogoValido();
-
-    const observacaoCrua = " ".repeat(3096) + "a".repeat(LIMITE_ENTRADA);
-    expect(observacaoCrua).toHaveLength(LIMITE_OBSERVACAO_CRU);
-    expect(observacaoCrua.trim()).toHaveLength(LIMITE_ENTRADA);
-
-    const guia = guiaSintetica({ observacao_recepcao: observacaoCrua });
     const kv = criarKvFake();
-    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
 
-    await api.conferirGuia(guia, catalogo, {
+    // Basta aguardar: uma rejeição por `agora()` reprova o teste.
+    const resultado = await api.conferirGuia(guia, catalogo, {
       interpretador: interpretador.interpretador,
       cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      agora: relogioHostil,
     });
 
-    // O teto cru é "acima de 4096", não "a partir de 4096": 4096 é enviado.
-    expect(interpretador.chamadas).toHaveLength(1);
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(codigos(resultado)).toContain("modalidade_particular_contraditoria");
   });
 
-  it("convênio ou procedimento com 201 caracteres CRUS e ≤200 trimados é recusado sem código novo", async () => {
+  it("falha não transitória do modelo resolve PENDENTE/incompleta mesmo com relógio que lança", async () => {
     const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
     const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    const interpretador = criarInterpretadorFake([new Error("provedor indisponível")]);
 
-    const convenioCru = " ".repeat(LIMITE_CONTEXTO_CRU) + "C";
-    const procedimentoCru = " ".repeat(LIMITE_CONTEXTO_CRU) + "9";
-    expect(convenioCru).toHaveLength(LIMITE_CONTEXTO_CRU + 1);
-    expect(convenioCru.trim()).toHaveLength(1);
-    expect(procedimentoCru).toHaveLength(LIMITE_CONTEXTO_CRU + 1);
-    expect(procedimentoCru.trim()).toHaveLength(1);
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      agora: relogioHostil,
+    });
 
-    const casos: Array<Partial<Record<Coluna, string>>> = [
-      { convenio: convenioCru },
-      { procedimento_codigo: procedimentoCru },
-    ];
-
-    for (const overrides of casos) {
-      const rotulo = Object.keys(overrides)[0];
-      const guia = guiaSintetica({ observacao_recepcao: TEXTO_ADMIN, ...overrides });
-      const kv = criarKvFake();
-      const interpretador = criarInterpretadorFake([resposta(api, SINAIS_ADMIN)]);
-
-      const resultado = await api.conferirGuia(guia, catalogo, {
-        interpretador: interpretador.interpretador,
-        cache: api.criarAdaptadorCacheSemantico(kv.kv),
-      });
-
-      expect(resultado.decisao, rotulo).toBe("PENDENTE");
-      expect(resultado.checagem_textual, rotulo).toBe("incompleta");
-      expect(interpretador.chamadas, rotulo).toHaveLength(0);
-      expect(resultado.inferencia_textual, rotulo).toBeNull();
-      // Sem código novo: convênio/procedimento espelham o caso 200-após-trim e
-      // não recebem a limitação nomeada reservada à observação.
-      expect(resultado.limitacoes, rotulo).not.toContain("observacao_acima_do_limite");
-    }
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(codigos(resultado)).toContain("checagem_textual_incompleta");
   });
 });
 
@@ -1767,6 +1761,53 @@ describe("lt-conferencia-vazio-cache-e-falhas — reforço: logging best-effort 
     expect(resultado.limitacoes).toContain("quota_de_chamadas_excedida");
     // A recusa antecede o modelo: nenhuma tentativa chega ao interpretador.
     expect(interpretador.chamadas).toHaveLength(0);
+  });
+});
+
+describe("lt-conferencia-vazio-cache-e-falhas — reforço: recusa auto-reportante é contada uma única vez", () => {
+  // A quota criada COM o observador já notifica `registrarRecusaQuota()` em
+  // `consumir() === false` e expõe `notificaRecusaNoObservador === true`. Com o
+  // MESMO observador nos dois lados, a orquestração NÃO pode contabilizar de
+  // novo: exatamente uma recusa, um evento `quota_recusada` e zero chamadas.
+  it("quota que já se auto-reporta ao mesmo observador não é contada duas vezes pela orquestração", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({
+      observacao_recepcao: TEXTO_PARTICULAR,
+      autorizacao_validade: "2026-08-09",
+    });
+    const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    const observador = criarObservadorFake();
+    // Mesmo observador na quota e na conferência: a quota esgota e auto-reporta.
+    const quota = api.criarQuotaDeChamadas({ limite: 1, observador: observador.observador });
+    expect(quota.consumir()).toBe(true);
+    const emitidos: EventoRedigido[] = [];
+    const registrador = api.criarRegistradorRedigido((evento) => {
+      emitidos.push(evento);
+    });
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota,
+      observador: observador.observador,
+      registrador,
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(resultado.limitacoes).toContain("quota_de_chamadas_excedida");
+    // Recusa antes da chamada: zero chamadas e nenhuma tentativa registrada.
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(observador.chamadas).toBe(0);
+    // Contagem única, embora a quota também reporte a mesma recusa.
+    expect(observador.recusasQuota).toBe(1);
+    expect(
+      emitidos.map((evento) => evento.evento).filter((nome) => nome === "quota_recusada"),
+    ).toHaveLength(1);
+    expect(resultado.inferencia_textual).toBeNull();
   });
 });
 
