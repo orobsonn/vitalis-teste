@@ -190,6 +190,72 @@ describe("lt-schema-e-evidencia-fechados", () => {
   });
 });
 
+// Fronteiras astrais do alinhamento de palavra (#ac-16, lt-schema-e-evidencia-fechados).
+// A adjacência deve ser julgada sobre o code point completo: um surrogate
+// isolado devolvido por `charAt` não é reconhecido por `/\p{L}\p{N}/u` e por
+// isso deixaria passar um trecho que corta palavra.
+describe("lt-schema-e-evidencia-fechados > fronteiras astrais", () => {
+  // Evidência com 6 caracteres e 6 alfanuméricos: satisfaz os mínimos e isola a
+  // regra de fronteira de palavra. U+10400 (letra, \p{L}) e U+1D7CE (dígito,
+  // \p{N}) ficam fora do BMP e ocupam um surrogate pair cada em UTF-16.
+  const EVIDENCIA = "abcdef";
+  const LETRA_ASTRAL = "\u{10400}";
+  const DIGITO_ASTRAL = "\u{1D7CE}";
+
+  function respostaNota(evidencia: string) {
+    return {
+      sinais: [{ tipo: "nota_administrativa", evidencia }],
+      situacao: SITUACAO_NEUTRA,
+      ambiguidades: [],
+    };
+  }
+
+  it("recusa evidência que corta palavra em letra astral à esquerda", () => {
+    expect(validar(respostaNota(EVIDENCIA), `${LETRA_ASTRAL}${EVIDENCIA}`)).toEqual({
+      ok: false,
+      erro: "evidencia_invalida",
+    });
+  });
+
+  it("recusa evidência que corta palavra em letra astral à direita", () => {
+    expect(validar(respostaNota(EVIDENCIA), `${EVIDENCIA}${LETRA_ASTRAL}`)).toEqual({
+      ok: false,
+      erro: "evidencia_invalida",
+    });
+  });
+
+  it("recusa evidência que corta dígito astral à esquerda", () => {
+    expect(validar(respostaNota(EVIDENCIA), `${DIGITO_ASTRAL}${EVIDENCIA}`)).toEqual({
+      ok: false,
+      erro: "evidencia_invalida",
+    });
+  });
+
+  it("recusa evidência que corta dígito astral à direita", () => {
+    expect(validar(respostaNota(EVIDENCIA), `${EVIDENCIA}${DIGITO_ASTRAL}`)).toEqual({
+      ok: false,
+      erro: "evidencia_invalida",
+    });
+  });
+
+  it("aceita evidência entre astrais separados por espaço (fronteira real)", () => {
+    const resposta = respostaNota(EVIDENCIA);
+    expect(validar(resposta, `${LETRA_ASTRAL} ${EVIDENCIA} ${DIGITO_ASTRAL}`)).toEqual({
+      ok: true,
+      sinais: resposta,
+    });
+  });
+
+  it("aceita o token inteiro incluindo a letra astral como alfanumérica", () => {
+    const evidencia = `${LETRA_ASTRAL}${EVIDENCIA}`;
+    const resposta = respostaNota(evidencia);
+    expect(validar(resposta, evidencia)).toEqual({
+      ok: true,
+      sinais: resposta,
+    });
+  });
+});
+
 describe("lt-prompt-acoplado-e-anti-injecao", () => {
   it("usa a versão canônica e o hash do conteúdo do prompt", () => {
     expect(api?.VERSAO_PROMPT).toBe("observacao-v1");
