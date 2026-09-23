@@ -584,6 +584,17 @@ const CELULAS_SEMANTICAS_ORIGINAL: readonly string[] = [
 ];
 
 /**
+ * Campo de TOPO CAPTURADO correspondente a cada célula CRUA semântica. A
+ * porta de coerência compara o texto CRU da célula com este valor PRÉ-limite;
+ * o `limitarCampo` só é aplicado DEPOIS da igualdade exata.
+ */
+const CAPTURA_SEMANTICA_POR_CELULA: Record<string, keyof CamposCapturados> = {
+  observacao_recepcao: "observacao",
+  convenio: "convenio",
+  procedimento_codigo: "procedimento",
+};
+
+/**
  * Reconstrói `original` como registro INERTE de dados (sem protótipo): só os
  * descritores PRÓPRIOS de DADO de `guia.original` são copiados (um acessor
  * nunca é avaliado) e as TRÊS células semânticas são lidas da PRÓPRIA fonte, na
@@ -601,17 +612,24 @@ const CELULAS_SEMANTICAS_ORIGINAL: readonly string[] = [
  * `A` pareada com um campo de topo `B` fecha o snapshot. Um `original` ausente,
  * `null` ou `undefined` deixa as três células ausentes e também fecha fechada.
  *
- * Cada célula semântica EXIGE string primitiva na fonte e é instalada com o
- * MESMO tratamento do campo de topo (`limitarCampo`): um corpo acima do teto de
- * abuso vira o marcador fixo, preservando a precedência do ramo vazio e o
- * caminho determinístico de `observacao_acima_do_limite`/`limite_excedido`
- * (um corpo gigante nunca é retido no snapshot). Como a célula de topo capturada
- * recebe o mesmo limite, a coerência continua comparando valores equivalentes;
- * quando a célula crua DIVERGE do valor de topo (dentro ou fora do teto), a
- * igualdade exata com o recomputado falha e o snapshot fecha.
+ * Cada célula semântica EXIGE string primitiva na fonte e é comparada, ANTES
+ * de qualquer limitação, com o valor de TOPO CAPTURADO correspondente
+ * (`capturados`): a igualdade exata do texto CRU é a porta de coerência e uma
+ * divergência fecha o snapshot. Sem essa comparação pré-limite, o texto cru da
+ * célula e o valor de topo seriam reduzidos de forma INDEPENDENTE ao mesmo
+ * `MARCADOR_TETO_ABUSO`, de modo que uma célula acima do teto pareada com o
+ * marcador literal de topo (ou com outra célula gigante) seria considerada
+ * coerente e alcançaria cache, quota e provedor. Só depois da igualdade crua a
+ * célula é instalada com o MESMO tratamento do campo de topo (`limitarCampo`):
+ * um corpo acima do teto de abuso vira o marcador fixo, preservando a
+ * precedência do ramo vazio e o caminho determinístico de
+ * `observacao_acima_do_limite`/`limite_excedido` (um corpo gigante nunca é
+ * retido no snapshot) e mantendo a igualdade exata com o recomputado, que lê
+ * esta mesma célula.
  */
 function montarOriginalInerte(
   descritorOriginal: PropertyDescriptor | undefined,
+  capturados: CamposCapturados,
 ): Record<string, unknown> | null {
   const base = registroInerte();
   if (descritorOriginal) {
@@ -640,9 +658,16 @@ function montarOriginalInerte(
           return null;
         }
         if (CELULAS_SEMANTICAS_ORIGINAL.includes(chave)) {
-          // Célula semântica crua: exige string primitiva e aplica o mesmo teto
-          // de abuso do campo de topo; nunca sintetizada do valor capturado.
+          // Célula semântica crua: exige string primitiva, compara o texto CRU
+          // com o valor de TOPO CAPTURADO (pré-limite) e só então aplica o
+          // mesmo teto de abuso do campo de topo; nunca sintetizada do valor
+          // capturado. A comparação pré-limite impede que a redução de ambos ao
+          // `MARCADOR_TETO_ABUSO` mascare uma célula gigante pareada com o
+          // marcador literal de topo.
           if (typeof descritor.value !== "string") {
+            return null;
+          }
+          if (descritor.value !== capturados[CAPTURA_SEMANTICA_POR_CELULA[chave]]) {
             return null;
           }
           definirDado(base, chave, limitarCampo(descritor.value));
@@ -850,7 +875,11 @@ function montarSnapshotInerte(
 
   const saida = registroInerte();
 
-  const original = montarOriginalInerte(descritores.original);
+  const original = montarOriginalInerte(descritores.original, {
+    observacao,
+    convenio,
+    procedimento,
+  });
   if (original === null) {
     return null;
   }
