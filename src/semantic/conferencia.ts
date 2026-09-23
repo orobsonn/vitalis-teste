@@ -42,7 +42,7 @@ import type { Catalogo } from "../domain/catalogo";
 import type { DataCivil } from "../domain/datas";
 import { verificarGuia } from "../domain/motor";
 import type { ResultadoVerificacao } from "../domain/motor";
-import type { GuiaNormalizada } from "../domain/normalizacao";
+import type { GuiaNormalizada, ProblemaNormalizacao } from "../domain/normalizacao";
 import type { TextualValidado } from "../domain/policies/textuais";
 
 import { montarChaveCacheSemantica } from "./cache";
@@ -195,9 +195,121 @@ function limitarCampo(texto: string): string {
   return acimaDoTetoDeAbuso(texto) ? MARCADOR_TETO_ABUSO : texto;
 }
 
-/** Descritor PRÓPRIO de DADO reutilizável: nenhum acessor é retido. */
-function comoDado(value: unknown): PropertyDescriptor {
-  return { value, writable: true, enumerable: true, configurable: true };
+/** Define um descritor PRÓPRIO de DADO: nenhum acessor é criado nem retido. */
+function definirDado(alvo: object, chave: string, valor: unknown): void {
+  Object.defineProperty(alvo, chave, {
+    value: valor,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+}
+
+/** Registro INERTE (sem protótipo) pronto para receber apenas dados. */
+function registroInerte(): Record<string, unknown> {
+  return Object.create(null) as Record<string, unknown>;
+}
+
+/**
+ * Verdadeiro para uma string PRIMITIVA dentro do teto ABSOLUTO de abuso em
+ * BYTES UTF-8. Um objeto coercível, uma função, um `Proxy` ou uma string
+ * gigante são MALFORMADOS: o snapshot do motor não pode carregá-los.
+ */
+function stringInerte(valor: unknown): valor is string {
+  return typeof valor === "string" && !acimaDoTetoDeAbuso(valor);
+}
+
+/**
+ * Clona um `DataCivil` PRÓPRIO de DADO como registro inerte, sem avaliar
+ * acessores: `null` é a ausência válida; `undefined` marca MALFORMADO (não é
+ * `null`/registro, faltam `ano`/`mes`/`dia`, ou algum não é número finito).
+ */
+function clonarDataInerte(valor: unknown): DataCivil | null | undefined {
+  if (valor === null) {
+    return null;
+  }
+  if (typeof valor !== "object" || Array.isArray(valor)) {
+    return undefined;
+  }
+  let descritores: Record<string, PropertyDescriptor>;
+  try {
+    descritores = Object.getOwnPropertyDescriptors(valor);
+  } catch {
+    return undefined;
+  }
+  const saida = registroInerte();
+  for (const chave of ["ano", "mes", "dia"]) {
+    const descritor = descritores[chave];
+    if (!descritor || !("value" in descritor)) {
+      return undefined;
+    }
+    const numero = descritor.value;
+    if (typeof numero !== "number" || !Number.isFinite(numero)) {
+      return undefined;
+    }
+    definirDado(saida, chave, numero);
+  }
+  return saida as unknown as DataCivil;
+}
+
+/** `null` ou número finito; `undefined` marca MALFORMADO. */
+function numeroInerte(valor: unknown): number | null | undefined {
+  if (valor === null) {
+    return null;
+  }
+  return typeof valor === "number" && Number.isFinite(valor) ? valor : undefined;
+}
+
+/**
+ * Clona os problemas de normalização como registros INERTES: cada elemento
+ * precisa ser registro simples com `campo`/`codigo`/`valorOriginal` em
+ * descritores PRÓPRIOS de DADO e strings primitivas dentro do teto de abuso.
+ * Qualquer outra forma (não-array, buraco, acessor, tipo errado, string
+ * gigante) é MALFORMADA e fecha o snapshot (`null`).
+ */
+function clonarProblemasInertes(valor: unknown): ProblemaNormalizacao[] | null {
+  if (!Array.isArray(valor)) {
+    return null;
+  }
+  let descritores: Record<string, PropertyDescriptor>;
+  try {
+    descritores = Object.getOwnPropertyDescriptors(valor);
+  } catch {
+    return null;
+  }
+  const descritorTamanho = descritores.length;
+  const tamanho =
+    descritorTamanho && "value" in descritorTamanho ? descritorTamanho.value : undefined;
+  if (typeof tamanho !== "number" || !Number.isInteger(tamanho) || tamanho < 0) {
+    return null;
+  }
+  const saida: ProblemaNormalizacao[] = [];
+  for (let indice = 0; indice < tamanho; indice += 1) {
+    const descritor = descritores[String(indice)];
+    if (!descritor || !("value" in descritor)) {
+      return null;
+    }
+    const item = descritor.value;
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      return null;
+    }
+    let campos: Record<string, PropertyDescriptor>;
+    try {
+      campos = Object.getOwnPropertyDescriptors(item);
+    } catch {
+      return null;
+    }
+    const registro = registroInerte();
+    for (const chave of ["campo", "codigo", "valorOriginal"]) {
+      const campo = campos[chave];
+      if (!campo || !("value" in campo) || !stringInerte(campo.value)) {
+        return null;
+      }
+      definirDado(registro, chave, campo.value);
+    }
+    saida.push(registro as unknown as ProblemaNormalizacao);
+  }
+  return saida;
 }
 
 /**
@@ -237,26 +349,31 @@ const CELULAS_SEMANTICAS_ORIGINAL: readonly string[] = [
 ];
 
 /**
- * Reconstrói `original` como objeto SIMPLES de dados: só os descritores
- * PRÓPRIOS de DADO de `guia.original` são copiados (um acessor nunca é
- * avaliado) e as três células CAPTURADAS são sempre sobrepostas. Um `original`
- * que seja ACESSOR fecha fechado (`null`): é um campo consumido pelo motor e
- * avaliá-lo aqui reabriria um getter hostil. Um `original` ausente ou
- * não-objeto é tratado como ausente e reconstruído a partir do trio capturado.
+ * Reconstrói `original` como registro INERTE de dados (sem protótipo): só os
+ * descritores PRÓPRIOS de DADO de `guia.original` são copiados (um acessor
+ * nunca é avaliado) e as três células CAPTURADAS são sempre sobrepostas com os
+ * valores já limitados. Toda célula precisa ser string primitiva dentro do teto
+ * de abuso e NENHUMA chave própria `__proto__` é aceita (por colchetes ela
+ * poderia instalar um protótipo controlado); `null` marca MALFORMADO. Um
+ * `original` ausente, `null` ou `undefined` é reconstruído apenas a partir do
+ * trio capturado.
  */
-function reconstruirOriginal(
+function montarOriginalInerte(
   descritorOriginal: PropertyDescriptor | undefined,
   observacao: string,
   convenio: string,
   procedimento: string,
 ): Record<string, unknown> | null {
-  const base: Record<string, unknown> = {};
+  const base = registroInerte();
   if (descritorOriginal) {
     if (!("value" in descritorOriginal)) {
       return null;
     }
     const fonte = descritorOriginal.value;
-    if (typeof fonte === "object" && fonte !== null) {
+    if (fonte !== null && fonte !== undefined) {
+      if (typeof fonte !== "object" || Array.isArray(fonte)) {
+        return null;
+      }
       let descritoresFonte: Record<string, PropertyDescriptor>;
       try {
         descritoresFonte = Object.getOwnPropertyDescriptors(fonte);
@@ -267,37 +384,63 @@ function reconstruirOriginal(
         if (CELULAS_SEMANTICAS_ORIGINAL.includes(chave)) {
           continue;
         }
-        const descritor = descritoresFonte[chave];
-        if (!descritor || !("value" in descritor)) {
-          // Acessor numa célula consumida pelo motor: nunca avaliado nem retido.
+        if (chave === "__proto__") {
           return null;
         }
-        base[chave] = descritor.value;
+        const descritor = descritoresFonte[chave];
+        if (!descritor || !("value" in descritor) || !stringInerte(descritor.value)) {
+          // Acessor ou valor não inerte numa célula consumida pelo motor:
+          // nunca avaliado nem retido.
+          return null;
+        }
+        definirDado(base, chave, descritor.value);
       }
     }
   }
-  base.observacao_recepcao = observacao;
-  base.convenio = convenio;
-  base.procedimento_codigo = procedimento;
+  definirDado(base, "observacao_recepcao", observacao);
+  definirDado(base, "convenio", convenio);
+  definirDado(base, "procedimento_codigo", procedimento);
   return base;
 }
 
+const CAMPOS_TEXTO_INERTES: readonly string[] = [
+  "id",
+  "unidade",
+  "paciente",
+  "carteirinha",
+  "cid",
+  "procedimentoDescricao",
+  "numeroAutorizacao",
+  "profissional",
+  "profissionalRegistro",
+];
+
+const CAMPOS_DATA_INERTES: readonly string[] = [
+  "dataAtendimento",
+  "autorizacaoValidade",
+  "dataLancamento",
+];
+
+const CAMPOS_NUMERO_INERTES: readonly string[] = [
+  "autorizacaoSessoesLimite",
+  "sessaoNumero",
+  "valorCentavos",
+];
+
 /**
- * Snapshot LIMITADO e PURO DE DADOS da guia a partir dos TRÊS campos já
- * CAPTURADOS uma única vez. Os três campos semânticos recebem os valores
- * capturados (com o teto de abuso aplicado); TODAS as demais propriedades
- * próprias só são retidas quando são descritores PRÓPRIOS de DADO. Nenhum
- * acessor é avaliado nem retido: um acessor em QUALQUER campo consumido pelo
- * motor (`procedimentoDescricao`, `original`, etc.) fecha fechado (`null`)
- * para o chamador. A reflexão é guardada (um `Proxy` hostil pode lançar em
- * `ownKeys`/`getOwnPropertyDescriptor`). Não há espalhamento sobre a guia
- * hostil (`{ ...guia }`/`{ ...guia.original }`). Esta é a ÚNICA representação
- * entregue ao motor em TODOS os caminhos. O marcador é não vazio e não
- * catalogado, então `convenio_nao_catalogado` e `procedimento_nao_catalogado`
- * continuam e nenhum falso `*_ausente` aparece.
+ * Snapshot VALIDADO em TEMPO DE EXECUÇÃO e INERTE da guia entregue ao motor
+ * (§3.7/#ac-17/#ac-18). Os três campos semânticos recebem os valores já
+ * CAPTURADOS e limitados uma única vez; TODO campo consumido pelo motor é
+ * validado contra sua forma de execução (string primitiva dentro do teto de
+ * abuso, `null`/`DataCivil`/número finito, `problemas` como array de registros
+ * simples) e reconstruído com `Object.create(null)` + `Object.defineProperty`,
+ * de modo que nenhum acessor, `Proxy`, objeto coercível, string gigante ou
+ * chave `__proto__` chegue ao motor. Qualquer valor MALFORMADO fecha o snapshot
+ * (`null`) para o chamador cair no caminho determinístico de `guiaMinima()`, sem
+ * rejeitar a Promise nem ampliar o resultado.
  */
-function guiaComCamposLimitados(
-  guia: GuiaNormalizada,
+function montarSnapshotInerte(
+  descritores: Record<string, PropertyDescriptor>,
   observacao: string,
   convenio: string,
   procedimento: string,
@@ -306,31 +449,9 @@ function guiaComCamposLimitados(
   const convenioFinal = limitarCampo(convenio);
   const procedimentoFinal = limitarCampo(procedimento);
 
-  let descritores: Record<string, PropertyDescriptor>;
-  try {
-    descritores = Object.getOwnPropertyDescriptors(guia);
-  } catch {
-    return null;
-  }
+  const saida = registroInerte();
 
-  const saida: Record<string, PropertyDescriptor> = {};
-  for (const chave of Object.keys(descritores)) {
-    if (
-      chave === "observacaoRecepcao" ||
-      chave === "convenio" ||
-      chave === "procedimentoCodigo" ||
-      chave === "original"
-    ) {
-      continue;
-    }
-    const descritor = descritores[chave];
-    if (!descritor || !("value" in descritor)) {
-      return null;
-    }
-    saida[chave] = comoDado(descritor.value);
-  }
-
-  const original = reconstruirOriginal(
+  const original = montarOriginalInerte(
     descritores.original,
     observacaoFinal,
     convenioFinal,
@@ -340,16 +461,67 @@ function guiaComCamposLimitados(
     return null;
   }
 
-  saida.observacaoRecepcao = comoDado(observacaoFinal);
-  saida.convenio = comoDado(convenioFinal);
-  saida.procedimentoCodigo = comoDado(procedimentoFinal);
-  saida.original = comoDado(original);
-
-  try {
-    return Object.defineProperties({}, saida) as GuiaNormalizada;
-  } catch {
+  const descritorProblemas = descritores.problemas;
+  if (!descritorProblemas || !("value" in descritorProblemas)) {
     return null;
   }
+  const problemas = clonarProblemasInertes(descritorProblemas.value);
+  if (problemas === null) {
+    return null;
+  }
+
+  const descritorLinha = descritores.linhaOriginal;
+  if (
+    !descritorLinha ||
+    !("value" in descritorLinha) ||
+    typeof descritorLinha.value !== "string"
+  ) {
+    return null;
+  }
+  // `linhaOriginal` NÃO é consumido pelo motor e pode legitimamente embutir o
+  // texto CRU de um campo semântico acima do teto de abuso; por isso exige
+  // apenas string primitiva, sem o teto, e nunca é interpolado no resultado.
+  definirDado(saida, "linhaOriginal", descritorLinha.value);
+
+  for (const chave of CAMPOS_TEXTO_INERTES) {
+    const descritor = descritores[chave];
+    if (!descritor || !("value" in descritor) || !stringInerte(descritor.value)) {
+      return null;
+    }
+    definirDado(saida, chave, descritor.value);
+  }
+
+  for (const chave of CAMPOS_DATA_INERTES) {
+    const descritor = descritores[chave];
+    if (!descritor || !("value" in descritor)) {
+      return null;
+    }
+    const data = clonarDataInerte(descritor.value);
+    if (data === undefined) {
+      return null;
+    }
+    definirDado(saida, chave, data);
+  }
+
+  for (const chave of CAMPOS_NUMERO_INERTES) {
+    const descritor = descritores[chave];
+    if (!descritor || !("value" in descritor)) {
+      return null;
+    }
+    const numero = numeroInerte(descritor.value);
+    if (numero === undefined) {
+      return null;
+    }
+    definirDado(saida, chave, numero);
+  }
+
+  definirDado(saida, "observacaoRecepcao", observacaoFinal);
+  definirDado(saida, "convenio", convenioFinal);
+  definirDado(saida, "procedimentoCodigo", procedimentoFinal);
+  definirDado(saida, "original", original);
+  definirDado(saida, "problemas", problemas);
+
+  return saida as unknown as GuiaNormalizada;
 }
 
 /**
@@ -764,9 +936,20 @@ export async function conferirGuia(
   // Snapshot PURO DE DADOS entregue ao motor: `null` significa falha fechada
   // determinística (reflexão hostil ou acessor em campo consumido). `??` só
   // avalia `guiaMinima` quando o snapshot falhou.
-  const snapshot = capturaValida
-    ? guiaComCamposLimitados(guia, campoObservacao, campoConvenio, campoProcedimento)
-    : null;
+  let snapshot: GuiaNormalizada | null = null;
+  if (capturaValida) {
+    try {
+      const descritoresGuia = Object.getOwnPropertyDescriptors(guia);
+      snapshot = montarSnapshotInerte(
+        descritoresGuia,
+        campoObservacao,
+        campoConvenio,
+        campoProcedimento,
+      );
+    } catch {
+      snapshot = null;
+    }
+  }
   const guiaLimitada = snapshot ?? guiaMinima(campoObservacao, campoConvenio, campoProcedimento);
 
   const referenciaTemporal = opcoes.referenciaTemporal;
