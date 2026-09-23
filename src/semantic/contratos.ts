@@ -21,6 +21,7 @@ export type {
 } from "../domain/policies/contratos";
 
 import type { SituacaoTextual } from "../domain/policies/contratos";
+import { codificarUtf8 } from "../shared/sha256";
 
 /**
  * Fonte canônica única dos literais de `situacao` (§3.3), por campo.
@@ -45,6 +46,39 @@ export const VALORES_SITUACAO = Object.freeze({
 export const LITERAIS_SITUACAO: readonly string[] = Object.freeze([
   ...new Set(Object.values(VALORES_SITUACAO).flat()),
 ]);
+
+/**
+ * Teto de abuso, em bytes UTF-8, por campo bruto enviado ao provedor
+ * (`observacao_recepcao`, `convenio`, `procedimento_codigo`).
+ *
+ * É somente um teto de proteção contra entrada abusiva: não substitui nem
+ * altera os limites semânticos do schema (comprimentos máximos em caracteres
+ * após trim e a cardinalidade 8/3/500), que permanecem onde estão.
+ */
+export const LIMITE_TEXTO_BRUTO_BYTES = 64 * 1024;
+
+/**
+ * Indica se um campo bruto de entrada excede o teto de abuso, medindo bytes
+ * UTF-8. Pura e barata: decide pela pré-checagem em code units UTF-16
+ * (`valor.length`) sempre que ela já for conclusiva, sem codificar a string.
+ *
+ * Racional da pré-checagem: em UTF-8, todo code point gera ao menos tantos
+ * bytes quanto code units UTF-16 ocupa (ASCII 1/1; BMP 2–3 bytes por 1 code
+ * unit; astral 4 bytes por 2 code units; surrogate isolado é substituído por
+ * U+FFFD, 3 bytes por 1 code unit), isto é, `bytes >= valor.length` sempre.
+ * Logo `valor.length > LIMITE_TEXTO_BRUTO_BYTES` já implica
+ * `bytes > LIMITE_TEXTO_BRUTO_BYTES` e retorna `true` sem codificar. Só quando
+ * `.length` não decide é que a medição exata em bytes UTF-8 é feita.
+ *
+ * A fronteira é inclusiva: exatamente o teto não é abuso (`false`); um byte
+ * acima é abuso (`true`).
+ */
+export function campoTemTamanhoDeAbuso(valor: string): boolean {
+  if (valor.length > LIMITE_TEXTO_BRUTO_BYTES) {
+    return true;
+  }
+  return codificarUtf8(valor).length > LIMITE_TEXTO_BRUTO_BYTES;
+}
 
 /** Entrada mínima enviada ao provedor: texto livre e contexto estruturado. */
 export interface EntradaObservacao {

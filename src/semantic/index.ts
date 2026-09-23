@@ -7,10 +7,12 @@
  */
 
 export {
+  LIMITE_TEXTO_BRUTO_BYTES,
   LITERAIS_SITUACAO,
   TIPOS_AMBIGUIDADE,
   TIPOS_SINAL,
   VALORES_SITUACAO,
+  campoTemTamanhoDeAbuso,
 } from "./contratos";
 export type {
   Ambiguidade,
@@ -32,7 +34,7 @@ export {
   versaoEfetivaDoPrompt,
 } from "./prompt";
 
-export { MODELO_OBSERVACAO, criarInterpretadorWorkersAi } from "./workers-ai";
+export { MODELO_OBSERVACAO, ErroTetoDeAbuso, criarInterpretadorWorkersAi } from "./workers-ai";
 export type {
   BindingAi,
   OpcoesInterpretadorWorkersAi,

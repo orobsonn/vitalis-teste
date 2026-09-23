@@ -63,6 +63,8 @@ interface ApiAprovada {
   LIMITE_SINAIS: number;
   LIMITE_AMBIGUIDADES: number;
   LIMITE_EVIDENCIA: number;
+  LIMITE_TEXTO_BRUTO_BYTES: number;
+  campoTemTamanhoDeAbuso(valor: string): boolean;
   MIN_CARACTERES_EVIDENCIA: number;
   MIN_LETRAS_DIGITOS_EVIDENCIA: number;
   VERSAO_PROMPT: string;
@@ -516,5 +518,86 @@ describe("lt-prompt-acoplado-e-anti-injecao > situação textual", () => {
       semCobertura,
       `literais de situacao cuja remocao nao altera o hash: ${semCobertura.join(", ")}`,
     ).toEqual([]);
+  });
+});
+
+// Limite de abuso do texto bruto enviado ao provedor (revisão final MEDIUM):
+// o teto de 64 KiB precisa viver no contrato compartilhado (`src/semantic/contratos.ts`)
+// e ser reexportado pelo barrel, para valer em TODOS os adaptadores públicos e não
+// só no caminho de validação. O teto é medido em BYTES UTF-8 por campo bruto
+// (`observacao_recepcao`, `convenio`, `procedimento_codigo`) e a função é pura e
+// barata: decide pela pré-checagem de code units UTF-16 (`.length`) antes de
+// codificar, para não materializar o encode de strings gigantes.
+//
+// O acesso ao barrel usa `api?.campoTemTamanhoDeAbuso?.(valor)` (fallback seguro
+// para RED): enquanto o símbolo não for exportado o valor é `undefined` e a
+// asserção falha — nunca há PASS vacuoso.
+function temTamanhoDeAbuso(valor: string): boolean {
+  return api?.campoTemTamanhoDeAbuso?.(valor) as boolean;
+}
+
+describe("lt-limite-de-abuso-do-texto-bruto", () => {
+  // Teto de abuso, em bytes UTF-8, por campo bruto enviado ao provedor.
+  const TETO = 64 * 1024;
+
+  it("expõe a constante de teto do texto bruto no contrato compartilhado", () => {
+    expect(api?.LIMITE_TEXTO_BRUTO_BYTES).toBe(TETO);
+    expect(api?.LIMITE_TEXTO_BRUTO_BYTES).toBe(65536);
+  });
+
+  it("aceita exatamente o teto e rejeita um byte acima (ASCII)", () => {
+    // Em ASCII 1 code unit = 1 byte; a fronteira fica no próprio teto.
+    expect("a".repeat(TETO)).toHaveLength(TETO);
+    expect(temTamanhoDeAbuso("a".repeat(TETO))).toBe(false);
+    expect(temTamanhoDeAbuso("a".repeat(TETO + 1))).toBe(true);
+  });
+
+  it("mede multibyte em BYTES UTF-8, não em code units UTF-16", () => {
+    // "é" (U+00E9) ocupa 2 bytes UTF-8 e 1 code unit UTF-16.
+    const noTeto = "é".repeat(32768);
+    expect(noTeto).toHaveLength(32768);
+    // 2 * 32768 = 65536 bytes ⇒ exatamente o teto.
+    expect(temTamanhoDeAbuso(noTeto)).toBe(false);
+
+    // 2 * 32769 = 65538 bytes ⇒ 2 bytes acima do teto.
+    expect(temTamanhoDeAbuso(`${noTeto}é`)).toBe(true);
+
+    // Prova explícita de que a medição é em bytes: aqui os code units (40000)
+    // estão MUITO abaixo do teto de 65536, mas os bytes (80000) o excedem.
+    const muitosBytes = "é".repeat(40000);
+    expect(muitosBytes.length).toBeLessThan(api?.LIMITE_TEXTO_BRUTO_BYTES ?? 0);
+    expect(temTamanhoDeAbuso(muitosBytes)).toBe(true);
+  });
+
+  it("trata astrais (4 bytes por 2 code units) pela contagem em bytes", () => {
+    // "\u{10400}" (U+10400) ocupa 4 bytes UTF-8 e 2 code units UTF-16.
+    const astral = "\u{10400}";
+    expect(astral).toHaveLength(2);
+
+    const noTeto = astral.repeat(16384);
+    expect(noTeto).toHaveLength(32768);
+    // 4 * 16384 = 65536 bytes ⇒ exatamente o teto.
+    expect(temTamanhoDeAbuso(noTeto)).toBe(false);
+
+    // 4 * 16385 = 65540 bytes ⇒ 4 bytes acima do teto.
+    expect(temTamanhoDeAbuso(`${noTeto}${astral}`)).toBe(true);
+  });
+
+  it("não marca strings curtas nem vazias como abuso", () => {
+    expect(temTamanhoDeAbuso("")).toBe(false);
+    expect(temTamanhoDeAbuso("confirmado")).toBe(false);
+  });
+
+  it("decide string gigante sem materializar o encode completo", () => {
+    // 20 milhões de code units ASCII: a pré-checagem por `.length` já excede o
+    // teto e decide sem codificar. O caminho alternativo — codificar 20 milhões
+    // de code units em JS puro — levaria segundos; o limite de tempo generoso é
+    // o observável disponível para "não materializa o encode".
+    const gigante = "a".repeat(20_000_000);
+    const inicio = performance.now();
+    const resultado = temTamanhoDeAbuso(gigante);
+    const decorridoMs = performance.now() - inicio;
+    expect(resultado).toBe(true);
+    expect(decorridoMs).toBeLessThan(1000);
   });
 });
