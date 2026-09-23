@@ -294,6 +294,23 @@ function identidadeConfere(
   return resposta.modelo === contexto.modelo && resposta.promptVersao === contexto.promptVersao;
 }
 
+/**
+ * Leitura guardada do marcador `notificaRecusaNoObservador`: só o primitivo
+ * `true` significa que a quota JÁ se auto-reporta; um acessor (ou `Proxy`) que
+ * lance, o marcador ausente e qualquer outro valor recaem em "a quota NÃO se
+ * auto-reporta", de modo que a orquestração conta a recusa pelo próprio
+ * observador sem nunca rejeitar `conferirGuia`. A proveniência do marcador
+ * (booleano público forjável) é uma limitação da quota dona; aqui, um marcador
+ * desconhecido ou forjado apenas cai na notificação do lado da conferência.
+ */
+function quotaSeAutoReporta(quota: QuotaDeChamadas): boolean {
+  try {
+    return quota.notificaRecusaNoObservador === true;
+  } catch {
+    return false;
+  }
+}
+
 /** Classifica a falha de uma tentativa sem deixar exceção escapar (fecha como não transitória). */
 function classificarFalhaComGuarda(
   classificar: (erro: unknown) => ClassificacaoFalha,
@@ -503,11 +520,13 @@ export async function conferirGuia(
     if (!quotaAutorizou) {
       // Contagem única da recusa: quando a quota JÁ se auto-reporta ao
       // observador (`notificaRecusaNoObservador === true`), a orquestração não
-      // conta de novo; só quotas sem esse marcador (plain/fake, sem observador)
-      // são contadas aqui. Em ambos os casos emite exatamente um
-      // `quota_recusada` — antes de `registrarChamada()` e de qualquer envio —
-      // e retorna imediatamente, sem segunda contagem.
-      if (quota.notificaRecusaNoObservador !== true) {
+      // conta de novo; só quotas sem esse marcador (plain/fake, sem observador,
+      // ou com marcador forjado/ilegível) são contadas aqui. A leitura é sempre
+      // guardada por `quotaSeAutoReporta`: um acessor que lance NUNCA rejeita a
+      // conferência nem pula o evento/contagem. Em ambos os casos emite
+      // exatamente um `quota_recusada` — antes de `registrarChamada()` e de
+      // qualquer envio — e retorna imediatamente, sem segunda contagem.
+      if (!quotaSeAutoReporta(quota)) {
         notificarObservador(observador, (o) => o.registrarRecusaQuota());
       }
       emitir(registrador, "quota_recusada", {
