@@ -491,7 +491,19 @@ export async function conferirGuia(
 
   // 6. Tentativas estritamente sequenciais, com no máximo uma retentativa.
   for (;;) {
-    if (quota && !quota.consumir()) {
+    // Quota consultada sob guarda: um `consumir()` que lance (por exemplo, um
+    // observador hostil injetado na quota) é tratado como recusa fechada e cai
+    // no MESMO caminho de recusa abaixo — a exceção nunca escapa da conferência
+    // nem pula o evento, a contagem e o resultado `incompleta`.
+    let quotaAutorizou = true;
+    if (quota) {
+      try {
+        quotaAutorizou = quota.consumir();
+      } catch {
+        quotaAutorizou = false;
+      }
+    }
+    if (!quotaAutorizou) {
       // Contagem única da recusa: a orquestração (não a quota injetada) registra
       // a métrica e emite `quota_recusada` — antes de `registrarChamada()` e de
       // qualquer envio — e retorna imediatamente, sem segunda contagem.
