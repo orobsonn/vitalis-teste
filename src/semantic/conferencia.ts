@@ -146,9 +146,62 @@ function bytesDoTexto(texto: string): number {
  * de abuso em BYTES UTF-8. Medido sempre no valor cru (antes de `trim`), de
  * modo que um campo só-espaços enorme não escape por ter comprimento trimado
  * pequeno. O MESMO teto vale para observação, convênio e procedimento.
+ *
+ * Pré-checagem barata em UNIDADES de código UTF-16 ANTES de codificar: o
+ * comprimento em bytes UTF-8 nunca é menor que a contagem de unidades de
+ * código, então um texto acima de `LIMITE_TEXTO_BRUTO_BYTES` unidades já é
+ * recusa garantida — evita materializar um buffer codificado de vários
+ * megabytes no caso patológico (medido antes do teto EXATO em bytes para
+ * strings iguais ou abaixo daquele comprimento).
  */
 function acimaDoTetoDeAbuso(texto: string): boolean {
+  if (texto.length > LIMITE_TEXTO_BRUTO_BYTES) {
+    return true;
+  }
   return bytesDoTexto(texto) > LIMITE_TEXTO_BRUTO_BYTES;
+}
+
+/**
+ * Marcador fixo e PEQUENO que substitui, na representação entregue ao motor,
+ * um campo acima do teto de abuso (§3.9). Não vazio e não catalogado, de modo
+ * que os códigos determinísticos (`*_nao_catalogado`) sejam preservados sem
+ * embutir o corpo rejeitado (nem um prefixo dele) em `motivos[].evidencia`.
+ */
+const MARCADOR_TETO_ABUSO = "[campo_acima_do_teto_de_abuso]";
+
+/**
+ * Cópia LIMITADA da guia: cada campo acima do teto de abuso é trocado pelo
+ * marcador fixo, tanto no campo de topo (`observacaoRecepcao`/`convenio`/
+ * `procedimentoCodigo`) quanto na célula `original` correspondente; todos os
+ * demais campos permanecem intactos. Usada apenas como entrada do motor na
+ * recusa de abuso, para que o resultado determinístico seja limitado: o
+ * marcador é não vazio e não catalogado, então `convenio_nao_catalogado` e
+ * `procedimento_nao_catalogado` continuam e nenhum falso `*_ausente` aparece.
+ */
+function guiaComCamposLimitados(guia: GuiaNormalizada): GuiaNormalizada {
+  const observacaoAcima = acimaDoTetoDeAbuso(guia.observacaoRecepcao);
+  const convenioAcima = acimaDoTetoDeAbuso(guia.convenio);
+  const procedimentoAcima = acimaDoTetoDeAbuso(guia.procedimentoCodigo);
+  if (!observacaoAcima && !convenioAcima && !procedimentoAcima) {
+    return guia;
+  }
+  const original = { ...guia.original };
+  if (observacaoAcima) {
+    original.observacao_recepcao = MARCADOR_TETO_ABUSO;
+  }
+  if (convenioAcima) {
+    original.convenio = MARCADOR_TETO_ABUSO;
+  }
+  if (procedimentoAcima) {
+    original.procedimento_codigo = MARCADOR_TETO_ABUSO;
+  }
+  return {
+    ...guia,
+    original,
+    observacaoRecepcao: observacaoAcima ? MARCADOR_TETO_ABUSO : guia.observacaoRecepcao,
+    convenio: convenioAcima ? MARCADOR_TETO_ABUSO : guia.convenio,
+    procedimentoCodigo: procedimentoAcima ? MARCADOR_TETO_ABUSO : guia.procedimentoCodigo,
+  };
 }
 
 /**
@@ -483,8 +536,9 @@ export async function conferirGuia(
       limitacoes?: string[];
       codigo?: ClassificacaoEstavel;
     },
+    guiaParaMotor: GuiaNormalizada = guia,
   ): ResultadoVerificacao => {
-    const resultado = verificarGuia(guia, catalogo, { referenciaTemporal, textual });
+    const resultado = verificarGuia(guiaParaMotor, catalogo, { referenciaTemporal, textual });
     for (const limitacao of extras.limitacoes ?? []) {
       if (!resultado.limitacoes.includes(limitacao)) {
         resultado.limitacoes.push(limitacao);
@@ -515,7 +569,12 @@ export async function conferirGuia(
   // trimado segue como o único limite semântico. Acima do teto, falha fechada
   // sem cache e sem chamada. A observação carrega a limitação nomeada; convênio
   // e procedimento espelham o transbordo de contexto pós-trim (sem código novo
-  // de limitação, apenas `codigo: "limite_excedido"`).
+  // de limitação, apenas `codigo: "limite_excedido"`). O motor recebe uma
+  // representação LIMITADA (`guiaComCamposLimitados`): o campo acima do teto é
+  // trocado por um marcador fixo antes de `verificarGuia`, de modo que a
+  // evidência determinística (`O convênio "…" não consta no catálogo.`) nunca
+  // embute o corpo rejeitado nem um prefixo dele; cache, quota e provedor
+  // permanecem intactos (zero leitura/gravação e zero consumo).
   if (acimaDoTetoDeAbuso(guia.observacaoRecepcao)) {
     return concluir(
       { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
@@ -524,6 +583,7 @@ export async function conferirGuia(
         limitacoes: [LIMITACAO_OBSERVACAO_ACIMA_DO_LIMITE],
         codigo: "limite_excedido",
       },
+      guiaComCamposLimitados(guia),
     );
   }
   if (
@@ -533,6 +593,7 @@ export async function conferirGuia(
     return concluir(
       { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
       { estado: "incompleta", codigo: "limite_excedido" },
+      guiaComCamposLimitados(guia),
     );
   }
 
