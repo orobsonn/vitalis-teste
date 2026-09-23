@@ -571,3 +571,145 @@ describe("teto-de-abuso-em-bytes-utf8", () => {
     expect((erro as Error).name).toBe("ErroTetoDeAbuso");
   });
 });
+
+// Ordem das guardas e teto por campo em bytes UTF-8 (lacunas reais de cobertura):
+// o teto de abuso é avaliado por campo CRU, ANTES de qualquer envio, e vence a
+// normalização do modelo configurado; a fronteira inclusiva em bytes vale também
+// para `convenio` e `procedimento_codigo`, não só para `observacao_recepcao`, e
+// não é contornada por uma observação vazia. Observáveis apenas comportamentais:
+// primeiro argumento de `ai.run`, chaves/valores do payload do usuário,
+// `RespostaBruta.modelo`, erro tipado exportado e contagem de chamadas — nada de
+// espiões internos nem mutações hipotéticas.
+describe("teto-de-abuso-por-campo-e-ordem-das-guardas", () => {
+  function entradaComCampos(parcial: Partial<EntradaObservacao>): EntradaObservacao {
+    return {
+      observacao_recepcao: "Observação de rotina.",
+      convenio: "unimed",
+      procedimento_codigo: "40901114",
+      ...parcial,
+    };
+  }
+
+  async function capturarErro(invocacao: () => Promise<unknown>): Promise<unknown> {
+    try {
+      await invocacao();
+    } catch (capturado) {
+      return capturado;
+    }
+    return undefined;
+  }
+
+  it("recusa pelo teto de abuso mesmo com modelo configurado inválido, sem nenhuma inferência", async () => {
+    const ConstrutorErro = api?.ErroTetoDeAbuso;
+    expect(typeof api?.criarInterpretadorWorkersAi).toBe("function");
+    expect(typeof ConstrutorErro).toBe("function");
+    expect(api?.LIMITE_TEXTO_BRUTO_BYTES).toBe(64 * 1024);
+
+    // `opcoes.modelo` vazio recairia no padrão; ainda assim o teto de abuso é
+    // avaliado no campo CRU primeiro e vence: a recusa é por abuso, uma entrada
+    // abusiva nunca é enviada, com qualquer configuração de modelo.
+    const teto = api!.LIMITE_TEXTO_BRUTO_BYTES;
+    const entrada = entradaComCampos({ observacao_recepcao: "a".repeat(teto + 1) });
+    const { binding, chamadas } = criarBindingFake({ response: RESPOSTA_PROVEDOR });
+    const interpretador = api!.criarInterpretadorWorkersAi!(binding, { modelo: "" });
+
+    const erro = await capturarErro(() => interpretador.extrair(entrada));
+
+    // Nenhuma inferência foi disparada.
+    expect(chamadas).toHaveLength(0);
+
+    // O erro é o de abuso, distinguível pelo `name` estável, e não outro erro de
+    // configuração/validação.
+    expect(erro).toBeInstanceOf(ConstrutorErro);
+    expect((erro as Error).name).toBe("ErroTetoDeAbuso");
+    expect(erro).toBeInstanceOf(Error);
+  });
+
+  it("aceita convenio multibyte EXATAMENTE no teto em bytes e preserva o valor", async () => {
+    expect(typeof api?.criarInterpretadorWorkersAi).toBe("function");
+    expect(api?.LIMITE_TEXTO_BRUTO_BYTES).toBe(64 * 1024);
+
+    // "é" = 1 code unit (2 bytes UTF-8): 32768 code units = 65536 bytes, muito
+    // abaixo do teto em `.length`, mas exatamente no teto em bytes.
+    const convenio = "é".repeat(32768);
+    expect(convenio.length).toBe(32768);
+    expect(convenio.length).toBeLessThan(api!.LIMITE_TEXTO_BRUTO_BYTES);
+
+    const entrada = entradaComCampos({ convenio });
+    const { binding, chamadas } = criarBindingFake({ response: RESPOSTA_PROVEDOR });
+    const interpretador = api!.criarInterpretadorWorkersAi!(binding);
+
+    const resposta = await interpretador.extrair(entrada);
+
+    // Exatamente uma chamada, com o teto de geração preservado.
+    expect(chamadas).toHaveLength(1);
+    expect(chamadas[0].entrada.max_tokens).toBe(512);
+
+    // Payload exato de três campos, com o `convenio` preservado idêntico (sem
+    // trim nem normalização que o encolhesse).
+    const mensagens = chamadas[0].entrada.messages as { role: string; content: string }[];
+    const payloadUsuario = JSON.parse(mensagens[1].content) as Record<string, unknown>;
+    expect(Object.keys(payloadUsuario).sort()).toEqual([
+      "convenio",
+      "observacao_recepcao",
+      "procedimento_codigo",
+    ]);
+    expect(payloadUsuario.convenio).toBe(convenio);
+
+    // O modelo efetivo continua sendo o padrão fixo do contrato.
+    expect(resposta.modelo).toBe(api?.MODELO_OBSERVACAO);
+  });
+
+  it("aceita procedimento_codigo multibyte EXATAMENTE no teto em bytes e preserva o valor", async () => {
+    expect(typeof api?.criarInterpretadorWorkersAi).toBe("function");
+    expect(api?.LIMITE_TEXTO_BRUTO_BYTES).toBe(64 * 1024);
+
+    // Mesma borda do `convenio`: 32768 code units, 65536 bytes UTF-8.
+    const procedimento = "é".repeat(32768);
+    expect(procedimento.length).toBe(32768);
+    expect(procedimento.length).toBeLessThan(api!.LIMITE_TEXTO_BRUTO_BYTES);
+
+    const entrada = entradaComCampos({ procedimento_codigo: procedimento });
+    const { binding, chamadas } = criarBindingFake({ response: RESPOSTA_PROVEDOR });
+    const interpretador = api!.criarInterpretadorWorkersAi!(binding);
+
+    const resposta = await interpretador.extrair(entrada);
+
+    expect(chamadas).toHaveLength(1);
+    expect(chamadas[0].entrada.max_tokens).toBe(512);
+
+    const mensagens = chamadas[0].entrada.messages as { role: string; content: string }[];
+    const payloadUsuario = JSON.parse(mensagens[1].content) as Record<string, unknown>;
+    expect(Object.keys(payloadUsuario).sort()).toEqual([
+      "convenio",
+      "observacao_recepcao",
+      "procedimento_codigo",
+    ]);
+    expect(payloadUsuario.procedimento_codigo).toBe(procedimento);
+
+    expect(resposta.modelo).toBe(api?.MODELO_OBSERVACAO);
+  });
+
+  it("recusa pelo teto mesmo com observacao_recepcao vazia: o teto é por campo", async () => {
+    const ConstrutorErro = api?.ErroTetoDeAbuso;
+    expect(typeof api?.criarInterpretadorWorkersAi).toBe("function");
+    expect(typeof ConstrutorErro).toBe("function");
+    expect(api?.LIMITE_TEXTO_BRUTO_BYTES).toBe(64 * 1024);
+
+    // 40000 code units (SOB o teto em `.length`) mas 80000 bytes UTF-8 (ACIMA
+    // do teto em bytes). Nenhuma lógica de "observação vazia pula a extração"
+    // pode contornar o teto dos outros campos.
+    const convenio = "é".repeat(40000);
+    expect(convenio.length).toBeLessThan(api!.LIMITE_TEXTO_BRUTO_BYTES);
+
+    const entrada = entradaComCampos({ observacao_recepcao: "", convenio });
+    const { binding, chamadas } = criarBindingFake({ response: RESPOSTA_PROVEDOR });
+    const interpretador = api!.criarInterpretadorWorkersAi!(binding);
+
+    const erro = await capturarErro(() => interpretador.extrair(entrada));
+
+    expect(chamadas).toHaveLength(0);
+    expect(erro).toBeInstanceOf(ConstrutorErro);
+    expect((erro as Error).name).toBe("ErroTetoDeAbuso");
+  });
+});
