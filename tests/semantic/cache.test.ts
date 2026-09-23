@@ -701,3 +701,243 @@ describe("robustez-do-registrador", () => {
     expect(armazem.size).toBe(0);
   });
 });
+
+// Snapshot único dos campos crus (§3.9): a guarda de teto, a derivação da chave e
+// a revalidação precisam consumir UMA única leitura dos três campos brutos. Um
+// objeto hostil com getters inconstantes devolve valor curto na 1ª leitura e
+// gigante (> 64 KiB UTF-8) na 2ª: sem o snapshot, a guarda vê o valor curto e a
+// derivação da chave serializa/gera hash do valor gigante (TOCTOU). O campo
+// gigante nunca pode alcançar `JSON.stringify` nem indexar o KV.
+const LIMITE_TEXTO_BRUTO_BYTES_ESPERADO = 64 * 1024;
+const GIGANTE_CAMPO = "a".repeat(LIMITE_TEXTO_BRUTO_BYTES_ESPERADO + 1);
+
+const CAMPOS_CRUS = ["observacao_recepcao", "convenio", "procedimento_codigo"] as const;
+type CampoCruto = (typeof CAMPOS_CRUS)[number];
+type ContagemDeLeituras = Record<CampoCruto, number>;
+
+const LEITURA_UNICA: ContagemDeLeituras = {
+  observacao_recepcao: 1,
+  convenio: 1,
+  procedimento_codigo: 1,
+};
+
+function contagemZerada(): ContagemDeLeituras {
+  return { observacao_recepcao: 0, convenio: 0, procedimento_codigo: 0 };
+}
+
+function deltaDeLeituras(
+  antes: ContagemDeLeituras,
+  depois: ContagemDeLeituras,
+): ContagemDeLeituras {
+  return {
+    observacao_recepcao: depois.observacao_recepcao - antes.observacao_recepcao,
+    convenio: depois.convenio - antes.convenio,
+    procedimento_codigo: depois.procedimento_codigo - antes.procedimento_codigo,
+  };
+}
+
+// Entrada hostil: cada campo cru é um getter que conta as leituras e devolve o
+// valor de `primeiro` na 1ª leitura e o de `seguinte` em todas as demais.
+function criarEntradaHostil(
+  primeiro: Record<CampoCruto, string>,
+  seguinte: Record<CampoCruto, string>,
+): { entrada: EntradaObservacao; leituras: ContagemDeLeituras } {
+  const leituras = contagemZerada();
+  const entrada = {} as EntradaObservacao;
+  for (const campo of CAMPOS_CRUS) {
+    Object.defineProperty(entrada, campo, {
+      enumerable: true,
+      configurable: true,
+      get() {
+        leituras[campo] += 1;
+        return leituras[campo] === 1 ? primeiro[campo] : seguinte[campo];
+      },
+    });
+  }
+  return { entrada, leituras };
+}
+
+interface KvEspiao {
+  kv: CacheKv;
+  leituras: string[];
+  gravacoes: Gravacao[];
+  armazem: Map<string, string>;
+}
+
+// Estende o `criarKvFake` existente registrando também cada `get`, para provar
+// qual chave indexou o KV.
+function criarKvEspiao(inicial: Record<string, string> = {}): KvEspiao {
+  const base = criarKvFake(inicial);
+  const leituras: string[] = [];
+  const kv: CacheKv = {
+    async get(chave) {
+      leituras.push(chave);
+      return base.kv.get(chave);
+    },
+    async put(chave, valor, opcoes) {
+      await base.kv.put(chave, valor, opcoes);
+    },
+    async delete(chave) {
+      await base.kv.delete(chave);
+    },
+  };
+  return { kv, leituras, gravacoes: base.gravacoes, armazem: base.armazem };
+}
+
+// Prova de não-serialização resistente a aninhamento: uma string gigante pode
+// viajar dentro de um objeto ou array passado a `JSON.stringify`, então a
+// varredura de cada argumento do espião é recursiva e não apenas superficial.
+function contemTextoGigante(valor: unknown): boolean {
+  if (typeof valor === "string") {
+    return valor.includes(GIGANTE_CAMPO);
+  }
+  if (Array.isArray(valor)) {
+    return valor.some((item) => contemTextoGigante(item));
+  }
+  if (valor !== null && typeof valor === "object") {
+    return Object.values(valor as Record<string, unknown>).some((item) =>
+      contemTextoGigante(item),
+    );
+  }
+  return false;
+}
+
+describe("snapshot-unico-dos-campos-crus", () => {
+  const CURTO: Record<CampoCruto, string> = {
+    observacao_recepcao: TEXTO_OBSERVACAO,
+    convenio: "unimed",
+    procedimento_codigo: "40901114",
+  };
+  const GIGANTE: Record<CampoCruto, string> = {
+    observacao_recepcao: GIGANTE_CAMPO,
+    convenio: GIGANTE_CAMPO,
+    procedimento_codigo: GIGANTE_CAMPO,
+  };
+
+  it("lê cada campo cru uma única vez e deriva a chave do snapshot curto em ler e gravar", async () => {
+    expect(typeof api?.criarAdaptadorCacheSemantico).toBe("function");
+
+    expect(bytesUtf8(GIGANTE_CAMPO)).toBeGreaterThan(LIMITE_TEXTO_BRUTO_BYTES_ESPERADO);
+
+    // Chaves calculadas FORA da janela do espião de `JSON.stringify`, para que a
+    // computação do próprio teste não apareça como serialização do gigante.
+    const chaveCurta = api!.montarChaveCacheSemantica!(CURTO, BASE).chave;
+    const chaveGigante = api!.montarChaveCacheSemantica!(GIGANTE, BASE).chave;
+    expect(chaveGigante).not.toBe(chaveCurta);
+
+    // Controle positivo do scanner recursivo: ele DETECTA o gigante aninhado
+    // dentro de objeto/array e não dispara em texto comum. Sem isso a asserção
+    // de não-serialização poderia ser vacuamente verdadeira (falso negativo).
+    expect(contemTextoGigante({ campos: [GIGANTE_CAMPO] })).toBe(true);
+    expect(contemTextoGigante(["curto", { aninhado: "curto" }])).toBe(false);
+
+    const { kv, leituras: chavesLidas, gravacoes, armazem } = criarKvEspiao();
+    const cache = api!.criarAdaptadorCacheSemantico!(kv);
+
+    const espiao = vi.spyOn(JSON, "stringify");
+    let observado:
+      | { deltaLer: ContagemDeLeituras; deltaGravar: ContagemDeLeituras; argumentos: unknown[] }
+      | undefined;
+    try {
+      // Fixture hostil INDEPENDENTE por operação: cada uma devolve o valor curto
+      // na própria 1ª leitura, de modo que `gravar` não herde a leitura já
+      // consumida por `ler` (o que faria o snapshot ver o valor gigante).
+      const hostilLer = criarEntradaHostil(CURTO, GIGANTE);
+      const antesLer = { ...hostilLer.leituras };
+      await cache.ler(hostilLer.entrada, BASE);
+      const deltaLer = deltaDeLeituras(antesLer, hostilLer.leituras);
+
+      const hostilGravar = criarEntradaHostil(CURTO, GIGANTE);
+      const antesGravar = { ...hostilGravar.leituras };
+      await cache.gravar(hostilGravar.entrada, BASE, SINAIS_VALIDOS);
+      const deltaGravar = deltaDeLeituras(antesGravar, hostilGravar.leituras);
+
+      observado = {
+        deltaLer,
+        deltaGravar,
+        argumentos: espiao.mock.calls.map((chamada) => chamada[0]),
+      };
+    } finally {
+      espiao.mockRestore();
+    }
+
+    expect(observado).toBeDefined();
+
+    // Snapshot único: cada campo cru é lido exatamente uma vez por chamada, não
+    // duas (guarda + chave). É a leitura dupla que abre a janela TOCTOU.
+    expect(observado!.deltaLer).toEqual(LEITURA_UNICA);
+    expect(observado!.deltaGravar).toEqual(LEITURA_UNICA);
+
+    // O valor gigante nunca chega à serialização canônica — nem diretamente nem
+    // aninhado dentro de um objeto/array argumento de JSON.stringify.
+    expect(observado!.argumentos).not.toContain(GIGANTE_CAMPO);
+    expect(observado!.argumentos.some((argumento) => contemTextoGigante(argumento))).toBe(
+      false,
+    );
+
+    // Nenhuma interação de KV é indexada pela chave derivada do valor gigante.
+    expect(chavesLidas).not.toContain(chaveGigante);
+    expect(gravacoes.map((gravacao) => gravacao.chave)).not.toContain(chaveGigante);
+
+    // A única chave tocada é a do snapshot curto, com TTL padrão de 24 h.
+    expect(chavesLidas).toEqual([chaveCurta]);
+    expect(gravacoes.map((gravacao) => gravacao.chave)).toEqual([chaveCurta]);
+    expect(gravacoes[0].opcoes?.expirationTtl).toBe(TTL_PADRAO_SEGUNDOS);
+
+    const persistido = armazem.get(chaveCurta);
+    expect(typeof persistido).toBe("string");
+    expect(JSON.parse(persistido as string)).toEqual(SINAIS_VALIDOS);
+  });
+
+  it("recusa o valor gigante no próprio snapshot sem tocar o KV nem serializá-lo", async () => {
+    expect(typeof api?.criarAdaptadorCacheSemantico).toBe("function");
+
+    expect(bytesUtf8(GIGANTE_CAMPO)).toBeGreaterThan(LIMITE_TEXTO_BRUTO_BYTES_ESPERADO);
+
+    // O snapshot já lê o valor gigante: a guarda de teto recusa a entrada antes de
+    // qualquer derivação de chave, interação de KV ou serialização.
+    const { entrada, leituras } = criarEntradaHostil(GIGANTE, GIGANTE);
+    const { kv, leituras: chavesLidas, gravacoes } = criarKvEspiao();
+    const cache = api!.criarAdaptadorCacheSemantico!(kv);
+
+    const espiao = vi.spyOn(JSON, "stringify");
+    let observado:
+      | {
+          resultado: SinaisObservacao | null;
+          deltaLer: ContagemDeLeituras;
+          deltaGravar: ContagemDeLeituras;
+          argumentos: unknown[];
+        }
+      | undefined;
+    try {
+      const antesLer = { ...leituras };
+      const resultado = await cache.ler(entrada, BASE);
+      const deltaLer = deltaDeLeituras(antesLer, leituras);
+
+      const antesGravar = { ...leituras };
+      await cache.gravar(entrada, BASE, SINAIS_VALIDOS);
+      const deltaGravar = deltaDeLeituras(antesGravar, leituras);
+
+      observado = {
+        resultado,
+        deltaLer,
+        deltaGravar,
+        argumentos: espiao.mock.calls.map((chamada) => chamada[0]),
+      };
+    } finally {
+      espiao.mockRestore();
+    }
+
+    expect(observado).toBeDefined();
+    expect(observado!.resultado).toBeNull();
+
+    // Cada campo é lido exatamente uma vez, mesmo que a guarda recuse o primeiro.
+    expect(observado!.deltaLer).toEqual(LEITURA_UNICA);
+    expect(observado!.deltaGravar).toEqual(LEITURA_UNICA);
+
+    // Zero serialização do gigante e zero interação de KV.
+    expect(observado!.argumentos).not.toContain(GIGANTE_CAMPO);
+    expect(chavesLidas).toEqual([]);
+    expect(gravacoes).toEqual([]);
+  });
+});
