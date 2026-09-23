@@ -92,12 +92,34 @@ function evidenciaEhLiteral(evidencia: string, textoObservacao: string): boolean
 
   // Aceita se QUALQUER ocorrência contígua estiver alinhada a palavras;
   // uma ocorrência embutida em outra palavra não impede uma posterior alinhada.
+  // A fronteira é julgada sobre o code point completo: um par surrogate
+  // (fora do BMP) precisa ser reunido antes de testar `\p{L}`/`\p{N}`.
   while (indice >= 0) {
-    const antes = indice > 0 ? textoNormalizado.charAt(indice - 1) : "";
-    const depois =
-      indice + evidenciaNormalizada.length < textoNormalizado.length
-        ? textoNormalizado.charAt(indice + evidenciaNormalizada.length)
-        : "";
+    const fimEvidencia = indice + evidenciaNormalizada.length;
+    let antes = "";
+    if (indice > 0) {
+      const inicio =
+        indice >= 2 &&
+        textoNormalizado.charCodeAt(indice - 1) >= 0xdc00 &&
+        textoNormalizado.charCodeAt(indice - 1) <= 0xdfff &&
+        textoNormalizado.charCodeAt(indice - 2) >= 0xd800 &&
+        textoNormalizado.charCodeAt(indice - 2) <= 0xdbff
+          ? indice - 2
+          : indice - 1;
+      antes = textoNormalizado.slice(inicio, indice);
+    }
+    let depois = "";
+    if (fimEvidencia < textoNormalizado.length) {
+      const fim =
+        textoNormalizado.charCodeAt(fimEvidencia) >= 0xd800 &&
+        textoNormalizado.charCodeAt(fimEvidencia) <= 0xdbff &&
+        fimEvidencia + 1 < textoNormalizado.length &&
+        textoNormalizado.charCodeAt(fimEvidencia + 1) >= 0xdc00 &&
+        textoNormalizado.charCodeAt(fimEvidencia + 1) <= 0xdfff
+          ? fimEvidencia + 2
+          : fimEvidencia + 1;
+      depois = textoNormalizado.slice(fimEvidencia, fim);
+    }
     if (!CARACTERE_ALFANUMERICO.test(antes) && !CARACTERE_ALFANUMERICO.test(depois)) {
       return true;
     }
