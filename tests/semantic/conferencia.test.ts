@@ -2796,3 +2796,168 @@ describe("lt-conferencia-vazio-cache-e-falhas — reforço: quota padrão determ
     expect(interpretador.chamadas).toHaveLength(60);
   });
 });
+
+describe("lt-conferencia-vazio-cache-e-falhas — reforço: observador hostil nunca rejeita a conferência", () => {
+  // Toda notificação de contadores (`registrarChamada`, `registrarCacheHit`,
+  // `registrarRecusaQuota`) passa por `notificarObservador` sob try/catch. Um
+  // `ObservadorContadores` cujo método lança NUNCA pode transformar
+  // `conferirGuia` numa Promise rejeitada nem suprimir o resultado fechado da
+  // recusa de quota: a telemetria é best-effort e as decisões permanecem as
+  // mesmas. Distinto do registrador hostil já coberto: aqui o alvo é o
+  // observador de contadores.
+  const observadorHostil: ObservadorContadores = {
+    registrarChamada() {
+      throw new Error("observador hostil");
+    },
+    registrarCacheHit() {
+      throw new Error("observador hostil");
+    },
+    registrarRecusaQuota() {
+      throw new Error("observador hostil");
+    },
+  };
+
+  it("hit de cache resolve completa, com o motivo cacheado e zero chamadas, mesmo com observador que sempre lança", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const entrada = entradaDe(guia);
+    const kv = criarKvFake({ [chaveDe(api, entrada)]: JSON.stringify(SINAIS_PARTICULAR) });
+    const cache = api.criarAdaptadorCacheSemantico(kv.kv);
+    const interpretador = criarInterpretadorFake([]);
+
+    // Basta aguardar: uma rejeição por `registrarCacheHit()` reprova o teste.
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache,
+      observador: observadorHostil,
+    });
+
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(codigos(resultado)).toContain("modalidade_particular_contraditoria");
+    expect(interpretador.chamadas).toHaveLength(0);
+  });
+
+  it("miss com extração válida resolve completa, com exatamente uma chamada, mesmo com observador que sempre lança", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    const cache = api.criarAdaptadorCacheSemantico(kv.kv);
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+
+    // Basta aguardar: uma rejeição por `registrarChamada()` reprova o teste.
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache,
+      observador: observadorHostil,
+    });
+
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(codigos(resultado)).toContain("modalidade_particular_contraditoria");
+    expect(interpretador.chamadas).toHaveLength(1);
+  });
+
+  it("recusa de quota resolve PENDENTE/incompleta sem chamar o modelo mesmo com observador que sempre lança", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    const cache = api.criarAdaptadorCacheSemantico(kv.kv);
+    // Quota já esgotada: a próxima `consumir()` é recusada antes de qualquer envio.
+    const quotaEsgotada = criarQuotaFake(0);
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+
+    // A recusa lança em `registrarRecusaQuota()`: o resultado fechado ainda
+    // precisa ser produzido apesar do observador hostil.
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache,
+      quota: quotaEsgotada.quota,
+      observador: observadorHostil,
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(resultado.limitacoes).toContain("quota_de_chamadas_excedida");
+    expect(resultado.limitacoes).toContain("checagem_textual_incompleta");
+    // A recusa antecede o modelo: nenhuma tentativa chega ao interpretador.
+    expect(interpretador.chamadas).toHaveLength(0);
+  });
+});
+
+describe("lt-conferencia-vazio-cache-e-falhas — reforço: timeoutCacheMs inválido recai no prazo padrão", () => {
+  // A normalização de `timeoutCacheMs` é a MESMA do timeout por tentativa: só
+  // número finito positivo vale; `NaN`, `0`, negativo e `Infinity` recaem no
+  // padrão `TIMEOUT_PADRAO_MS` (5000). Um valor inválido não pode desligar nem
+  // corromper a espera limitada do cache: um KV que aceita a leitura e nunca
+  // resolve continua expirando apenas no prazo padrão.
+  const INVALIDOS = [Number.NaN, 0, -100, Number.POSITIVE_INFINITY];
+
+  it("NaN, 0, negativo e Infinity recaem no prazo padrão de 5000 ms para a leitura de cache", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    for (const valor of INVALIDOS) {
+      const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+      const entrada = entradaDe(guia);
+      const kv = criarKvFake();
+      kv.travarLeitura();
+      const cache = api.criarAdaptadorCacheSemantico(kv.kv);
+      const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+      const emitidos: EventoRedigido[] = [];
+      const registrador = api.criarRegistradorRedigido((evento) => {
+        emitidos.push(evento);
+      });
+
+      vi.useFakeTimers();
+
+      let resolvido = false;
+      const promessa = api
+        .conferirGuia(guia, catalogo, {
+          interpretador: interpretador.interpretador,
+          cache,
+          registrador,
+          timeoutCacheMs: valor,
+        })
+        .then((resultado) => {
+          resolvido = true;
+          return resultado;
+        });
+
+      // 1000 ms < padrão: o valor inválido NÃO pode ser honrado como timeout
+      // imediato/zero/negativo — a conferência ainda não pode ter resolvido.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(
+        resolvido,
+        `timeoutCacheMs=${String(valor)} não pode expirar em 1000 ms`,
+      ).toBe(false);
+
+      // Total 5000 = TIMEOUT_PADRAO_MS: a leitura expira no padrão e a
+      // conferência conclui (miss degradado + extração válida).
+      await vi.advanceTimersByTimeAsync(4000);
+      expect(
+        resolvido,
+        `timeoutCacheMs=${String(valor)} precisa expirar no prazo padrão`,
+      ).toBe(true);
+
+      const resultado = await promessa;
+      expect(resultado.checagem_textual).toBe("completa");
+      expect(codigos(resultado)).toContain("modalidade_particular_contraditoria");
+      expect(interpretador.chamadas).toHaveLength(1);
+      expect(kv.leituras).toBe(1);
+
+      const falhasLeitura = emitidos.filter((evento) => evento.evento === "cache_leitura_falhou");
+      expect(falhasLeitura, `timeoutCacheMs=${String(valor)}`).toHaveLength(1);
+      expect(falhasLeitura[0].codigo).toBe("cache_indisponivel");
+      expect(falhasLeitura[0].cache_prefixo).toBe(
+        api.montarChaveCacheSemantica(entrada, contextoConfig(api)).prefixo,
+      );
+
+      vi.useRealTimers();
+    }
+  });
+});
