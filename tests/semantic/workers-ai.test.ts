@@ -394,3 +394,180 @@ describe("consistencia-da-normalizacao-do-modelo", () => {
     expect(resposta.modelo).toBe(modeloComEspacos);
   });
 });
+
+// Semântica em BYTES UTF-8 do teto de abuso (achado da revisão: a fronteira só
+// era exercitada com ASCII, onde 1 code unit = 1 byte). O teto é medido em bytes
+// UTF-8 do valor CRU, não em code units UTF-16: um campo multibyte cujo
+// `.length` está SOB o teto mas cujos bytes o excedem precisa ser recusado. O
+// observável é o primeiro argumento de `ai.run`, o erro tipado exportado e a
+// ausência de chamadas; nada de espiões internos ou mutações hipotéticas.
+describe("teto-de-abuso-em-bytes-utf8", () => {
+  // Entrada com um único campo multibyte, deixando os outros dois pequenos.
+  function entradaMultibyte(observacao_recepcao: string): EntradaObservacao {
+    return {
+      observacao_recepcao,
+      convenio: "unimed",
+      procedimento_codigo: "40901114",
+    };
+  }
+
+  it("acopla o teto ao contrato compartilhado exportado pelo barrel", () => {
+    expect(api?.LIMITE_TEXTO_BRUTO_BYTES).toBe(64 * 1024);
+  });
+
+  it("aceita observacao_recepcao multibyte EXATAMENTE no teto em bytes", async () => {
+    expect(typeof api?.criarInterpretadorWorkersAi).toBe("function");
+    expect(api?.LIMITE_TEXTO_BRUTO_BYTES).toBe(64 * 1024);
+
+    // "é" é 1 code unit (2 bytes UTF-8): 32768 code units = 65536 bytes, logo
+    // muito abaixo do teto em `.length`, mas exatamente no teto em bytes.
+    const observacao = "é".repeat(32768);
+    expect(observacao.length).toBe(32768);
+    expect(observacao.length).toBeLessThan(api!.LIMITE_TEXTO_BRUTO_BYTES);
+
+    const entrada = entradaMultibyte(observacao);
+    const { binding, chamadas } = criarBindingFake({ response: RESPOSTA_PROVEDOR });
+    const interpretador = api!.criarInterpretadorWorkersAi!(binding);
+
+    const resposta = await interpretador.extrair(entrada);
+
+    // Uma única inferência, com o payload exato de três campos e o teto de
+    // geração preservado.
+    expect(chamadas).toHaveLength(1);
+    expect(chamadas[0].entrada.max_tokens).toBe(512);
+
+    const mensagens = chamadas[0].entrada.messages as { role: string; content: string }[];
+    const payloadUsuario = JSON.parse(mensagens[1].content) as Record<string, unknown>;
+    expect(Object.keys(payloadUsuario).sort()).toEqual([
+      "convenio",
+      "observacao_recepcao",
+      "procedimento_codigo",
+    ]);
+
+    // O valor permanece idêntico: sem trim nem normalização que o encolhesse.
+    expect(payloadUsuario.observacao_recepcao).toBe(observacao);
+
+    // O modelo efetivo continua sendo o padrão fixo do contrato.
+    expect(resposta.modelo).toBe(api?.MODELO_OBSERVACAO);
+  });
+
+  it("recusa observacao_recepcao multibyte acima do teto em bytes, sem chamar o provedor", async () => {
+    const ConstrutorErro = api?.ErroTetoDeAbuso;
+    expect(typeof api?.criarInterpretadorWorkersAi).toBe("function");
+    expect(typeof ConstrutorErro).toBe("function");
+    expect(api?.LIMITE_TEXTO_BRUTO_BYTES).toBe(64 * 1024);
+
+    // 40000 code units (SOB o teto em `.length`) mas 80000 bytes UTF-8 (ACIMA
+    // do teto em bytes). Uma implementação que só contasse code units aceitaria.
+    const observacao = "é".repeat(40000);
+    expect(observacao.length).toBeLessThan(api!.LIMITE_TEXTO_BRUTO_BYTES);
+
+    const entrada = entradaMultibyte(observacao);
+    const { binding, chamadas } = criarBindingFake({ response: RESPOSTA_PROVEDOR });
+    const interpretador = api!.criarInterpretadorWorkersAi!(binding);
+
+    let erro: unknown;
+    try {
+      await interpretador.extrair(entrada);
+    } catch (capturado) {
+      erro = capturado;
+    }
+
+    // Nenhuma inferência foi disparada.
+    expect(chamadas).toHaveLength(0);
+
+    // Erro tipado e distinguível, exportado pelo módulo.
+    expect(erro).toBeInstanceOf(ConstrutorErro);
+    expect((erro as Error).name).toBe("ErroTetoDeAbuso");
+  });
+
+  it("recusa ANTES de serializar o payload: nenhum acesso a toJSON na entrada abusiva", async () => {
+    const ConstrutorErro = api?.ErroTetoDeAbuso;
+    expect(typeof api?.criarInterpretadorWorkersAi).toBe("function");
+    expect(typeof ConstrutorErro).toBe("function");
+    expect(api?.LIMITE_TEXTO_BRUTO_BYTES).toBe(64 * 1024);
+
+    // `convenio` é um objeto cujo `toJSON` só é chamado se o payload do usuário
+    // for realmente serializado com `JSON.stringify`; o contador é observável do
+    // próprio dado de entrada, não de um espião de módulo/interno.
+    let serializacoesDeConvenio = 0;
+    const convenioArmadilha = {
+      toJSON(): string {
+        serializacoesDeConvenio += 1;
+        return "unimed";
+      },
+    };
+
+    const entrada: EntradaObservacao = {
+      observacao_recepcao: "é".repeat(40000),
+      convenio: convenioArmadilha as unknown as string,
+      procedimento_codigo: "40901114",
+    };
+
+    const { binding, chamadas } = criarBindingFake({ response: RESPOSTA_PROVEDOR });
+    const interpretador = api!.criarInterpretadorWorkersAi!(binding);
+
+    let erro: unknown;
+    try {
+      await interpretador.extrair(entrada);
+    } catch (capturado) {
+      erro = capturado;
+    }
+
+    // O guarda lança no campo cru ANTES de qualquer serialização e ANTES de
+    // `ai.run`: o payload abusivo nunca é montado nem enviado.
+    expect(chamadas).toHaveLength(0);
+    expect(serializacoesDeConvenio).toBe(0);
+    expect(erro).toBeInstanceOf(ConstrutorErro);
+    expect((erro as Error).name).toBe("ErroTetoDeAbuso");
+  });
+
+  it("aceita observacao_recepcao astral EXATAMENTE no teto em bytes", async () => {
+    expect(typeof api?.criarInterpretadorWorkersAi).toBe("function");
+    expect(api?.LIMITE_TEXTO_BRUTO_BYTES).toBe(64 * 1024);
+
+    // "😀" é 2 code units (4 bytes UTF-8): 16384 repetições = 32768 code units e
+    // 65536 bytes, exatamente o teto.
+    const observacao = "😀".repeat(16384);
+    expect(observacao.length).toBe(32768);
+    expect(observacao.length).toBeLessThan(api!.LIMITE_TEXTO_BRUTO_BYTES);
+
+    const entrada = entradaMultibyte(observacao);
+    const { binding, chamadas } = criarBindingFake({ response: RESPOSTA_PROVEDOR });
+    const interpretador = api!.criarInterpretadorWorkersAi!(binding);
+
+    await interpretador.extrair(entrada);
+
+    expect(chamadas).toHaveLength(1);
+    expect(chamadas[0].entrada.max_tokens).toBe(512);
+    const mensagens = chamadas[0].entrada.messages as { role: string; content: string }[];
+    const payloadUsuario = JSON.parse(mensagens[1].content) as Record<string, unknown>;
+    expect(payloadUsuario.observacao_recepcao).toBe(observacao);
+  });
+
+  it("recusa observacao_recepcao astral acima do teto em bytes, sem chamar o provedor", async () => {
+    const ConstrutorErro = api?.ErroTetoDeAbuso;
+    expect(typeof api?.criarInterpretadorWorkersAi).toBe("function");
+    expect(typeof ConstrutorErro).toBe("function");
+    expect(api?.LIMITE_TEXTO_BRUTO_BYTES).toBe(64 * 1024);
+
+    // 40000 code units mas 80000 bytes UTF-8: acima do teto em bytes apenas.
+    const observacao = "😀".repeat(20000);
+    expect(observacao.length).toBeLessThan(api!.LIMITE_TEXTO_BRUTO_BYTES);
+
+    const entrada = entradaMultibyte(observacao);
+    const { binding, chamadas } = criarBindingFake({ response: RESPOSTA_PROVEDOR });
+    const interpretador = api!.criarInterpretadorWorkersAi!(binding);
+
+    let erro: unknown;
+    try {
+      await interpretador.extrair(entrada);
+    } catch (capturado) {
+      erro = capturado;
+    }
+
+    expect(chamadas).toHaveLength(0);
+    expect(erro).toBeInstanceOf(ConstrutorErro);
+    expect((erro as Error).name).toBe("ErroTetoDeAbuso");
+  });
+});
