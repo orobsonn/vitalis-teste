@@ -37,6 +37,13 @@ export interface ObservadorContadores {
 export interface QuotaDeChamadas {
   /** Consome uma tentativa da janela corrente; `false` quando esgotada. */
   consumir(): boolean;
+  /**
+   * `true` exatamente quando `criarQuotaDeChamadas` recebeu um observador e,
+   * portanto, já auto-notifica `registrarRecusaQuota()` em `consumir() === false`.
+   * Ausente quando nenhum observador foi fornecido. Quem orquestra consulta o
+   * marcador para não contabilizar a mesma recusa duas vezes (evita double-count).
+   */
+  notificaRecusaNoObservador?: boolean;
 }
 
 /** Opções de configuração da quota por isolate. */
@@ -97,7 +104,15 @@ export function criarQuotaDeChamadas(
   let inicioJanela: number | undefined;
   let consumidas = 0;
 
+  // Capacidade explícita: só existe quando há observador para auto-notificar a
+  // recusa. Sem observador a chave fica ausente (não `undefined` explícito), o
+  // que permite à orquestração distinguir "a quota já conta" de "conte você".
+  const marcadorObservador = opcoes.observador
+    ? { notificaRecusaNoObservador: true }
+    : {};
+
   return {
+    ...marcadorObservador,
     consumir(): boolean {
       const instante = agora();
 
