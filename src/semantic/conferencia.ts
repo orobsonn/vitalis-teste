@@ -374,7 +374,12 @@ function correrComTimeout<T>(
 
     let promessa: Promise<T>;
     try {
-      promessa = iniciar();
+      // Assimilação normalizada: um adaptador estrutural que devolva um
+      // não-Promise (ou um thenable hostil) resolve/rejeita a promessa
+      // normalizada em vez de lançar de forma síncrona para fora da corrida.
+      // `Promise.resolve` nunca lança por um `then` acessor que falhe: o erro
+      // vira rejeição da promessa devolvida e é mapeado em resultado fechado.
+      promessa = Promise.resolve(iniciar());
     } catch (erro) {
       finalizar({ tipo: "erro", erro });
       return;
