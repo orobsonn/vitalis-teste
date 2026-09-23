@@ -368,3 +368,90 @@ describe("lt-limite-da-evidencia-literal", () => {
     });
   });
 });
+
+// Extensão travada do acoplamento prompt/schema para os literais de `situacao`
+// (contrato §3.3; revisão final adversarial MEDIUM). O schema `.strict()` exige
+// valores literais, mas o prompt precisa entregá-los ao modelo como tokens
+// próprios, senão respostas plausíveis viram `incompleta` (fail-closed).
+//
+// A lista abaixo é fato local do teste: o schema não exporta esses literais.
+const TOKENS_SITUACAO: readonly string[] = [
+  "nenhuma",
+  "nova_nao_cadastrada",
+  "verbal_sem_numero",
+  "particular_decidido",
+  "somente_pergunta",
+  "realizado_divergente",
+  "nenhum",
+  "mencionado",
+];
+
+const MAPEAMENTO_SINAL_SITUACAO: ReadonlyArray<readonly [string, string]> = [
+  ["autorizacao_nova_nao_cadastrada", "nova_nao_cadastrada"],
+  ["autorizacao_verbal_sem_numero", "verbal_sem_numero"],
+  ["decisao_por_particular", "particular_decidido"],
+  ["pergunta_sobre_preco_particular", "somente_pergunta"],
+  ["procedimento_realizado_divergente", "realizado_divergente"],
+  ["reagendamento_mencionado", "mencionado"],
+];
+
+// Reconhece o literal como token próprio, tolerando cercas como `` ou "".
+// Assim `nova_nao_cadastrada` NÃO é satisfeito pelo sufixo de
+// `autorizacao_nova_nao_cadastrada`.
+function contemTokenProprio(texto: string, token: string): boolean {
+  const escapado = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![A-Za-z0-9_])${escapado}(?![A-Za-z0-9_])`).test(texto);
+}
+
+function linhaLigaTokens(texto: string, a: string, b: string): boolean {
+  return texto
+    .split(/\r?\n/)
+    .some((linha) => contemTokenProprio(linha, a) && contemTokenProprio(linha, b));
+}
+
+describe("lt-prompt-acoplado-e-anti-injecao > situação textual", () => {
+  it("documenta cada literal de situação do contrato como token próprio", () => {
+    expect(typeof promptCanonico).toBe("string");
+    const ausentes = TOKENS_SITUACAO.filter(
+      (token) => !contemTokenProprio(promptCanonico ?? "", token),
+    );
+    expect(ausentes, `literais de situacao ausentes no prompt: ${ausentes.join(", ")}`).toEqual(
+      [],
+    );
+  });
+
+  it("distingue o token do sufixo do nome de sinal", () => {
+    // Guarda o que o helper promete: o sufixo de `autorizacao_nova_nao_cadastrada`
+    // não conta como o literal isolado de `situacao`.
+    expect(contemTokenProprio("autorizacao_nova_nao_cadastrada", "nova_nao_cadastrada")).toBe(
+      false,
+    );
+    expect(contemTokenProprio("`nova_nao_cadastrada`", "nova_nao_cadastrada")).toBe(true);
+  });
+
+  it("mapeia cada sinal material ao valor de situação na mesma linha", () => {
+    expect(typeof promptCanonico).toBe("string");
+    const semLinha = MAPEAMENTO_SINAL_SITUACAO.filter(
+      ([sinal, valor]) => !linhaLigaTokens(promptCanonico ?? "", sinal, valor),
+    ).map(([sinal, valor]) => `${sinal}->${valor}`);
+    expect(semLinha, `pares sinal->situacao sem linha no prompt: ${semLinha.join(", ")}`).toEqual(
+      [],
+    );
+  });
+
+  it("amarra o hash ao conteúdo cru que carrega os enums de situação", () => {
+    expect(typeof promptCanonico).toBe("string");
+    const texto = promptCanonico ?? "";
+    // O hash é o sha256 do conteúdo cru do arquivo, então cobre o que o modelo lê.
+    expect(api?.PROMPT_HASH).toBe(sha?.sha256Hex(texto));
+    // Remover cada literal muda o conteúdo e, portanto, o hash: trocar o prompt
+    // invalida o cache pela versão efetiva.
+    const semCobertura = TOKENS_SITUACAO.filter(
+      (token) => api?.hashDoPrompt(texto.replace(new RegExp(token, "g"), "")) === api?.PROMPT_HASH,
+    );
+    expect(
+      semCobertura,
+      `literais de situacao cuja remocao nao altera o hash: ${semCobertura.join(", ")}`,
+    ).toEqual([]);
+  });
+});
