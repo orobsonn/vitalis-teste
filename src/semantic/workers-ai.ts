@@ -26,8 +26,12 @@
  * essas políticas permanecem na orquestração.
  *
  * Teto de COMPRIMENTO da identidade configurada: o adaptador — e SOMENTE o
- * adaptador — recusa, já na construção, uma `opcoes.modelo` textual acima de
- * 200 caracteres, medidos no valor CRU (sem `trim`), com `ErroModeloInvalido`.
+ * adaptador — recusa, já na construção, uma identidade textual acima de 200
+ * caracteres, medidos no valor CRU (sem `trim`), com `ErroModeloInvalido`. A
+ * propriedade `opcoes.modelo` é lida UMA ÚNICA VEZ em um snapshot local; tanto a
+ * guarda de comprimento quanto a normalização (e a retenção no closure) operam
+ * exclusivamente sobre esse snapshot, de modo que um acessor dinâmico não pode
+ * apresentar um valor curto à guarda e outro acima do teto à normalização.
  * O teto é alinhado NUMERICAMENTE ao limite de contexto do contrato
  * compartilhado (`LIMITE_CONTEXTO = 200`, usado para convênio/procedimento no
  * caminho central), mas mantido local de propósito, para não criar ciclo de
@@ -84,9 +88,10 @@ export class ErroTetoDeAbuso extends Error {
 /**
  * Erro tipado e distinguível de identidade de modelo inválida.
  *
- * Lançado na CONSTRUÇÃO do interpretador quando `opcoes.modelo` é uma string
- * acima do teto de comprimento (`LIMITE_MODELO_CARACTERES`, 200 caracteres),
- * medido no valor CRU antes de qualquer `trim`. A recusa precede a
+ * Lançado na CONSTRUÇÃO do interpretador quando a identidade configurada é uma
+ * string acima do teto de comprimento (`LIMITE_MODELO_CARACTERES`, 200
+ * caracteres), medido no valor CRU antes de qualquer `trim`. A propriedade
+ * `opcoes.modelo` é lida uma única vez (snapshot) e a guarda precede a
  * normalização e a retenção do valor no closure, de modo que a identidade
  * hostil jamais chega ao provedor. `name` é estável (`"ErroModeloInvalido"`)
  * para que o chamador classifique a falha sem inspecionar a mensagem; a
@@ -201,10 +206,10 @@ function textoDaResposta(resultado: unknown): string {
  * `ErroTetoDeAbuso` sem nenhuma chamada ao binding, deixando ao chamador a
  * classificação como `limite_excedido`.
  *
- * Antes de normalizar, uma `opcoes.modelo` textual acima de 200 caracteres
- * (valor CRU, sem `trim`) é recusada com `ErroModeloInvalido` ainda na
- * construção: nenhum interpretador é devolvido, o valor hostil não é retido e
- * o binding nunca é tocado.
+ * `opcoes.modelo` é lida uma única vez (snapshot) e, antes de normalizar, uma
+ * identidade textual acima de 200 caracteres (valor CRU, sem `trim`) é recusada
+ * com `ErroModeloInvalido` ainda na construção: nenhum interpretador é
+ * devolvido, o valor hostil não é retido e o binding nunca é tocado.
  *
  * O modelo de `opcoes` passa por `normalizarModelo`: só uma string não vazia
  * (após `trim`), preservada literalmente, é aceita como identidade; vazio, só
@@ -217,11 +222,13 @@ export function criarInterpretadorWorkersAi(
   ai: BindingAi,
   opcoes: OpcoesInterpretadorWorkersAi = {},
 ): InterpretadorObservacao {
-  if (typeof opcoes.modelo === "string" && opcoes.modelo.length > LIMITE_MODELO_CARACTERES) {
+  const modeloCru = opcoes.modelo;
+
+  if (typeof modeloCru === "string" && modeloCru.length > LIMITE_MODELO_CARACTERES) {
     throw new ErroModeloInvalido();
   }
 
-  const modelo = normalizarModelo(opcoes.modelo);
+  const modelo = normalizarModelo(modeloCru);
 
   return {
     async extrair(entradaObservacao: EntradaObservacao): Promise<RespostaBruta> {
