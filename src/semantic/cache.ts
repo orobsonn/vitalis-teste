@@ -131,6 +131,22 @@ export function montarChaveCacheSemantica(
 }
 
 /**
+ * Captura única dos três campos crus (§3.9): materializa os valores em um
+ * objeto simples de propriedades de dados próprias. Depois desta leitura
+ * nenhum acesso a `entrada` é feito, de modo que um getter hostil que devolve
+ * um valor diferente a cada leitura não consegue driblar a guarda de teto e
+ * forçar a serialização de um valor gigante (janela TOCTOU entre guarda e
+ * derivação da chave).
+ */
+function capturarEntrada(entrada: EntradaObservacao): EntradaObservacao {
+  return {
+    observacao_recepcao: entrada.observacao_recepcao,
+    convenio: entrada.convenio,
+    procedimento_codigo: entrada.procedimento_codigo,
+  };
+}
+
+/**
  * Teto de abuso por campo cru (§3.9): qualquer um dos três campos acima de
  * 64 KiB em bytes UTF-8 recusa a entrada. A checagem precede
  * `montarChaveCacheSemantica`, de modo que a entrada abusiva não dispara a
@@ -159,10 +175,11 @@ export function criarAdaptadorCacheSemantico(
 
   return {
     async ler(entrada, contexto) {
-      if (entradaTemCampoDeAbuso(entrada)) {
+      const dados = capturarEntrada(entrada);
+      if (entradaTemCampoDeAbuso(dados)) {
         return null;
       }
-      const { chave, prefixo } = montarChaveCacheSemantica(entrada, contexto);
+      const { chave, prefixo } = montarChaveCacheSemantica(dados, contexto);
 
       let valor: string | null;
       try {
@@ -205,15 +222,16 @@ export function criarAdaptadorCacheSemantico(
 
       // Mesma validação da extração: JSON ilegível, schema inválido ou
       // evidência não literal são miss sobrescrevível (§3.8).
-      const resultado = validarExtracao(valor, entrada.observacao_recepcao);
+      const resultado = validarExtracao(valor, dados.observacao_recepcao);
       return resultado.ok ? resultado.sinais : null;
     },
 
     async gravar(entrada, contexto, sinais) {
-      if (entradaTemCampoDeAbuso(entrada)) {
+      const dados = capturarEntrada(entrada);
+      if (entradaTemCampoDeAbuso(dados)) {
         return;
       }
-      const { chave, prefixo } = montarChaveCacheSemantica(entrada, contexto);
+      const { chave, prefixo } = montarChaveCacheSemantica(dados, contexto);
       try {
         await kv.put(chave, JSON.stringify(sinais), { expirationTtl: ttlSegundos });
       } catch {
