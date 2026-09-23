@@ -10,7 +10,10 @@
  * três campos, `max_tokens` como único teto. Nenhuma opção extra (`tools`,
  * functions, `stream`, …) e nenhum identificador estruturado é enviado. O modelo
  * vem de `MODELO_OBSERVACAO` ou da configuração injetada; jamais do texto da
- * observação, que é dado não confiável.
+ * observação, que é dado não confiável. A configuração é normalizada: só uma
+ * string não vazia (após `trim`), preservada literalmente, é aceita como
+ * identidade; vazio, só espaços ou valor não-string recaem no padrão, de modo
+ * que uma identidade vazia nunca chega ao provedor.
  *
  * Teto de ABUSO por campo cru: antes de serializar o payload e antes de chamar o
  * provedor, cada campo bruto (`observacao_recepcao`, `convenio`,
@@ -88,8 +91,25 @@ export interface BindingAi {
 
 /** Opções de configuração do adaptador de produção. */
 export interface OpcoesInterpretadorWorkersAi {
-  /** Modelo fixado por configuração; padrão `MODELO_OBSERVACAO`. */
+  /**
+   * Modelo fixado por configuração; padrão `MODELO_OBSERVACAO`. Só uma string
+   * não vazia (após `trim`) é aceita como identidade; qualquer outra forma
+   * recai no padrão (ver `normalizarModelo`).
+   */
   modelo?: string;
+}
+
+/**
+ * Modelo efetivo da configuração, com a MESMA semântica da orquestração
+ * (`conferencia.ts`): só uma string não vazia após `trim` é aceita e é
+ * PRESERVADA LITERALMENTE — inclusive espaços laterais — para conferir com a
+ * identidade que o provedor devolve; qualquer outra forma (`undefined`, `""`,
+ * só espaços ou valor não-string em runtime) recai no padrão
+ * `MODELO_OBSERVACAO`. Assim nunca uma identidade vazia ou não-string chega ao
+ * provedor, e o modelo enviado a `ai.run` coincide com o `modelo` devolvido.
+ */
+function normalizarModelo(valor: unknown): string {
+  return typeof valor === "string" && valor.trim() !== "" ? valor : MODELO_OBSERVACAO;
 }
 
 /**
@@ -138,12 +158,19 @@ function textoDaResposta(resultado: unknown): string {
  * provedor (fronteira inclusiva); entrada acima do teto falha com
  * `ErroTetoDeAbuso` sem nenhuma chamada ao binding, deixando ao chamador a
  * classificação como `limite_excedido`.
+ *
+ * O modelo de `opcoes` passa por `normalizarModelo`: só uma string não vazia
+ * (após `trim`), preservada literalmente, é aceita como identidade; vazio, só
+ * espaços ou valor não-string em runtime recaem em `MODELO_OBSERVACAO`. Esse é
+ * o mesmo critério da orquestração, de modo que o primeiro argumento de
+ * `ai.run` e o campo `modelo` da resposta são sempre uma identidade consistente
+ * com a configuração, jamais uma string em branco.
  */
 export function criarInterpretadorWorkersAi(
   ai: BindingAi,
   opcoes: OpcoesInterpretadorWorkersAi = {},
 ): InterpretadorObservacao {
-  const modelo = opcoes.modelo ?? MODELO_OBSERVACAO;
+  const modelo = normalizarModelo(opcoes.modelo);
 
   return {
     async extrair(entradaObservacao: EntradaObservacao): Promise<RespostaBruta> {
