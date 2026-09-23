@@ -197,6 +197,15 @@
 //     `*_ausente`) com uma representação LIMITADA (marcador fixo): o corpo
 //     rejeitado nunca é interpolado nem exposto. Abaixo do teto, a precedência
 //     do vazio (§3.6) continua: observação só-espaços segue `nao_aplicavel`.
+// 14. Envelope malformado do provedor (reforço da revisão adversarial): a
+//     resposta RESOLVIDA pelo `extrair` é entrada NÃO CONFIÁVEL e a fronteira é
+//     a resposta do provedor, não o objeto interno. `null`, um primitivo ou um
+//     objeto com acessor que lança em `texto`/`modelo`/`promptVersao` é uma
+//     resposta SCHEMA-INVÁLIDA e precisa fechar como `PENDENTE`/`incompleta`
+//     com o motivo determinístico `checagem_textual_incompleta` — NUNCA
+//     rejeitar a Promise de `conferirGuia`. A tentativa ACONTECEU, então
+//     `inferencia_textual` vem da IDENTIDADE CONFIGURADA (a do envelope é
+//     ilegível), sem retentativa (exatamente UMA chamada) e sem gravar cache.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import regrasRaw from "../../docs/fontes/regras_convenio.json?raw";
@@ -2959,5 +2968,120 @@ describe("lt-conferencia-vazio-cache-e-falhas — reforço: timeoutCacheMs invá
 
       vi.useRealTimers();
     }
+  });
+});
+
+describe("lt-conferencia-vazio-cache-e-falhas — reforço: resposta malformada do interpretador falha fechada", () => {
+  // A fronteira exercitada é a RESPOSTA RESOLVIDA pelo `extrair` injetado, não
+  // o objeto interno de uma exceção. Um envelope que NÃO é `RespostaBruta`
+  // (`null`, primitivo, ou objeto com acessor que lança em `texto`/`modelo`)
+  // é uma resposta schema-inválida do provedor: fecha como `incompleta` com o
+  // motivo determinístico `checagem_textual_incompleta`, jamais rejeita a
+  // Promise de `conferirGuia`. Como a tentativa aconteceu mas a identidade do
+  // envelope é ilegível, `inferencia_textual` vem da CONFIGURAÇÃO. Uma única
+  // chamada ao interpretador (sem retentativa) e nenhuma gravação de cache.
+  //
+  // Quota própria por caso: o envelope malformado não pertence à janela
+  // compartilhada do isolate, e a contagem exata de "uma tentativa" não pode
+  // depender do saldo de outros testes.
+
+  function interpretadorQueResolve(valor: unknown): {
+    interpretador: InterpretadorObservacao;
+    chamadas: () => number;
+  } {
+    let chamadas = 0;
+    const interpretador = {
+      async extrair(_entrada: EntradaObservacao): Promise<unknown> {
+        chamadas += 1;
+        return valor;
+      },
+    } as unknown as InterpretadorObservacao;
+    return { interpretador, chamadas: () => chamadas };
+  }
+
+  function objetoComAcessorQueLanca(
+    propriedade: "texto" | "modelo" | "promptVersao",
+    base: Record<string, unknown> = {},
+  ): unknown {
+    const alvo: Record<string, unknown> = { ...base };
+    Object.defineProperty(alvo, propriedade, {
+      enumerable: true,
+      configurable: true,
+      get(): never {
+        throw new Error(`acessor hostil em ${propriedade}`);
+      },
+    });
+    return alvo;
+  }
+
+  async function conferirEnvelopeMalformado(valor: unknown): Promise<void> {
+    const api = exigirSemantica();
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    const cache = api.criarAdaptadorCacheSemantico(kv.kv);
+    const observador = criarObservadorFake();
+    const quota = criarQuotaFake();
+    const provedor = interpretadorQueResolve(valor);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: provedor.interpretador,
+      cache,
+      quota: quota.quota,
+      observador: observador.observador,
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(codigos(resultado)).toContain("checagem_textual_incompleta");
+    expect(resultado.limitacoes).toContain("checagem_textual_incompleta");
+    // A tentativa ocorreu, mas a identidade do envelope é ilegível: vale a
+    // identidade configurada, nunca propriedades extraídas do envelope sujo.
+    expect(resultado.inferencia_textual).toEqual(identidadeConfig(api));
+    // Exatamente UMA chamada ao interpretador: envelope malformado não retenta.
+    expect(provedor.chamadas()).toBe(1);
+    expect(kv.leituras).toBe(1);
+    expect(kv.gravacoes).toBe(0);
+  }
+
+  it("resposta nula do interpretador falha fechada como schema inválido, sem rejeitar", async () => {
+    await conferirEnvelopeMalformado(null);
+  });
+
+  it("resposta primitiva do interpretador falha fechada como schema inválido, sem rejeitar", async () => {
+    await conferirEnvelopeMalformado("texto qualquer");
+    await conferirEnvelopeMalformado(42);
+  });
+
+  it("acessor hostil em `texto` (objeto sem identidade) falha fechada como schema inválido, sem rejeitar", async () => {
+    await conferirEnvelopeMalformado(objetoComAcessorQueLanca("texto"));
+  });
+
+  it("acessor hostil em `texto` com identidade válida falha fechada antes do teto de bytes, sem rejeitar", async () => {
+    // Este caso passa pela identidade configurada e, no caminho atual, chega a
+    // ler `texto` para o teto de bytes: o acessor hostil ainda precisa fechar
+    // como schema inválido, sem rejeitar a Promise.
+    const api = exigirSemantica();
+    await conferirEnvelopeMalformado(
+      objetoComAcessorQueLanca("texto", {
+        modelo: api.MODELO_OBSERVACAO,
+        promptVersao: api.versaoEfetivaDoPrompt(),
+      }),
+    );
+  });
+
+  it("acessor hostil em `modelo` falha fechada como schema inválido, sem rejeitar", async () => {
+    await conferirEnvelopeMalformado(objetoComAcessorQueLanca("modelo"));
+  });
+
+  it("acessor hostil em `promptVersao` com modelo válido falha fechada como schema inválido, sem rejeitar", async () => {
+    // `modelo` válido garante que o getter de `promptVersao` seja realmente
+    // alcançado na checagem de identidade antes de qualquer teto de bytes.
+    const api = exigirSemantica();
+    await conferirEnvelopeMalformado(
+      objetoComAcessorQueLanca("promptVersao", {
+        modelo: api.MODELO_OBSERVACAO,
+      }),
+    );
   });
 });
