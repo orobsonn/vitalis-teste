@@ -39,10 +39,13 @@
  */
 
 import type { Catalogo } from "../domain/catalogo";
+import type { ColunaGuia } from "../domain/contratos";
+import { dataParaIso, parseDataCivil } from "../domain/datas";
 import type { DataCivil } from "../domain/datas";
 import { verificarGuia } from "../domain/motor";
 import type { ResultadoVerificacao } from "../domain/motor";
-import type { GuiaNormalizada, ProblemaNormalizacao } from "../domain/normalizacao";
+import { inteiroDaGuia } from "../domain/normalizacao";
+import type { CodigoProblema, GuiaNormalizada, ProblemaNormalizacao } from "../domain/normalizacao";
 import type { TextualValidado } from "../domain/policies/textuais";
 
 import { montarChaveCacheSemantica } from "./cache";
@@ -222,7 +225,13 @@ function stringInerte(valor: unknown): valor is string {
 /**
  * Clona um `DataCivil` PRÓPRIO de DADO como registro inerte, sem avaliar
  * acessores: `null` é a ausência válida; `undefined` marca MALFORMADO (não é
- * `null`/registro, faltam `ano`/`mes`/`dia`, ou algum não é número finito).
+ * `null`/registro, faltam `ano`/`mes`/`dia`, algum não é INTEIRO, ou a tripla
+ * não é uma data REAL de 4 dígitos do calendário aceito por `parseDataCivil`).
+ * O calendário real (mês 1..12, dia dentro do mês, ano bissexto) e a faixa de
+ * ano são validados pelo ROUND-TRIP `dataParaIso`/`parseDataCivil` do próprio
+ * domínio, sem duplicar limites: uma data que o normalizador não produziria
+ * (impossível, fracionária ou fora da faixa) fecha o snapshot em vez de chegar
+ * ao motor e desviar cronologia/validade.
  */
 function clonarDataInerte(valor: unknown): DataCivil | null | undefined {
   if (valor === null) {
@@ -244,28 +253,111 @@ function clonarDataInerte(valor: unknown): DataCivil | null | undefined {
       return undefined;
     }
     const numero = descritor.value;
-    if (typeof numero !== "number" || !Number.isFinite(numero)) {
+    if (typeof numero !== "number" || !Number.isInteger(numero)) {
       return undefined;
     }
     definirDado(saida, chave, numero);
   }
-  return saida as unknown as DataCivil;
+  const data = saida as unknown as DataCivil;
+  const revalidada = parseDataCivil(dataParaIso(data));
+  if (
+    revalidada === null ||
+    revalidada.ano !== data.ano ||
+    revalidada.mes !== data.mes ||
+    revalidada.dia !== data.dia
+  ) {
+    return undefined;
+  }
+  return data;
 }
 
-/** `null` ou número finito; `undefined` marca MALFORMADO. */
-function numeroInerte(valor: unknown): number | null | undefined {
+/**
+ * `null` ou inteiro dentro do domínio `inteiroDaGuia` (1..10000); `undefined`
+ * marca MALFORMADO. Reusa a MESMA gramática do normalizador convertendo o
+ * número de volta para texto, sem duplicar o intervalo: fracionário, fora da
+ * faixa, não finito ou não numérico nunca é aceito.
+ */
+function inteiroDaGuiaInerte(valor: unknown): number | null | undefined {
   if (valor === null) {
     return null;
   }
-  return typeof valor === "number" && Number.isFinite(valor) ? valor : undefined;
+  if (typeof valor !== "number" || !Number.isInteger(valor)) {
+    return undefined;
+  }
+  const normalizado = inteiroDaGuia(String(valor));
+  return normalizado === null ? undefined : normalizado;
+}
+
+/**
+ * `null` ou CENTAVOS como inteiro seguro NÃO NEGATIVO — o mesmo domínio de
+ * `valorParaCentavos`; `undefined` marca MALFORMADO (negativo, fracionário ou
+ * fora do inteiro seguro).
+ */
+function centavosInertes(valor: unknown): number | null | undefined {
+  if (valor === null) {
+    return null;
+  }
+  return typeof valor === "number" && Number.isSafeInteger(valor) && valor >= 0
+    ? valor
+    : undefined;
+}
+
+/** Vocabulário FECHADO de códigos de problema que `normalizarGuia` emite. */
+const CODIGOS_PROBLEMA_VALIDOS: readonly CodigoProblema[] = [
+  "data_invalida",
+  "valor_ilegivel",
+  "campo_numerico_invalido",
+];
+
+/** Campos que `normalizarGuia` realmente verifica ao emitir problemas. */
+const CAMPOS_PROBLEMA_VALIDOS: readonly ColunaGuia[] = [
+  "data_atendimento",
+  "autorizacao_validade",
+  "data_lancamento",
+  "autorizacao_sessoes_limite",
+  "sessao_numero_na_autorizacao",
+  "valor",
+];
+
+/**
+ * Compatibilidade `(codigo, campo)` do normalizador: `data_invalida` só para
+ * os três campos de data, `campo_numerico_invalido` só para os dois inteiros
+ * de sessão e `valor_ilegivel` só para `valor`. Um código real num campo
+ * incompatível é tão hostil quanto um código desconhecido.
+ */
+const CAMPOS_POR_CODIGO_PROBLEMA: Record<CodigoProblema, readonly ColunaGuia[]> = {
+  data_invalida: ["data_atendimento", "autorizacao_validade", "data_lancamento"],
+  valor_ilegivel: ["valor"],
+  campo_numerico_invalido: ["autorizacao_sessoes_limite", "sessao_numero_na_autorizacao"],
+};
+
+/**
+ * Cardinalidade máxima legítima da lista: um problema por campo verificável do
+ * normalizador (três datas, dois inteiros de sessão e `valor`).
+ */
+const MAXIMO_PROBLEMAS = CAMPOS_PROBLEMA_VALIDOS.length;
+
+/** Verdadeiro só para um par `(codigo, campo)` que `normalizarGuia` pode emitir. */
+function problemaCompativel(codigo: string, campo: string): boolean {
+  if (!CODIGOS_PROBLEMA_VALIDOS.includes(codigo as CodigoProblema)) {
+    return false;
+  }
+  if (!CAMPOS_PROBLEMA_VALIDOS.includes(campo as ColunaGuia)) {
+    return false;
+  }
+  return CAMPOS_POR_CODIGO_PROBLEMA[codigo as CodigoProblema].includes(campo as ColunaGuia);
 }
 
 /**
  * Clona os problemas de normalização como registros INERTES: cada elemento
  * precisa ser registro simples com `campo`/`codigo`/`valorOriginal` em
- * descritores PRÓPRIOS de DADO e strings primitivas dentro do teto de abuso.
+ * descritores PRÓPRIOS de DADO e strings primitivas dentro do teto de abuso,
+ * com o par `(codigo, campo)` no vocabulário FECHADO e na compatibilidade do
+ * normalizador, no máximo um por par e no máximo `MAXIMO_PROBLEMAS` no total.
  * Qualquer outra forma (não-array, buraco, acessor, tipo errado, string
- * gigante) é MALFORMADA e fecha o snapshot (`null`).
+ * gigante, código desconhecido/incompatível, duplicado ou lista acima do
+ * máximo) é MALFORMADA e fecha o snapshot (`null`) — sem chegar ao motor (que
+ * indexa `TEXTOS[codigo]` e lançaria) nem amplificar a resposta.
  */
 function clonarProblemasInertes(valor: unknown): ProblemaNormalizacao[] | null {
   if (!Array.isArray(valor)) {
@@ -283,7 +375,11 @@ function clonarProblemasInertes(valor: unknown): ProblemaNormalizacao[] | null {
   if (typeof tamanho !== "number" || !Number.isInteger(tamanho) || tamanho < 0) {
     return null;
   }
+  if (tamanho > MAXIMO_PROBLEMAS) {
+    return null;
+  }
   const saida: ProblemaNormalizacao[] = [];
+  const vistos = new Set<string>();
   for (let indice = 0; indice < tamanho; indice += 1) {
     const descritor = descritores[String(indice)];
     if (!descritor || !("value" in descritor)) {
@@ -300,13 +396,28 @@ function clonarProblemasInertes(valor: unknown): ProblemaNormalizacao[] | null {
       return null;
     }
     const registro = registroInerte();
+    let campoLido = "";
+    let codigoLido = "";
     for (const chave of ["campo", "codigo", "valorOriginal"]) {
       const campo = campos[chave];
       if (!campo || !("value" in campo) || !stringInerte(campo.value)) {
         return null;
       }
       definirDado(registro, chave, campo.value);
+      if (chave === "campo") {
+        campoLido = campo.value;
+      } else if (chave === "codigo") {
+        codigoLido = campo.value;
+      }
     }
+    if (!problemaCompativel(codigoLido, campoLido)) {
+      return null;
+    }
+    const identificador = `${codigoLido}\u0000${campoLido}`;
+    if (vistos.has(identificador)) {
+      return null;
+    }
+    vistos.add(identificador);
     saida.push(registro as unknown as ProblemaNormalizacao);
   }
   return saida;
@@ -421,19 +532,23 @@ const CAMPOS_DATA_INERTES: readonly string[] = [
   "dataLancamento",
 ];
 
-const CAMPOS_NUMERO_INERTES: readonly string[] = [
+/** Inteiros do normalizador no domínio `inteiroDaGuia` (1..10000). */
+const CAMPOS_INTEIRO_DA_GUIA_INERTES: readonly string[] = [
   "autorizacaoSessoesLimite",
   "sessaoNumero",
-  "valorCentavos",
 ];
+
+/** Centavos inteiros seguros NÃO NEGATIVOS do domínio `valorParaCentavos`. */
+const CAMPOS_CENTAVOS_INERTES: readonly string[] = ["valorCentavos"];
 
 /**
  * Snapshot VALIDADO em TEMPO DE EXECUÇÃO e INERTE da guia entregue ao motor
  * (§3.7/#ac-17/#ac-18). Os três campos semânticos recebem os valores já
  * CAPTURADOS e limitados uma única vez; TODO campo consumido pelo motor é
  * validado contra sua forma de execução (string primitiva dentro do teto de
- * abuso, `null`/`DataCivil`/número finito, `problemas` como array de registros
- * simples) e reconstruído com `Object.create(null)` + `Object.defineProperty`,
+ * abuso, `null`/`DataCivil` real de 4 dígitos, número no domínio do
+ * normalizador, `problemas` como array limitado de registros simples no
+ * vocabulário fechado) e reconstruído com `Object.create(null)` + `Object.defineProperty`,
  * de modo que nenhum acessor, `Proxy`, objeto coercível, string gigante ou
  * chave `__proto__` chegue ao motor. Qualquer valor MALFORMADO fecha o snapshot
  * (`null`) para o chamador cair no caminho determinístico de `guiaMinima()`, sem
@@ -503,12 +618,24 @@ function montarSnapshotInerte(
     definirDado(saida, chave, data);
   }
 
-  for (const chave of CAMPOS_NUMERO_INERTES) {
+  for (const chave of CAMPOS_INTEIRO_DA_GUIA_INERTES) {
     const descritor = descritores[chave];
     if (!descritor || !("value" in descritor)) {
       return null;
     }
-    const numero = numeroInerte(descritor.value);
+    const numero = inteiroDaGuiaInerte(descritor.value);
+    if (numero === undefined) {
+      return null;
+    }
+    definirDado(saida, chave, numero);
+  }
+
+  for (const chave of CAMPOS_CENTAVOS_INERTES) {
+    const descritor = descritores[chave];
+    if (!descritor || !("value" in descritor)) {
+      return null;
+    }
+    const numero = centavosInertes(descritor.value);
     if (numero === undefined) {
       return null;
     }
