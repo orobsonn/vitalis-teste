@@ -51,6 +51,8 @@ interface ApiAprovada {
   MODELO_OBSERVACAO: string;
   TEXTO_PROMPT: string;
   PROMPT_HASH: string;
+  LIMITE_TEXTO_BRUTO_BYTES: number;
+  ErroTetoDeAbuso: new (...args: unknown[]) => Error;
   versaoEfetivaDoPrompt(): string;
   criarInterpretadorWorkersAi(ai: BindingAi, opcoes?: OpcoesInterpretador): InterpretadorObservacao;
 }
@@ -102,6 +104,22 @@ function entradaComInjecao(campos: Partial<EntradaObservacao> = {}): EntradaObse
     procedimento_codigo: "40901114",
     ...campos,
   };
+}
+
+// Entrada em que um único campo bruto recebe `tamanhoEmBytes` caracteres ASCII —
+// logo, exatamente essa quantidade de bytes UTF-8 — deixando os outros dois
+// pequenos. Permite exercitar a borda do teto de abuso campo a campo.
+function entradaComCampoGrande(
+  campo: keyof EntradaObservacao,
+  tamanhoEmBytes: number,
+): EntradaObservacao {
+  const entrada: EntradaObservacao = {
+    observacao_recepcao: "Observação de rotina.",
+    convenio: "unimed",
+    procedimento_codigo: "40901114",
+  };
+  entrada[campo] = "a".repeat(tamanhoEmBytes);
+  return entrada;
 }
 
 const RESPOSTA_PROVEDOR = JSON.stringify({
@@ -205,6 +223,76 @@ describe("lt-requisicao-workers-ai-exata", () => {
     expect(chamadas).toHaveLength(1);
     expect(chamadas[0].modelo).toBe(MODELO_CONFIGURADO);
     expect(chamadas[0].modelo).not.toBe(api?.MODELO_OBSERVACAO);
+  });
+});
+
+// Teto de abuso por campo bruto (achado da revisão final, no escopo desta task):
+// o adaptador de produção recusa entrada acima do teto ANTES de serializar e
+// ANTES de chamar `ai.run`, com erro tipado e distinguível pelo chamador.
+describe("teto-de-abuso-por-campo", () => {
+  const CAMPOS_BRUTOS: (keyof EntradaObservacao)[] = [
+    "observacao_recepcao",
+    "convenio",
+    "procedimento_codigo",
+  ];
+
+  it("acopla o teto ao contrato compartilhado exportado pelo barrel", () => {
+    expect(api?.LIMITE_TEXTO_BRUTO_BYTES).toBe(64 * 1024);
+  });
+
+  for (const campo of CAMPOS_BRUTOS) {
+    it(`recusa ${campo} um byte acima do teto sem chamar o provedor`, async () => {
+      const ConstrutorErro = api?.ErroTetoDeAbuso;
+      expect(typeof api?.criarInterpretadorWorkersAi).toBe("function");
+      expect(ConstrutorErro).toBeTypeOf("function");
+
+      const teto = api!.LIMITE_TEXTO_BRUTO_BYTES;
+      const entrada = entradaComCampoGrande(campo, teto + 1);
+      const { binding, chamadas } = criarBindingFake({ response: RESPOSTA_PROVEDOR });
+      const interpretador = api!.criarInterpretadorWorkersAi!(binding);
+
+      let erro: unknown;
+      try {
+        await interpretador.extrair(entrada);
+      } catch (capturado) {
+        erro = capturado;
+      }
+
+      // Nenhuma inferência foi disparada nem o payload gigante foi enviado.
+      expect(chamadas).toHaveLength(0);
+
+      // Erro tipado e distinguível, exportado pelo módulo.
+      expect(erro).toBeInstanceOf(ConstrutorErro);
+      expect((erro as Error).name).toBe("ErroTetoDeAbuso");
+      expect(erro).toBeInstanceOf(Error);
+    });
+  }
+
+  it("envia normalmente a observacao_recepcao exatamente no teto (borda inclusiva)", async () => {
+    expect(typeof api?.criarInterpretadorWorkersAi).toBe("function");
+    expect(api?.LIMITE_TEXTO_BRUTO_BYTES).toBe(64 * 1024);
+
+    const teto = api!.LIMITE_TEXTO_BRUTO_BYTES;
+    const entrada = entradaComCampoGrande("observacao_recepcao", teto);
+    const { binding, chamadas } = criarBindingFake({ response: RESPOSTA_PROVEDOR });
+    const interpretador = api!.criarInterpretadorWorkersAi!(binding);
+
+    const resposta = await interpretador.extrair(entrada);
+    expect(resposta.texto).toBe(RESPOSTA_PROVEDOR);
+
+    // Exatamente uma chamada, com o payload exato de três campos.
+    expect(chamadas).toHaveLength(1);
+    const chamada = chamadas[0];
+    const mensagens = chamada.entrada.messages as { role: string; content: string }[];
+    const payloadUsuario = JSON.parse(mensagens[1].content) as Record<string, unknown>;
+
+    expect(Object.keys(payloadUsuario).sort()).toEqual([
+      "convenio",
+      "observacao_recepcao",
+      "procedimento_codigo",
+    ]);
+    expect((payloadUsuario.observacao_recepcao as string).length).toBe(teto);
+    expect(chamada.entrada.max_tokens).toBe(512);
   });
 });
 
