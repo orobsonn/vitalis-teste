@@ -244,6 +244,23 @@
 //     e que nenhum valor gigante chegue ao interpretador, ao cache ou ao
 //     resultado (fail-closed e corpos limitados quando o snapshot já nasce
 //     acima do teto).
+// 18. Captura da guia VALIDADA e snapshot do motor LIVRE DE ACESSORES (reforço
+//     SECURITY HIGH + ADVERSARY MEDIUM): cada um dos três valores capturados
+//     (`observacaoRecepcao`/`convenio`/`procedimentoCodigo`) precisa ser uma
+//     string PRIMITIVA. Um valor com `length`/`trim`/`toJSON` divergentes — por
+//     exemplo `{ length: 1, trim: () => "x", toJSON: () => "G".repeat(...) }` —
+//     engana os testes de vazio/limite (que só usam `length`/`trim`/`ToString`)
+//     enquanto `JSON.stringify` do payload do provedor invoca `toJSON` e envia
+//     um corpo gigante; um não-string fecha ANTES de cache, quota e provedor,
+//     com a MESMA forma de falha de configuração (`PENDENTE`/`incompleta`,
+//     `inferencia_textual` nula, zero leitura/gravação de cache, zero quota) e
+//     sem ecoar o valor. A representação entregue ao motor precisa ainda ser um
+//     snapshot PURO DE DADOS: nenhum getter é copiado nem avaliado. Um getter
+//     que LANÇA em `original` não pode rejeitar `conferirGuia`, e um acessor
+//     hostil em outro campo consumido pelo motor (por exemplo
+//     `procedimentoDescricao`) não pode ser retido e amplificar
+//     `motivos[].evidencia`; ambos fecham de forma determinística com resultado
+//     limitado.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import regrasRaw from "../../docs/fontes/regras_convenio.json?raw";
@@ -3656,5 +3673,164 @@ describe("lt-conferencia-vazio-cache-e-falhas — reforço: campos da guia são 
     // prefixo de 1024 caracteres dele): só o snapshot CURTO é entregue.
     exigirSemGigante(JSON.stringify(interpretador.chamadas), Object.values(GIGANTES));
     exigirSemGigante(JSON.stringify(resultado), Object.values(GIGANTES));
+  });
+});
+
+describe("lt-conferencia-vazio-cache-e-falhas — reforço: captura da guia é validada e livre de acessores hostis", () => {
+  // A fronteira exercitada é o objeto `GuiaNormalizada` recebido por
+  // `conferirGuia`. Duas garantias aprovadas:
+  //   (a) os TRÊS campos capturados (`observacaoRecepcao`/`convenio`/
+  //       `procedimentoCodigo`) precisam ser strings PRIMITIVAS. Um valor com
+  //       `length`/`trim`/`toJSON` divergentes engana os testes de vazio/limite
+  //       (que só usam `length`/`trim`/`ToString`) enquanto `JSON.stringify` do
+  //       payload do provedor invoca `toJSON` e envia um corpo gigante. Um
+  //       não-string fecha ANTES de cache, quota e provedor, com a mesma forma
+  //       de falha de configuração, sem ecoar o valor.
+  //   (b) a representação entregue ao motor precisa ser um snapshot PURO DE
+  //       DADOS: nenhum getter é copiado nem avaliado. Um getter que LANÇA em
+  //       `original` não pode rejeitar `conferirGuia`, e um acessor hostil em
+  //       outro campo consumido pelo motor (`procedimentoDescricao`) não pode
+  //       ser retido e amplificar `motivos[].evidencia`.
+
+  const CAMPOS_SEMANTICOS = ["observacaoRecepcao", "convenio", "procedimentoCodigo"] as const;
+  type CampoSemantico = (typeof CAMPOS_SEMANTICOS)[number];
+
+  const TAMANHO_HOSTIL = 200_000;
+  const TAMANHO_PREFIXO = 1024;
+
+  // Valor hostil cujos `length` (1), `trim` ("x") e `toJSON` (200 kB) divergem.
+  // `toString` herda `Object.prototype` ("[object Object]"), de modo que os
+  // testes de vazio/teto (que usam `length`/`trim`/`ToString`) o veem CURTO.
+  // `trim`/`toJSON` são próprios mas NÃO enumeráveis: a derivação canônica da
+  // chave de cache enxerga apenas `length` (como um valor JSON pequeno), o que
+  // mantém o caminho central executando até o interpretador, enquanto
+  // `JSON.stringify` do payload do provedor continua invocando `toJSON` via
+  // `[[Get]]` e materializando o corpo gigante.
+  function valorNaoString(): object {
+    const hostil: Record<string, unknown> = {};
+    Object.defineProperty(hostil, "length", { value: 1, enumerable: true });
+    Object.defineProperty(hostil, "trim", { value: () => "x", enumerable: false });
+    Object.defineProperty(hostil, "toJSON", {
+      value: () => "G".repeat(TAMANHO_HOSTIL),
+      enumerable: false,
+    });
+    return hostil;
+  }
+
+  // Substitui, por um valor não-string, UMA das três propriedades de DADO
+  // próprias do snapshot de entrada; para os campos de contexto a observação
+  // permanece normal e NÃO vazia.
+  function guiaComCampoNaoString(campo: CampoSemantico): GuiaNormalizada {
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    (guia as unknown as Record<string, unknown>)[campo] = valorNaoString();
+    return guia;
+  }
+
+  it("valores capturados não-string falham fechada sem cache, quota ou chamada", async () => {
+    for (const campo of CAMPOS_SEMANTICOS) {
+      const api = exigirSemantica();
+      const catalogo = catalogoValido();
+      const guia = guiaComCampoNaoString(campo);
+      const kv = criarKvFake();
+      const quota = criarQuotaFake();
+      const observador = criarObservadorFake();
+      const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+      const resultado = await api.conferirGuia(guia, catalogo, {
+        interpretador: interpretador.interpretador,
+        cache: api.criarAdaptadorCacheSemantico(kv.kv),
+        quota: quota.quota,
+        observador: observador.observador,
+      });
+
+      // Nenhum efeito faturável: a recusa precede cache, quota e provedor.
+      expect(interpretador.chamadas, `chamadas com ${campo} não-string`).toHaveLength(0);
+      expect(quota.consumidas, `quota com ${campo} não-string`).toBe(0);
+      expect(kv.leituras, `leituras de KV com ${campo} não-string`).toBe(0);
+      expect(kv.gravacoes, `gravações de KV com ${campo} não-string`).toBe(0);
+
+      // Forma de falha fechada da configuração/validação, sem identidade de
+      // inferência derivada de uma tentativa que não aconteceu.
+      expect(resultado.decisao, `decisão com ${campo} não-string`).toBe("PENDENTE");
+      expect(resultado.checagem_textual, `checagem com ${campo} não-string`).toBe("incompleta");
+      expect(resultado.inferencia_textual, `inferência com ${campo} não-string`).toBeNull();
+
+      // O valor hostil nunca é ecoado no resultado (nem um prefixo de 1024).
+      const serializado = JSON.stringify(resultado);
+      expect(serializado).not.toContain("G".repeat(TAMANHO_HOSTIL));
+      expect(serializado).not.toContain("G".repeat(TAMANHO_PREFIXO));
+    }
+  });
+
+  it("getter hostil em `original` não rejeita e falha fechada de forma limitada", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    Object.defineProperty(guia, "original", {
+      get() {
+        throw new Error("original hostil");
+      },
+      enumerable: true,
+      configurable: true,
+    });
+
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+
+    // A avaliar `original` no snapshot NUNCA rejeita a conferência: fecha
+    // fechada e limitada.
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(kv.gravacoes).toBe(0);
+
+    const serializado = JSON.stringify(resultado);
+    expect(serializado.length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+  });
+
+  it("acessor hostil em outro campo do motor não amplia a evidência", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    const GIGANTE = "D".repeat(TAMANHO_HOSTIL);
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    Object.defineProperty(guia, "procedimentoDescricao", {
+      get() {
+        return GIGANTE;
+      },
+      enumerable: true,
+      configurable: true,
+    });
+
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_NEUTROS)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+
+    // O acessor hostil do motor não é avaliado nem retido: a evidência
+    // determinística não carrega o corpo gigante (nem 1024 caracteres dele).
+    const serializado = JSON.stringify(resultado);
+    expect(serializado).not.toContain(GIGANTE);
+    expect(serializado).not.toContain(GIGANTE.slice(0, TAMANHO_PREFIXO));
+    expect(kv.gravacoes).toBe(0);
+
+    // Resultado é um `ResultadoVerificacao` limitado; a decisão exata não é
+    // fixada por este reforço.
+    expect(serializado.length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+    expect(["OK", "PENDENTE"]).toContain(resultado.decisao);
+    expect(Array.isArray(resultado.motivos)).toBe(true);
   });
 });
