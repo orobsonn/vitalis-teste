@@ -112,13 +112,32 @@
 //    aguardados com um limite temporal CONFIGURÁVEL por operação
 //    (`timeoutCacheMs`, padrão 5000 ms), o mesmo já usado por tentativa. Uma
 //    leitura que não responde dentro do prazo vira MISS sem rejeitar; uma
-//    gravação que não responde conclui sem persistir, preservando o resultado
-//    `completa` da extração válida. Um KV que aceita a chamada e NUNCA resolve
+//    gravação que não responde é ABANDONADA dentro do prazo — a conferência
+//    não a aguarda mais, devolve o resultado `completa` da extração válida e
+//    emite `cache_gravacao_falhou`. Um KV que aceita a chamada e NUNCA resolve
 //    não pode bloquear a conferência indefinidamente. Os eventos redigidos
 //    `cache_leitura_falhou`/`cache_gravacao_falhou` (estado/código
 //    `cache_indisponivel`/prefixo da chave, sem corpo nem chave plena) e a
 //    regra de nunca lançar continuam válidos; por isso ficam por ÚLTIMO os
 //    testes que recarregam o módulo.
+//
+// 8. Persistência tardia honesta (6ª revisão): `timeoutCacheMs` limita a
+//    ESPERA, não a operação de armazenamento. Como o timeout não cancela
+//    `cache.gravar`, uma gravação cujo `put` só conclua DEPOIS do prazo ainda
+//    pode persistir best-effort. O comportamento fixado é: (a) a conferência
+//    abandona a espera no prazo, resolve `completa` e emite EXATAMENTE um
+//    `cache_gravacao_falhou` (`cache_indisponivel`); (b) o resultado já
+//    devolvido e o evento emitido nunca mudam por causa da conclusão tardia;
+//    (c) a persistência tardia pode ocorrer, sem rejeição e sem nova chamada.
+//    A redação anterior ("conclui sem persistir") prometia mais do que o
+//    mecanismo de corrida pode garantir.
+//
+// 9. Adaptador de cache malformado devolvendo não-Promise (6ª revisão): o
+//    contrato do adaptador é `Promise`-retornante; um `ler`/`gravar` estrutural
+//    que devolva `null`/`undefined` precisa ser ASSIMILADO como valor resolvido
+//    (miss / gravação best-effort normal), nunca virar `TypeError` que escapa de
+//    `conferirGuia`. Um não-Promise não pode rejeitar a conferência: a
+//    interpretação segue e o resultado permanece `completa`.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import regrasRaw from "../../docs/fontes/regras_convenio.json?raw";
@@ -317,9 +336,12 @@ interface OpcoesConferencia {
   timeoutMs?: number;
   /**
    * Limite temporal, em ms, de CADA operação de cache (leitura e gravação);
-   * padrão `TIMEOUT_PADRAO_MS` (5000). Um cache que não responda dentro do
-   * prazo degrada para miss (leitura) ou conclusão sem persistir (gravação) —
-   * nunca para falha da conferência.
+   * padrão `TIMEOUT_PADRAO_MS` (5000). Limita a ESPERA: um cache que não
+   * responda no prazo degrada para miss (leitura) ou é ABANDONADO (gravação,
+   * com `cache_gravacao_falhou`), sempre com resultado `completa`/degradado —
+   * nunca falha da conferência. O timeout não cancela a operação de
+   * armazenamento: uma conclusão tardia pode persistir best-effort, sem
+   * alterar o resultado já devolvido nem os eventos emitidos.
    */
   timeoutCacheMs?: number;
   agora?: () => number;
@@ -1855,8 +1877,11 @@ describe("lt-conferencia-vazio-cache-e-falhas — reforço: cache que nunca resp
   // chamada e NUNCA resolve não pode bloquear a conferência indefinidamente:
   // cada operação de cache tem um limite temporal CONFIGURÁVEL (padrão 5000 ms),
   // o mesmo já aplicado a cada tentativa. Leitura expirada vira MISS; gravação
-  // expirada conclui sem persistir — em nenhum caso a Promise rejeita ou trava.
-  // Os eventos redigidos de falha continuam no formato fechado (sem corpo da
+  // expirada é ABANDONADA — a conferência não a aguarda e segue `completa`. O
+  // timeout limita só a ESPERA: como não cancela o armazenamento, uma conclusão
+  // posterior pode persistir best-effort, sem alterar o resultado devolvido nem
+  // os eventos já emitidos. Em nenhum caso a Promise rejeita ou trava. Os
+  // eventos redigidos de falha continuam no formato fechado (sem corpo da
   // observação e sem chave plena).
   const TIMEOUT_CACHE_CONFIGURADO = 1200;
 
@@ -1922,7 +1947,7 @@ describe("lt-conferencia-vazio-cache-e-falhas — reforço: cache que nunca resp
     expect(serializado).not.toContain(chaveDe(api, entrada));
   });
 
-  it("gravação de cache que nunca resolve expira no prazo configurado e conclui completa sem persistir", async () => {
+  it("gravação de cache que nunca resolve é abandonada no prazo configurado e conclui completa (nada persistido neste instante)", async () => {
     const api = exigirSemantica();
 
     const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
@@ -1969,7 +1994,8 @@ describe("lt-conferencia-vazio-cache-e-falhas — reforço: cache que nunca resp
     expect(kv.leituras).toBe(1);
     // A leitura imediata funcionou: só a gravação falhou.
     expect(emitidos.filter((evento) => evento.evento === "cache_leitura_falhou")).toHaveLength(0);
-    // Nada foi persistido: a gravação foi tentada, mas nunca concluída.
+    // Neste instante nada foi persistido: a gravação foi tentada e NUNCA
+    // resolve, então a conferência já abandonou a espera.
     expect(kv.tentativasGravacao).toBe(1);
     expect(kv.gravacoes).toBe(0);
     expect(kv.armazem.size).toBe(0);
@@ -1993,6 +2019,164 @@ describe("lt-conferencia-vazio-cache-e-falhas — reforço: cache que nunca resp
     const serializado = JSON.stringify(emitidos);
     expect(serializado).not.toContain(TEXTO_PARTICULAR);
     expect(serializado).not.toContain(chaveDe(api, entrada));
+  });
+
+  it("gravação de cache que conclui TARDE persiste best-effort após o prazo, sem alterar o resultado já devolvido", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const entrada = entradaDe(guia);
+    const chave = chaveDe(api, entrada);
+    const armazem = new Map<string, string>();
+    let tentativasGravacao = 0;
+    let gravacoes = 0;
+
+    // KV estrutural cujo `put` só CONCLUI um `timeoutCacheMs` depois do prazo
+    // que a conferência aguarda. O timeout limita a ESPERA, não a operação de
+    // armazenamento: a persistência pode concluir tardiamente, sem rejeitar a
+    // Promise nem alterar o resultado já entregue.
+    const kv: BindingCacheSemantico = {
+      async get() {
+        return null;
+      },
+      put(valorChave, valor) {
+        tentativasGravacao += 1;
+        return new Promise<void>((resolver) => {
+          setTimeout(() => {
+            gravacoes += 1;
+            armazem.set(valorChave, valor);
+            resolver();
+          }, 2 * TIMEOUT_CACHE_CONFIGURADO);
+        });
+      },
+    };
+
+    const cache = api.criarAdaptadorCacheSemantico(kv);
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+    const emitidos: EventoRedigido[] = [];
+    const registrador = api.criarRegistradorRedigido((evento) => {
+      emitidos.push(evento);
+    });
+
+    vi.useFakeTimers();
+
+    let resolvido = false;
+    const promessa = api
+      .conferirGuia(guia, catalogo, {
+        interpretador: interpretador.interpretador,
+        cache,
+        registrador,
+        timeoutCacheMs: TIMEOUT_CACHE_CONFIGURADO,
+      })
+      .then((resultado) => {
+        resolvido = true;
+        return resultado;
+      });
+
+    // Primeiro prazo: a conferência abandona a espera pela gravação e resolve.
+    await vi.advanceTimersByTimeAsync(TIMEOUT_CACHE_CONFIGURADO);
+    expect(
+      resolvido,
+      "a gravação de cache precisa ser abandonada dentro do prazo configurado",
+    ).toBe(true);
+
+    // Resultado capturado ANTES do segundo avanço, para provar que a
+    // persistência tardia não o altera.
+    const resultado = await promessa;
+
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(codigos(resultado)).toContain("modalidade_particular_contraditoria");
+    expect(interpretador.chamadas).toHaveLength(1);
+    expect(tentativasGravacao).toBe(1);
+    // Neste instante NADA foi persistido: a gravação ainda não concluiu.
+    expect(gravacoes).toBe(0);
+    expect(armazem.size).toBe(0);
+    const falhasGravacao = emitidos.filter((evento) => evento.evento === "cache_gravacao_falhou");
+    expect(falhasGravacao).toHaveLength(1);
+    expect(falhasGravacao[0].codigo).toBe("cache_indisponivel");
+
+    // Segundo prazo: a operação de armazenamento abandonada ainda conclui e
+    // persiste best-effort. O resultado JÁ DEVOLVIDO e o evento permanecem
+    // intactos — a conferência não muda por causa da conclusão tardia.
+    await vi.advanceTimersByTimeAsync(TIMEOUT_CACHE_CONFIGURADO);
+    expect(gravacoes).toBe(1);
+    expect(armazem.get(chave)).toBe(JSON.stringify(SINAIS_PARTICULAR));
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(codigos(resultado)).toContain("modalidade_particular_contraditoria");
+    expect(interpretador.chamadas).toHaveLength(1);
+    expect(emitidos.filter((evento) => evento.evento === "cache_gravacao_falhou")).toHaveLength(1);
+  });
+
+  it("cache estrutural cujo `ler` devolve não-Promise é assimilado como miss, sem rejeitar a conferência", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+    const emitidos: EventoRedigido[] = [];
+    const registrador = api.criarRegistradorRedigido((evento) => {
+      emitidos.push(evento);
+    });
+
+    // Adaptador ESTRUTURAL malformado: `ler` devolve `null` (não uma Promise).
+    // O contrato exige assimilação como valor resolvido (miss), nunca rejeição.
+    const cache = {
+      ler() {
+        return null;
+      },
+      async gravar() {},
+    } as unknown as AdaptadorCacheSemantico;
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache,
+      registrador,
+    });
+
+    // Sem rejeição: a conferência resolve no resultado aprovado e o não-Promise
+    // é tratado como MISS.
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(codigos(resultado)).toContain("modalidade_particular_contraditoria");
+    expect(interpretador.chamadas).toHaveLength(1);
+    // Miss simples não é falha de leitura: nenhum `cache_leitura_falhou`.
+    expect(emitidos.filter((evento) => evento.evento === "cache_leitura_falhou")).toHaveLength(0);
+  });
+
+  it("cache estrutural cujo `gravar` devolve não-Promise é assimilado como gravação best-effort normal, sem rejeitar", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+    const emitidos: EventoRedigido[] = [];
+    const registrador = api.criarRegistradorRedigido((evento) => {
+      emitidos.push(evento);
+    });
+
+    // Adaptador ESTRUTURAL malformado: `gravar` devolve `undefined` (não uma
+    // Promise). A assimilação como valor resolvido mantém a gravação como
+    // best-effort normal, sem falha e sem rejeição.
+    const cache = {
+      async ler() {
+        return null;
+      },
+      gravar() {
+        return undefined;
+      },
+    } as unknown as AdaptadorCacheSemantico;
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache,
+      registrador,
+    });
+
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(codigos(resultado)).toContain("modalidade_particular_contraditoria");
+    expect(interpretador.chamadas).toHaveLength(1);
+    // Gravação best-effort normal: nenhum `cache_gravacao_falhou`.
+    expect(emitidos.filter((evento) => evento.evento === "cache_gravacao_falhou")).toHaveLength(0);
   });
 });
 
