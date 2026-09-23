@@ -96,6 +96,28 @@ function evidenciaEhLiteral(evidencia: string, textoObservacao: string): boolean
   // (fora do BMP) precisa ser reunido antes de testar `\p{L}`/`\p{N}`.
   while (indice >= 0) {
     const fimEvidencia = indice + evidenciaNormalizada.length;
+
+    // Uma ocorrência que começa ou termina no meio de um par surrogate corta um
+    // code point astral: não é uma evidência literal realmente contígua, então
+    // descarta a ocorrência e segue para a próxima (fail-closed no fim do laço).
+    const iniciaNoMeioDoPar =
+      indice > 0 &&
+      textoNormalizado.charCodeAt(indice - 1) >= 0xd800 &&
+      textoNormalizado.charCodeAt(indice - 1) <= 0xdbff &&
+      textoNormalizado.charCodeAt(indice) >= 0xdc00 &&
+      textoNormalizado.charCodeAt(indice) <= 0xdfff;
+    const terminaNoMeioDoPar =
+      fimEvidencia > 0 &&
+      textoNormalizado.charCodeAt(fimEvidencia - 1) >= 0xd800 &&
+      textoNormalizado.charCodeAt(fimEvidencia - 1) <= 0xdbff &&
+      textoNormalizado.charCodeAt(fimEvidencia) >= 0xdc00 &&
+      textoNormalizado.charCodeAt(fimEvidencia) <= 0xdfff;
+
+    if (iniciaNoMeioDoPar || terminaNoMeioDoPar) {
+      indice = textoNormalizado.indexOf(evidenciaNormalizada, indice + 1);
+      continue;
+    }
+
     let antes = "";
     if (indice > 0) {
       const inicio =
