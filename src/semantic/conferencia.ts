@@ -187,38 +187,51 @@ function acimaDoTetoDeAbuso(texto: string): boolean {
 const MARCADOR_TETO_ABUSO = "[campo_acima_do_teto_de_abuso]";
 
 /**
- * Cópia LIMITADA da guia: cada campo acima do teto de abuso é trocado pelo
- * marcador fixo, tanto no campo de topo (`observacaoRecepcao`/`convenio`/
- * `procedimentoCodigo`) quanto na célula `original` correspondente; todos os
- * demais campos permanecem intactos. Usada apenas como entrada do motor na
- * recusa de abuso, para que o resultado determinístico seja limitado: o
+ * Snapshot LIMITADO da guia a partir dos TRÊS campos já CAPTURADOS uma única
+ * vez (`observacao`/`convenio`/`procedimento`). Cada campo acima do teto de
+ * abuso é trocado pelo marcador fixo, tanto no campo de topo
+ * (`observacaoRecepcao`/`convenio`/`procedimentoCodigo`) quanto na célula
+ * `original` correspondente. Todas as demais propriedades são copiadas por
+ * DESCRITOR (`Object.getOwnPropertyDescriptors`, que NÃO avalia acessores) e as
+ * três propriedades semânticas são sobrescritas por propriedades de DADO com
+ * os valores capturados — nenhum getter hostil é reavaliado (anti-TOCTOU).
+ * Esta é a ÚNICA representação entregue ao motor em TODOS os caminhos. O
  * marcador é não vazio e não catalogado, então `convenio_nao_catalogado` e
  * `procedimento_nao_catalogado` continuam e nenhum falso `*_ausente` aparece.
  */
-function guiaComCamposLimitados(guia: GuiaNormalizada): GuiaNormalizada {
-  const observacaoAcima = acimaDoTetoDeAbuso(guia.observacaoRecepcao);
-  const convenioAcima = acimaDoTetoDeAbuso(guia.convenio);
-  const procedimentoAcima = acimaDoTetoDeAbuso(guia.procedimentoCodigo);
-  if (!observacaoAcima && !convenioAcima && !procedimentoAcima) {
-    return guia;
-  }
-  const original = { ...guia.original };
-  if (observacaoAcima) {
-    original.observacao_recepcao = MARCADOR_TETO_ABUSO;
-  }
-  if (convenioAcima) {
-    original.convenio = MARCADOR_TETO_ABUSO;
-  }
-  if (procedimentoAcima) {
-    original.procedimento_codigo = MARCADOR_TETO_ABUSO;
-  }
-  return {
-    ...guia,
-    original,
-    observacaoRecepcao: observacaoAcima ? MARCADOR_TETO_ABUSO : guia.observacaoRecepcao,
-    convenio: convenioAcima ? MARCADOR_TETO_ABUSO : guia.convenio,
-    procedimentoCodigo: procedimentoAcima ? MARCADOR_TETO_ABUSO : guia.procedimentoCodigo,
+function guiaComCamposLimitados(
+  guia: GuiaNormalizada,
+  observacao: string,
+  convenio: string,
+  procedimento: string,
+): GuiaNormalizada {
+  const observacaoFinal = acimaDoTetoDeAbuso(observacao) ? MARCADOR_TETO_ABUSO : observacao;
+  const convenioFinal = acimaDoTetoDeAbuso(convenio) ? MARCADOR_TETO_ABUSO : convenio;
+  const procedimentoFinal = acimaDoTetoDeAbuso(procedimento)
+    ? MARCADOR_TETO_ABUSO
+    : procedimento;
+
+  // Cópia das demais propriedades próprias por descritor (nunca avalia getters)
+  // e sobrescrita dos três campos semânticos por dados capturados.
+  const descritores: Record<string, PropertyDescriptor> = {
+    ...Object.getOwnPropertyDescriptors(guia),
   };
+  const comoDado = (value: unknown): PropertyDescriptor => ({
+    value,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+  descritores.observacaoRecepcao = comoDado(observacaoFinal);
+  descritores.convenio = comoDado(convenioFinal);
+  descritores.procedimentoCodigo = comoDado(procedimentoFinal);
+  descritores.original = comoDado({
+    ...guia.original,
+    observacao_recepcao: observacaoFinal,
+    convenio: convenioFinal,
+    procedimento_codigo: procedimentoFinal,
+  });
+  return Object.defineProperties({}, descritores) as GuiaNormalizada;
 }
 
 /**
@@ -564,6 +577,23 @@ export async function conferirGuia(
   catalogo: Catalogo,
   opcoes: OpcoesConferencia = {},
 ): Promise<ResultadoVerificacao> {
+  // Snapshot ÚNICO dos três campos semânticos (§3.7): cada campo é capturado
+  // como propriedade PRÓPRIA de DADO no INÍCIO, antes de qualquer teste, teto,
+  // limite ou construção. Um objeto com getters mutáveis não pode devolver um
+  // valor CURTO nos tetos e um GIGANTE numa leitura posterior (TOCTOU): todo
+  // consumidor — teste de vazio, tetos de abuso, `entrada`/chave/cache, limites
+  // semânticos e o motor — usa exclusivamente estes valores, e `guiaLimitada` é
+  // a ÚNICA representação entregue ao motor em TODOS os caminhos.
+  const campoObservacao = guia.observacaoRecepcao;
+  const campoConvenio = guia.convenio;
+  const campoProcedimento = guia.procedimentoCodigo;
+  const guiaLimitada = guiaComCamposLimitados(
+    guia,
+    campoObservacao,
+    campoConvenio,
+    campoProcedimento,
+  );
+
   const referenciaTemporal = opcoes.referenciaTemporal;
   const registrador = opcoes.registrador;
   const observador = opcoes.observador;
@@ -578,7 +608,7 @@ export async function conferirGuia(
       limitacoes?: string[];
       codigo?: ClassificacaoEstavel;
     },
-    guiaParaMotor: GuiaNormalizada = guia,
+    guiaParaMotor: GuiaNormalizada = guiaLimitada,
   ): ResultadoVerificacao => {
     const resultado = verificarGuia(guiaParaMotor, catalogo, { referenciaTemporal, textual });
     for (const limitacao of extras.limitacoes ?? []) {
@@ -617,8 +647,8 @@ export async function conferirGuia(
   // embute o corpo rejeitado; a semântica `nao_aplicavel`, os códigos
   // determinísticos (`*_nao_catalogado`) e o zero de cache/quota/modelo
   // permanecem idênticos.
-  if (guia.observacaoRecepcao.trim() === "") {
-    const resultado = verificarGuia(guiaComCamposLimitados(guia), catalogo, { referenciaTemporal });
+  if (campoObservacao.trim() === "") {
+    const resultado = verificarGuia(guiaLimitada, catalogo, { referenciaTemporal });
     const duracao = medirDuracao(inicio, agora);
     emitir(registrador, "conferencia_concluida", {
       estado: "nao_aplicavel",
@@ -642,7 +672,7 @@ export async function conferirGuia(
   // catálogo.`) nunca embute o corpo rejeitado nem um prefixo dele; cache,
   // quota e provedor permanecem intactos (zero leitura/gravação e zero
   // consumo).
-  if (acimaDoTetoDeAbuso(guia.observacaoRecepcao)) {
+  if (acimaDoTetoDeAbuso(campoObservacao)) {
     return concluir(
       { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
       {
@@ -650,17 +680,14 @@ export async function conferirGuia(
         limitacoes: [LIMITACAO_OBSERVACAO_ACIMA_DO_LIMITE],
         codigo: "limite_excedido",
       },
-      guiaComCamposLimitados(guia),
+      guiaLimitada,
     );
   }
-  if (
-    acimaDoTetoDeAbuso(guia.convenio) ||
-    acimaDoTetoDeAbuso(guia.procedimentoCodigo)
-  ) {
+  if (acimaDoTetoDeAbuso(campoConvenio) || acimaDoTetoDeAbuso(campoProcedimento)) {
     return concluir(
       { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
       { estado: "incompleta", codigo: "limite_excedido" },
-      guiaComCamposLimitados(guia),
+      guiaLimitada,
     );
   }
 
@@ -684,9 +711,9 @@ export async function conferirGuia(
   }
 
   const entrada: EntradaObservacao = {
-    observacao_recepcao: guia.observacaoRecepcao,
-    convenio: guia.convenio,
-    procedimento_codigo: guia.procedimentoCodigo,
+    observacao_recepcao: campoObservacao,
+    convenio: campoConvenio,
+    procedimento_codigo: campoProcedimento,
   };
   const modeloEfetivo = normalizarModelo(modeloCru);
   // Guarda redundante: a normalização só pode manter o valor cru (já sob o
@@ -702,7 +729,7 @@ export async function conferirGuia(
   const contexto = contextoDaConfiguracao(modeloEfetivo);
 
   // 4. Limites semânticos de entrada (após `trim`), ainda sem cache ou chamada.
-  if (guia.observacaoRecepcao.trim().length > LIMITE_OBSERVACAO) {
+  if (campoObservacao.trim().length > LIMITE_OBSERVACAO) {
     return concluir(
       { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
       {
@@ -713,8 +740,8 @@ export async function conferirGuia(
     );
   }
   if (
-    guia.convenio.trim().length > LIMITE_CONTEXTO ||
-    guia.procedimentoCodigo.trim().length > LIMITE_CONTEXTO
+    campoConvenio.trim().length > LIMITE_CONTEXTO ||
+    campoProcedimento.trim().length > LIMITE_CONTEXTO
   ) {
     return concluir(
       { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
