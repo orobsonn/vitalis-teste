@@ -230,6 +230,20 @@
 //     roda ANTES dos tetos de abuso de payload. Os tetos CRUS dos três campos
 //     valem apenas para observação NÃO vazia; seguem-se, para o resto, os
 //     limites SEMÂNTICOS trimados (1000/200), cache, quota e tentativas.
+// 17. Campos da guia capturados UMA vez (reforço adversarial MEDIUM, TOCTOU):
+//     `observacaoRecepcao`/`convenio`/`procedimentoCodigo` eram RE-LIDOS várias
+//     vezes no caminho central (teste de vazio, tetos de abuso, `entrada` e
+//     limites semânticos). Um objeto `GuiaNormalizada` com GETTERS mutáveis
+//     pode devolver um valor CURTO numa leitura e um valor GIGANTE numa leitura
+//     posterior, contornando limites/cache. A correção aprovada captura os três
+//     campos UMA única vez no início, num objeto com propriedades PRÓPRIAS de
+//     DADO (snapshot), e usa EXCLUSIVAMENTE esse snapshot — teste de vazio,
+//     tetos de abuso de 64 KiB, limites semânticos 1000/200, chave/leitura de
+//     cache, validação, `entrada` do interpretador e motor — sem reler a guia
+//     depois da captura. Os testes exigem contador EXATO de 1 leitura por campo
+//     e que nenhum valor gigante chegue ao interpretador, ao cache ou ao
+//     resultado (fail-closed e corpos limitados quando o snapshot já nasce
+//     acima do teto).
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import regrasRaw from "../../docs/fontes/regras_convenio.json?raw";
@@ -3395,5 +3409,252 @@ describe("lt-retentativa-timeout-e-limites — reforço: identidade CONFIGURADA 
     expect(resultado.checagem_textual).toBe("completa");
     expect(resultado.inferencia_textual).toEqual(identidadeConfig(api));
     expect(interpretador.chamadas).toHaveLength(1);
+  });
+});
+
+describe("lt-conferencia-vazio-cache-e-falhas — reforço: campos da guia são capturados UMA vez (sem TOCTOU)", () => {
+  // A fronteira exercitada é o objeto `GuiaNormalizada` recebido por
+  // `conferirGuia`. No caminho central os três campos semânticos
+  // (`observacaoRecepcao`, `convenio`, `procedimentoCodigo`) são RE-LIDOS
+  // várias vezes: teste de vazio, tetos de abuso, construção de `entrada`,
+  // limites semânticos e o próprio motor determinístico. Um objeto com
+  // ACESSORES (getters) mutáveis pode devolver um valor CURTO numa leitura e um
+  // valor GIGANTE numa leitura posterior, contornando limite/cache e sendo
+  // copiado para `entrada` e entregue ao interpretador (TOCTOU).
+  //
+  // A correção aprovada captura os três campos UMA única vez, no início, num
+  // objeto com propriedades PRÓPRIAS de DADO (snapshot), e usa EXCLUSIVAMENTE
+  // esse snapshot — sem reler a guia depois da captura. É por isso que cada
+  // getter precisa ser lido EXATAMENTE UMA vez, inclusive quando o snapshot já
+  // nasce acima do teto: o valor capturado decide vazio/teto/limite/cache/
+  // `entrada`/motor, nunca uma leitura tardia.
+
+  const CAMPOS = ["observacaoRecepcao", "convenio", "procedimentoCodigo"] as const;
+  type Campo = (typeof CAMPOS)[number];
+
+  const TAMANHO_HOSTIL = 200_000;
+  const TAMANHO_PREFIXO = 1024;
+
+  interface GuiaHostil {
+    guia: GuiaNormalizada;
+    leituras: Record<Campo, () => number>;
+  }
+
+  // Copia a guia-base (`Object.assign` materializa TODOS os campos como dados
+  // próprios; feito ANTES de instalar os acessores, não conta como leitura) e
+  // instala um getter por campo, que conta cada leitura e delega o valor
+  // retornado a `valor(campo, nLeituras)`.
+  function comAccessors(
+    base: GuiaNormalizada,
+    valor: (campo: Campo, leituras: number) => string,
+  ): GuiaHostil {
+    const contagens: Record<Campo, number> = {
+      observacaoRecepcao: 0,
+      convenio: 0,
+      procedimentoCodigo: 0,
+    };
+    const guia = Object.assign({}, base) as GuiaNormalizada;
+    for (const campo of CAMPOS) {
+      Object.defineProperty(guia, campo, {
+        enumerable: true,
+        configurable: true,
+        get(): string {
+          contagens[campo] += 1;
+          return valor(campo, contagens[campo]);
+        },
+      });
+    }
+    return {
+      guia,
+      leituras: {
+        observacaoRecepcao: () => contagens.observacaoRecepcao,
+        convenio: () => contagens.convenio,
+        procedimentoCodigo: () => contagens.procedimentoCodigo,
+      },
+    };
+  }
+
+  function exigirLeituraUnica(hostil: GuiaHostil): void {
+    expect(hostil.leituras.observacaoRecepcao(), "leituras de observacaoRecepcao").toBe(1);
+    expect(hostil.leituras.convenio(), "leituras de convenio").toBe(1);
+    expect(hostil.leituras.procedimentoCodigo(), "leituras de procedimentoCodigo").toBe(1);
+  }
+
+  function exigirSemGigante(serializado: string, gigantes: string[]): void {
+    for (const gigante of gigantes) {
+      expect(serializado).not.toContain(gigante);
+      expect(serializado).not.toContain(gigante.slice(0, TAMANHO_PREFIXO));
+    }
+  }
+
+  it("getters que devolvem valor curto e depois gigante são lidos uma única vez por campo", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // Valor CURTO válido (não vazio, dentro de 1000/200) e valores GIGANTES
+    // devolvidos a partir da SEGUNDA leitura de cada campo.
+    const CURTO = TEXTO_PARTICULAR;
+    const GIGANTES: Record<Campo, string> = {
+      observacaoRecepcao: `${" ".repeat(TAMANHO_HOSTIL)}a`,
+      convenio: "G".repeat(TAMANHO_HOSTIL),
+      procedimentoCodigo: "G".repeat(TAMANHO_HOSTIL),
+    };
+
+    const hostil = comAccessors(guiaSintetica(), (campo, leituras) =>
+      leituras === 1 ? CURTO : GIGANTES[campo],
+    );
+    const quota = criarQuotaFake();
+    const observador = criarObservadorFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+
+    const resultado = await api.conferirGuia(hostil.guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: null,
+      quota: quota.quota,
+      observador: observador.observador,
+    });
+
+    // Captura ÚNICA por campo: cada getter da guia é lido exatamente uma vez.
+    exigirLeituraUnica(hostil);
+
+    // O interpretador recebeu o snapshot CURTO — nunca o valor gigante.
+    expect(interpretador.chamadas).toHaveLength(1);
+    expect(interpretador.chamadas[0].observacao_recepcao).toBe(CURTO);
+    expect(interpretador.chamadas[0].convenio).toBe(CURTO);
+    expect(interpretador.chamadas[0].procedimento_codigo).toBe(CURTO);
+    exigirSemGigante(JSON.stringify(interpretador.chamadas), Object.values(GIGANTES));
+
+    // A jornada permanece normal (`completa`) e o resultado é limitado, sem o
+    // corpo gigante que nunca foi capturado.
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(resultado.inferencia_textual).toEqual(identidadeConfig(api));
+    expect(quota.consumidas).toBe(1);
+
+    const serializado = JSON.stringify(resultado);
+    expect(serializado.length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+    exigirSemGigante(serializado, Object.values(GIGANTES));
+  });
+
+  it("snapshot acima do teto (observação) falha fechada e é lido uma única vez", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // A PRIMEIRA leitura de `observacaoRecepcao` já devolve um valor acima do
+    // teto absoluto de abuso (64 KiB); convênio e procedimento continuam
+    // normais. O snapshot nasce acima do teto e falha fechada.
+    const GIGANTE = `${" ".repeat(TAMANHO_HOSTIL)}a`;
+    const hostil = comAccessors(guiaSintetica(), (campo) =>
+      campo === "observacaoRecepcao" ? GIGANTE : TEXTO_PARTICULAR,
+    );
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+
+    const resultado = await api.conferirGuia(hostil.guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+
+    exigirLeituraUnica(hostil);
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(resultado.limitacoes).toContain("observacao_acima_do_limite");
+    // Nenhum efeito faturável: zero modelo, quota e cache.
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(quota.consumidas).toBe(0);
+    expect(kv.leituras).toBe(0);
+    expect(kv.gravacoes).toBe(0);
+
+    const serializado = JSON.stringify(resultado);
+    expect(serializado.length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+    exigirSemGigante(serializado, [GIGANTE]);
+  });
+
+  it("snapshot acima do teto (convênio) com observação normal falha fechada e é lido uma única vez", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // Observação normal e não vazia; a PRIMEIRA leitura de `convenio` já
+    // devolve um valor acima do teto absoluto de abuso. O snapshot do convênio
+    // nasce acima do teto e falha fechada, sem limitação nomeada nova (item 11).
+    const GIGANTE = "G".repeat(TAMANHO_HOSTIL);
+    const hostil = comAccessors(guiaSintetica(), (campo) =>
+      campo === "convenio" ? GIGANTE : TEXTO_PARTICULAR,
+    );
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+
+    const resultado = await api.conferirGuia(hostil.guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+
+    exigirLeituraUnica(hostil);
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(codigos(resultado)).toContain("checagem_textual_incompleta");
+    // Nenhum efeito faturável: zero modelo, quota e cache.
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(quota.consumidas).toBe(0);
+    expect(kv.leituras).toBe(0);
+    expect(kv.gravacoes).toBe(0);
+
+    const serializado = JSON.stringify(resultado);
+    expect(serializado.length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+    exigirSemGigante(serializado, [GIGANTE]);
+  });
+
+  it("getters que devolvem valor gigante apenas numa leitura intermediária não entregam payload gigante", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+
+    // Variante mais forte da fronteira anterior: a leitura INTERMEDIÁRIA que
+    // alimenta `entrada` devolve o valor GIGANTE enquanto TODAS as outras
+    // leituras (vazio, teto de abuso e limites semânticos) continuam vendo o
+    // valor CURTO. Assim o teto de 64 KiB não aborta a jornada e o corpo
+    // gigante chega de fato ao interpretador no caminho pré-correção. Os
+    // índices foram identificados na implementação pré-correção ("a leitura
+    // que alimenta `entrada`"); depois da captura única cada getter é lido só
+    // UMA vez e o índice deixa de existir — o contrato durável é o contador em
+    // 1.
+    const CURTO = TEXTO_PARTICULAR;
+    const GIGANTES: Record<Campo, string> = {
+      observacaoRecepcao: `${" ".repeat(TAMANHO_HOSTIL)}a`,
+      convenio: "G".repeat(TAMANHO_HOSTIL),
+      procedimentoCodigo: "G".repeat(TAMANHO_HOSTIL),
+    };
+    const LEITURA_QUE_ALIMENTA_ENTRADA: Record<Campo, number> = {
+      observacaoRecepcao: 3,
+      convenio: 2,
+      procedimentoCodigo: 2,
+    };
+
+    const hostil = comAccessors(guiaSintetica(), (campo, leituras) =>
+      leituras === LEITURA_QUE_ALIMENTA_ENTRADA[campo] ? GIGANTES[campo] : CURTO,
+    );
+    const quota = criarQuotaFake();
+    const observador = criarObservadorFake();
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+
+    const resultado = await api.conferirGuia(hostil.guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache: null,
+      quota: quota.quota,
+      observador: observador.observador,
+    });
+
+    // Contrato durável: captura ÚNICA por campo — nenhuma leitura
+    // intermediária pode devolver outro valor.
+    exigirLeituraUnica(hostil);
+
+    // Nem o interpretador nem o resultado carregam o corpo gigante (nem um
+    // prefixo de 1024 caracteres dele): só o snapshot CURTO é entregue.
+    exigirSemGigante(JSON.stringify(interpretador.chamadas), Object.values(GIGANTES));
+    exigirSemGigante(JSON.stringify(resultado), Object.values(GIGANTES));
   });
 });
