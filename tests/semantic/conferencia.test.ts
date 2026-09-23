@@ -217,6 +217,19 @@
 //     CONFIGURADA (`MODELO_OBSERVACAO`/modelo efetivo e a versão efetiva do
 //     prompt), e o resultado serializado permanece abaixo do teto de abuso de
 //     64 KiB.
+// 16. Identidade CONFIGURADA com teto (revisão adversarial MEDIUM + §3.6/#
+//     ac-1/#uj-4): `opcoes.modelo` é identidade de cache/resultado e também
+//     entrada sujeita a um teto pequeno e COMPARTILHADO (200 caracteres — o
+//     mesmo limite semântico de contexto), aplicado ANTES do cache, da chamada
+//     e do resultado. No limite ou abaixo dele a identidade configurada é
+//     aceita e reportada; ACIMA do teto a conferência falha fechada
+//     (`PENDENTE`/`incompleta`) sem ecoar o valor — uma configuração gigante
+//     nunca é copiada integralmente para `inferencia_textual`. E a precedência
+//     do vazio (§3.6) é restaurada: a checagem de observação vazia após `trim`
+//     (varredura linear apenas, sem cópia de payload, hash ou serialização)
+//     roda ANTES dos tetos de abuso de payload. Os tetos CRUS dos três campos
+//     valem apenas para observação NÃO vazia; seguem-se, para o resto, os
+//     limites SEMÂNTICOS trimados (1000/200), cache, quota e tentativas.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import regrasRaw from "../../docs/fontes/regras_convenio.json?raw";
@@ -412,6 +425,13 @@ interface OpcoesConferencia {
   quota?: QuotaDeChamadas | null;
   registrador?: RegistradorRedigido;
   observador?: ObservadorContadores;
+  /**
+   * Identidade de configuração (cache/inferência); padrão `MODELO_OBSERVACAO`.
+   * Só é aceita dentro do teto COMPARTILHADO de 200 caracteres, medido ANTES de
+   * cache/chamada/resultado; acima dele a conferência falha fechada sem ecoar o
+   * valor.
+   */
+  modelo?: string;
   timeoutMs?: number;
   /**
    * Limite temporal, em ms, de CADA operação de cache (leitura e gravação);
@@ -2072,17 +2092,19 @@ describe("lt-retentativa-timeout-e-limites — reforço: teto absoluto de ABUSO 
     }
   });
 
-  it("observação vazia com convênio ou procedimento acima do teto devolve resultado LIMITADO sem expor o corpo", async () => {
+  it("observação vazia com convênio ou procedimento acima do teto devolve nao_aplicavel sem expor o corpo", async () => {
     const api = exigirSemantica();
     const catalogo = catalogoValido();
 
-    // Reconciliação da 7ª rodada: o teto de abuso roda ANTES de qualquer `trim()`
-    // e ANTES do ramo de observação vazia, para os três campos. Então um contexto
-    // acima do teto com observação vazia após `trim` NÃO sai mais pelo motor puro
-    // `nao_aplicavel`: produz `PENDENTE`/`incompleta` + `checagem_textual_incompleta`,
-    // sem inferência e sem efeitos faturáveis. E o caminho recusado NÃO pode
-    // passar a guia CRUA ao motor: um convênio/procedimento acima do teto seria
-    // interpolado em `motivos[].evidencia` e devolveria o corpo rejeitado.
+    // Reconciliação da 10ª rodada (§3.6/#ac-1/#uj-4): o ramo de observação vazia
+    // após `trim` precede os tetos de abuso, então um contexto acima do teto com
+    // observação vazia (só espaços aqui) sai pelo motor puro `nao_aplicavel`, sem
+    // inferência e sem efeitos faturáveis — e NÃO por `incompleta`.
+    // Independentemente dessa precedência, o caminho NÃO pode passar a guia CRUA
+    // ao motor: um convênio/procedimento acima do teto seria interpolado em
+    // `motivos[].evidencia` e devolveria o corpo rejeitado. O motor recebe o
+    // marcador limitado (`guiaComCamposLimitados`), preservando os códigos
+    // determinísticos.
     // Sentinela genuinamente grande: 200000 espaços + `X` ≈ 200001 BYTES UTF-8
     // crus (bem acima de 64 KiB), mas comprimento TRIMADO 1. Construído por
     // `repeat`, sem concatenar strings gigantes.
@@ -2122,12 +2144,12 @@ describe("lt-retentativa-timeout-e-limites — reforço: teto absoluto de ABUSO 
         quota: quota.quota,
       });
 
-      // O teto precede cache, quota e modelo; a observação vazia NÃO resgata a
-      // recusa: `incompleta` com a limitação textual, sem inferência e sem
-      // qualquer efeito colateral faturável.
+      // O ramo vazio vence: `nao_aplicavel`, sem inferência e sem qualquer
+      // efeito colateral faturável. A validação estrutural continua
+      // determinística (`*_nao_catalogado`) porque o motor recebe o marcador
+      // limitado, não o corpo rejeitado.
       expect(resultado.decisao, caso.rotulo).toBe("PENDENTE");
-      expect(resultado.checagem_textual, caso.rotulo).toBe("incompleta");
-      expect(resultado.limitacoes, caso.rotulo).toContain("checagem_textual_incompleta");
+      expect(resultado.checagem_textual, caso.rotulo).toBe("nao_aplicavel");
       expect(resultado.inferencia_textual, caso.rotulo).toBeNull();
       expect(interpretador.chamadas, caso.rotulo).toHaveLength(0);
       expect(kv.leituras, caso.rotulo).toBe(0);
@@ -2148,14 +2170,15 @@ describe("lt-retentativa-timeout-e-limites — reforço: teto absoluto de ABUSO 
     }
   });
 
-  it("observação composta só de espaços acima do teto bruto é recusada antes do trim e do ramo vazio", async () => {
+  it("observação composta só de espaços acima do teto bruto segue o ramo vazio e devolve nao_aplicavel", async () => {
     const api = exigirSemantica();
     const catalogo = catalogoValido();
 
-    // 70000 espaços: 70000 BYTES UTF-8 crus (> 65536) e VAZIA após `trim`. Se o
-    // ramo vazio (ou o trim) precedesse o teto, sairia `nao_aplicavel`; com o
-    // teto ANTES do `trim` e do ramo vazio, é recusada como abuso. Construído
-    // por `repeat`.
+    // Reconciliação da 10ª rodada (§3.6/#ac-1/#uj-4): a checagem de observação
+    // vazia após `trim` precede os tetos de abuso. 70000 espaços têm 70000 BYTES
+    // UTF-8 crus (> 65536) e ficam VAZIOS após `trim`; o ramo vazio vence e o
+    // motor puro `nao_aplicavel` responde, sem cache, quota ou modelo.
+    // Construído por `repeat`.
     const observacaoSoEspacos = " ".repeat(70000);
     expect(new TextEncoder().encode(observacaoSoEspacos).length).toBeGreaterThan(
       LIMITE_TEXTO_BRUTO_BYTES,
@@ -2173,11 +2196,11 @@ describe("lt-retentativa-timeout-e-limites — reforço: teto absoluto de ABUSO 
       quota: quota.quota,
     });
 
-    expect(resultado.decisao).toBe("PENDENTE");
-    expect(resultado.checagem_textual).toBe("incompleta");
-    expect(resultado.limitacoes).toContain("observacao_acima_do_limite");
-    expect(resultado.limitacoes).toContain("checagem_textual_incompleta");
+    expect(resultado.decisao).toBe("OK");
+    expect(resultado.checagem_textual).toBe("nao_aplicavel");
     expect(resultado.inferencia_textual).toBeNull();
+    // O ramo vazio não carrega a limitação de abuso.
+    expect(resultado.limitacoes).not.toContain("observacao_acima_do_limite");
     // Nenhum efeito faturável: zero modelo, zero leitura/gravação, zero quota.
     expect(interpretador.chamadas).toHaveLength(0);
     expect(kv.leituras).toBe(0);
@@ -2185,16 +2208,16 @@ describe("lt-retentativa-timeout-e-limites — reforço: teto absoluto de ABUSO 
     expect(quota.consumidas).toBe(0);
   });
 
-  it("observação só de espaços MULTIBYTE acima do teto bruto em bytes é recusada antes do trim", async () => {
+  it("observação só de espaços MULTIBYTE acima do teto bruto em bytes segue o ramo vazio", async () => {
     const api = exigirSemantica();
     const catalogo = catalogoValido();
 
-    // 40000 NBSP (U+00A0): 40000 unidades UTF-16 de `String.length` (ABAIXO do
-    // teto de 65536) mas 80000 BYTES UTF-8 (ACIMA do teto), e removida por
-    // `trim()`, ficando vazia após o trim. Uma checagem baseada em unidades
-    // UTF-16 (`String.length`) ou pós-`trim` deixaria passar este texto e o
-    // ramo de observação vazia o engoliria como `nao_aplicavel`; a medição em
-    // BYTES UTF-8 ANTES do `trim` e ANTES do ramo vazio o recusa como abuso.
+    // Reconciliação da 10ª rodada (§3.6/#ac-1/#uj-4): 40000 NBSP (U+00A0) têm
+    // 40000 unidades UTF-16 de `String.length` (ABAIXO do teto de 65536) mas
+    // 80000 BYTES UTF-8 (ACIMA do teto), e são removidos por `trim()`, ficando
+    // vazios após o trim. A checagem de vazio após `trim` precede os tetos de
+    // abuso, então o ramo vazio vence e o motor puro `nao_aplicavel` responde,
+    // sem cache, quota ou modelo. Construído por `repeat`.
     const soEspacosMultibyte = "\u00A0".repeat(40000);
     expect(soEspacosMultibyte.trim()).toBe("");
     expect(soEspacosMultibyte.length).toBe(40000);
@@ -2213,11 +2236,11 @@ describe("lt-retentativa-timeout-e-limites — reforço: teto absoluto de ABUSO 
       quota: quota.quota,
     });
 
-    expect(resultado.decisao).toBe("PENDENTE");
-    expect(resultado.checagem_textual).toBe("incompleta");
-    expect(resultado.limitacoes).toContain("observacao_acima_do_limite");
-    expect(resultado.limitacoes).toContain("checagem_textual_incompleta");
+    expect(resultado.decisao).toBe("OK");
+    expect(resultado.checagem_textual).toBe("nao_aplicavel");
     expect(resultado.inferencia_textual).toBeNull();
+    // O ramo vazio não carrega a limitação de abuso.
+    expect(resultado.limitacoes).not.toContain("observacao_acima_do_limite");
     // Nenhum efeito faturável: zero modelo, zero leitura/gravação, zero quota.
     expect(interpretador.chamadas).toHaveLength(0);
     expect(kv.leituras).toBe(0);
@@ -3185,5 +3208,192 @@ describe("lt-retentativa-timeout-e-limites — reforço: identidade divergente n
     const promptGigante = "P".repeat(TAMANHO_HOSTIL);
     const contexto = await conferirIdentidadeDivergente({ promptVersao: promptGigante });
     afirmarFechadoSemEco(contexto, promptGigante);
+  });
+});
+
+describe("lt-retentativa-timeout-e-limites — reforço: identidade CONFIGURADA tem teto e não amplia o resultado", () => {
+  // O teto ABSOLUTO de abuso vale também para a identidade CONFIGURADA
+  // (`opcoes.modelo`), não apenas para o payload do provedor. A identidade
+  // efetiva é aplicada em cache, chamada e resultado; um teto pequeno e
+  // COMPARTILHADO (200 caracteres — o mesmo limite semântico de contexto) é
+  // medido ANTES do cache, da chamada e do resultado. Acima dele a conferência
+  // falha fechada (`PENDENTE`/`incompleta`) SEM ecoar o valor: uma configuração
+  // gigante não é copiada integralmente para `inferencia_textual`. No limite
+  // (exatamente 200 caracteres), a identidade configurada é aceita e reportada.
+  const LIMITE_IDENTIDADE_CONFIGURADA = 200;
+  const TAMANHO_HOSTIL = 200_000;
+  const TAMANHO_PREFIXO = 1024;
+
+  it("identidade configurada gigante falha fechada antes de cache/chamada e não é ecoada", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+    const modeloGigante = "M".repeat(TAMANHO_HOSTIL);
+    expect(modeloGigante.length).toBeGreaterThan(LIMITE_IDENTIDADE_CONFIGURADA);
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    // Roteiro que REJEITA: se a configuração acima do teto chegasse a chamar o
+    // provedor, a jornada viraria `incompleta` por falha não transitória. Como
+    // a recusa precede cache e chamada, o interpretador NUNCA deve ser tocado.
+    const interpretador = criarInterpretadorFake([
+      new Error("provedor não deveria ser chamado"),
+    ]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      modelo: modeloGigante,
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    // O valor acima do teto NÃO é ecoado: nenhuma identidade amplificada.
+    expect(resultado.inferencia_textual).toBeNull();
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(kv.leituras).toBe(0);
+    expect(kv.gravacoes).toBe(0);
+    expect(quota.consumidas).toBe(0);
+
+    // O corpo permanece limitado e não expõe o valor hostil nem seu prefixo.
+    const serializado = JSON.stringify(resultado);
+    expect(serializado.length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+    expect(serializado).not.toContain(modeloGigante);
+    expect(serializado).not.toContain(modeloGigante.slice(0, TAMANHO_PREFIXO));
+  });
+
+  it("identidade configurada de exatamente 200 caracteres é aceita e reportada", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+    const modeloNoLimite = "M".repeat(LIMITE_IDENTIDADE_CONFIGURADA);
+    expect(modeloNoLimite).toHaveLength(LIMITE_IDENTIDADE_CONFIGURADA);
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const kv = criarKvFake();
+    // O provedor ecoa a MESMA identidade de configuração: a identidade confere
+    // e a extração válida conclui `completa`, sem rejeitar a Promise.
+    const respostaNoLimite: RespostaBruta = {
+      texto: JSON.stringify(SINAIS_PARTICULAR),
+      modelo: modeloNoLimite,
+      promptVersao: api.versaoEfetivaDoPrompt(),
+    };
+    const interpretador = criarInterpretadorFake([respostaNoLimite]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      modelo: modeloNoLimite,
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+    });
+
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(resultado.inferencia_textual).toEqual({
+      modelo: modeloNoLimite,
+      prompt_versao: api.versaoEfetivaDoPrompt(),
+    });
+    expect(interpretador.chamadas).toHaveLength(1);
+  });
+
+  // Regressão: um valor só-espaços ACIMA do teto era `trim()`ado para vazio e
+  // recaía no padrão `MODELO_OBSERVACAO` ANTES da medição de comprimento,
+  // escapando da recusa fechada e chegando a cache/quota/provedor (além de
+  // varrer a entrada hostil). O teto deve ser medido no valor CRU.
+  it("identidade configurada só de espaços acima do teto falha fechada e não é normalizada para o padrão", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+    const modeloSoEspacos = " ".repeat(TAMANHO_HOSTIL);
+    expect(modeloSoEspacos.trim()).toBe("");
+    expect(modeloSoEspacos.length).toBeGreaterThan(LIMITE_IDENTIDADE_CONFIGURADA);
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    // Roteiro que REJEITA: se o valor só-espaços acima do teto fosse
+    // normalizado para o padrão, a jornada chegaria ao provedor e viraria
+    // `incompleta`. A recusa no valor CRU precede cache e chamada.
+    const interpretador = criarInterpretadorFake([
+      new Error("provedor não deveria ser chamado"),
+    ]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      modelo: modeloSoEspacos,
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    // Não é normalizado para o padrão: nenhuma identidade de inferência.
+    expect(resultado.inferencia_textual).toBeNull();
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(kv.leituras).toBe(0);
+    expect(kv.gravacoes).toBe(0);
+    expect(quota.consumidas).toBe(0);
+
+    // O resultado permanece limitado e não carrega a corrida de espaços.
+    const serializado = JSON.stringify(resultado);
+    expect(serializado.length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+    expect(serializado).not.toContain(modeloSoEspacos);
+    expect(serializado).not.toContain(" ".repeat(TAMANHO_PREFIXO));
+  });
+
+  it("identidade configurada só de espaços com 300 caracteres também falha fechada sem efeitos", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+    const modeloSoEspacos = " ".repeat(300);
+    expect(modeloSoEspacos.trim()).toBe("");
+    expect(modeloSoEspacos.length).toBeGreaterThan(LIMITE_IDENTIDADE_CONFIGURADA);
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const kv = criarKvFake();
+    const quota = criarQuotaFake();
+    const interpretador = criarInterpretadorFake([
+      new Error("provedor não deveria ser chamado"),
+    ]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      modelo: modeloSoEspacos,
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(resultado.inferencia_textual).toBeNull();
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(kv.leituras).toBe(0);
+    expect(kv.gravacoes).toBe(0);
+    expect(quota.consumidas).toBe(0);
+
+    const serializado = JSON.stringify(resultado);
+    expect(serializado.length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+    expect(serializado).not.toContain(modeloSoEspacos);
+    expect(serializado).not.toContain(" ".repeat(TAMANHO_PREFIXO));
+  });
+
+  it("identidade configurada só de espaços dentro do teto recai no padrão e conclui", async () => {
+    const api = exigirSemantica();
+    const catalogo = catalogoValido();
+    const modeloSoEspacos = "   ";
+    expect(modeloSoEspacos.trim()).toBe("");
+    expect(modeloSoEspacos.length).toBeLessThanOrEqual(LIMITE_IDENTIDADE_CONFIGURADA);
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const kv = criarKvFake();
+    // O provedor ecoa a identidade PADRÃO: a normalização de um valor
+    // só-espaços DENTRO do teto recai em `MODELO_OBSERVACAO`.
+    const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      modelo: modeloSoEspacos,
+      interpretador: interpretador.interpretador,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+    });
+
+    expect(resultado.checagem_textual).toBe("completa");
+    expect(resultado.inferencia_textual).toEqual(identidadeConfig(api));
+    expect(interpretador.chamadas).toHaveLength(1);
   });
 });
