@@ -76,6 +76,18 @@ export type {
 } from "./quota";
 
 export {
+  MAXIMO_TENTATIVAS,
+  LIMITE_CONTEXTO,
+  LIMITE_OBSERVACAO,
+  LIMITE_RESPOSTA_BYTES,
+  LIMITACAO_OBSERVACAO_ACIMA_DO_LIMITE,
+  LIMITACAO_QUOTA_EXCEDIDA,
+  TIMEOUT_PADRAO_MS,
+  conferirGuia,
+} from "./conferencia";
+export type { ClassificacaoFalha, OpcoesConferencia } from "./conferencia";
+
+export {
   CHAVES_PERMITIDAS,
   CLASSIFICACOES_ESTAVEIS,
   COMPRIMENTO_MAXIMO_CACHE_PREFIXO,
