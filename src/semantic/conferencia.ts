@@ -511,8 +511,13 @@ export async function conferirGuia(
   let tentativas = 0;
 
   // 1. Observação vazia após `trim`: motor puro, sem cache, quota ou inferência.
+  // O motor recebe uma representação LIMITADA (`guiaComCamposLimitados`): um
+  // convênio/procedimento acima do teto de abuso é trocado por um marcador fixo,
+  // de modo que `motivos[].evidencia` nunca embute o corpo rejeitado; a
+  // semântica `nao_aplicavel`, os códigos determinísticos (`*_nao_catalogado`)
+  // e o zero de cache/quota/modelo permanecem idênticos.
   if (guia.observacaoRecepcao.trim() === "") {
-    const resultado = verificarGuia(guia, catalogo, { referenciaTemporal });
+    const resultado = verificarGuia(guiaComCamposLimitados(guia), catalogo, { referenciaTemporal });
     const duracao = medirDuracao(inicio, agora);
     emitir(registrador, "conferencia_concluida", {
       estado: "nao_aplicavel",
