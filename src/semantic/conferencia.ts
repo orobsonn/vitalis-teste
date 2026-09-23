@@ -10,10 +10,12 @@
  * - Observação vazia após `trim` sai pelo motor puro (`nao_aplicavel`), sem
  *   cache, sem quota e sem inferência; o texto CRU é preservado na chave e no
  *   payload, e o `trim` serve apenas para vazio e limites.
- * - ÚNICOS limites de entrada são os TRIMADOS (1000 observação, 200 contexto);
- *   o texto CRU é preservado sem teto de caracteres crus. O risco residual de
- *   custo/corpo cru pertence ao limite de corpo do entrypoint HTTP
- *   (issues #4/#6), não a este contrato.
+ * - ÚNICOS limites SEMÂNTICOS de entrada são os TRIMADOS (1000 observação,
+ *   200 contexto); o texto CRU é preservado na chave e no payload. Um teto
+ *   ABSOLUTO de ABUSO em BYTES UTF-8 do texto cru (`LIMITE_TEXTO_BRUTO_BYTES`,
+ *   64 KiB) recusa entradas desproporcionais antes de cache/hash/envio; o
+ *   risco residual de custo/corpo cru pertence sobretudo ao limite de corpo do
+ *   entrypoint HTTP (issues #4/#6), não a este contrato.
  * - Quota antes de cada tentativa, com uma ÚNICA instância padrão do isolate
  *   (60/60000 ms) usada quando a quota é omitida ou `null`.
  * - Cache miss/hit, timeout real por tentativa
@@ -57,6 +59,14 @@ import { MODELO_OBSERVACAO } from "./workers-ai";
 export const LIMITE_OBSERVACAO = 1000;
 /** Teto de caracteres de convênio e de procedimento após `trim` (§3.9). */
 export const LIMITE_CONTEXTO = 200;
+/**
+ * Teto ABSOLUTO de ABUSO da observação, em BYTES UTF-8 do texto CRU (§3.9),
+ * medido ANTES de `trim`, cache, hash e envio. Não é um limite semântico: os
+ * únicos limites semânticos de entrada continuam sendo os TRIMADOS
+ * (`LIMITE_OBSERVACAO`/`LIMITE_CONTEXTO`). Alinhado ao limite de corpo HTTP
+ * aprovado, recusa entradas desproporcionais sem restaurar o teto cru pequeno.
+ */
+export const LIMITE_TEXTO_BRUTO_BYTES = 64 * 1024;
 /** Teto, em bytes UTF-8, da resposta serializada do provedor (§3.9). */
 export const LIMITE_RESPOSTA_BYTES = 16 * 1024;
 /** Timeout padrão por tentativa, em milissegundos (§3.9). */
@@ -486,7 +496,23 @@ export async function conferirGuia(
     return resultado;
   };
 
-  // 2. Limites semânticos de entrada (após `trim`), ainda sem cache ou chamada.
+  // 2. Teto ABSOLUTO de abuso (§3.9): BYTES UTF-8 do texto CRU, medidos antes
+  // de cache/hash/envio e antes do limite SEMÂNTICO trimado. Uma observação
+  // vazia após `trim` já saiu pelo motor puro no passo 1; aqui, no limite ou
+  // abaixo, o texto cru é preservado e o teto trimado segue como o único
+  // limite semântico. Acima do teto, falha fechada sem cache e sem chamada.
+  if (bytesDoTexto(guia.observacaoRecepcao) > LIMITE_TEXTO_BRUTO_BYTES) {
+    return concluir(
+      { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
+      {
+        estado: "incompleta",
+        limitacoes: [LIMITACAO_OBSERVACAO_ACIMA_DO_LIMITE],
+        codigo: "limite_excedido",
+      },
+    );
+  }
+
+  // 3. Limites semânticos de entrada (após `trim`), ainda sem cache ou chamada.
   if (guia.observacaoRecepcao.trim().length > LIMITE_OBSERVACAO) {
     return concluir(
       { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
@@ -507,7 +533,7 @@ export async function conferirGuia(
     );
   }
 
-  // 3. Cache semântico: hit válido entrega `completa` sem modelo nem quota.
+  // 4. Cache semântico: hit válido entrega `completa` sem modelo nem quota.
   // Cada operação de cache (leitura E gravação) corre sob o MESMO limite
   // temporal configurável, com o mesmo mecanismo de corrida por `setTimeout`
   // das tentativas: um KV que aceita a chamada e nunca resolve degrada a
@@ -563,7 +589,7 @@ export async function conferirGuia(
     }
   }
 
-  // 4. Configuração ausente: sem tentativa e sem identidade de inferência.
+  // 5. Configuração ausente: sem tentativa e sem identidade de inferência.
   const interpretador = opcoes.interpretador ?? null;
   if (!interpretador) {
     return concluir(
@@ -578,7 +604,7 @@ export async function conferirGuia(
   // do isolate (nunca uma nova instância por chamada).
   const quota = opcoes.quota ?? QUOTA_PADRAO;
 
-  // 5. Tentativas estritamente sequenciais, com no máximo uma retentativa.
+  // 6. Tentativas estritamente sequenciais, com no máximo uma retentativa.
   for (;;) {
     // Quota consultada sob guarda: um `consumir()` que lance (por exemplo, um
     // observador hostil injetado na quota) é tratado como recusa fechada e cai
