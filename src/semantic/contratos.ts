@@ -20,6 +20,27 @@ export type {
   TipoSinal,
 } from "../domain/policies/contratos";
 
+import type { SituacaoTextual } from "../domain/policies/contratos";
+
+/**
+ * Fonte canônica única dos literais de `situacao` (§3.3), por campo.
+ *
+ * O `satisfies` liga em tempo de compilação cada lista ao tipo declarado
+ * `SituacaoTextual`: renomear um literal ou incluir um valor fora do tipo vira
+ * erro de tipo. O schema Zod de `situacao` consome esta fonte.
+ */
+export const VALORES_SITUACAO = {
+  autorizacao: ["nenhuma", "nova_nao_cadastrada", "verbal_sem_numero"],
+  modalidade: ["nenhuma", "particular_decidido", "somente_pergunta"],
+  procedimento: ["nenhuma", "realizado_divergente"],
+  reagendamento: ["nenhum", "mencionado"],
+} as const satisfies { readonly [K in keyof SituacaoTextual]: readonly SituacaoTextual[K][] };
+
+/** União única dos literais de `situacao`, derivada da fonte acima. */
+export const LITERAIS_SITUACAO: readonly string[] = [
+  ...new Set(Object.values(VALORES_SITUACAO).flat()),
+];
+
 /** Entrada mínima enviada ao provedor: texto livre e contexto estruturado. */
 export interface EntradaObservacao {
   observacao_recepcao: string;

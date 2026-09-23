@@ -7,8 +7,10 @@
  */
 
 export {
+  LITERAIS_SITUACAO,
   TIPOS_AMBIGUIDADE,
   TIPOS_SINAL,
+  VALORES_SITUACAO,
 } from "./contratos";
 export type {
   Ambiguidade,
