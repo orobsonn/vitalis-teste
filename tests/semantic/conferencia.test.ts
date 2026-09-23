@@ -138,6 +138,15 @@
 //    (miss / gravação best-effort normal), nunca virar `TypeError` que escapa de
 //    `conferirGuia`. Um não-Promise não pode rejeitar a conferência: a
 //    interpretação segue e o resultado permanece `completa`.
+//
+// 10. Valor de cache LIDO mas INVÁLIDO (7ª revisão): mesmo um `ler` estrutural
+//     que RESOLVA um valor truthy que não é `SinaisObservacao` (`{}`, ou a forma
+//     esperada com campos `undefined`) precisa passar pela MESMA validação de
+//     schema/evidência que §3.8 exige para a leitura de cache. Um valor
+//     inválido/hostil é MISS, nunca decisão: nada de `TypeError` de acesso a
+//     propriedade escapando de `conferirGuia` nem de hit aceito só por
+//     truthiness. A conferência degrada para a extração, invoca o interpretador
+//     EXATAMENTE uma vez e entrega `completa`.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import regrasRaw from "../../docs/fontes/regras_convenio.json?raw";
@@ -2177,6 +2186,54 @@ describe("lt-conferencia-vazio-cache-e-falhas — reforço: cache que nunca resp
     expect(interpretador.chamadas).toHaveLength(1);
     // Gravação best-effort normal: nenhum `cache_gravacao_falhou`.
     expect(emitidos.filter((evento) => evento.evento === "cache_gravacao_falhou")).toHaveLength(0);
+  });
+
+  it("cache estrutural cujo `ler` resolve valor truthy malformado degrada para miss sem rejeitar a conferência", async () => {
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+
+    // Dois valores truthy que NÃO são `SinaisObservacao`: o objeto vazio e a
+    // forma esperada com todos os campos `undefined`. A truthiness sozinha não
+    // pode selecionar o caminho de hit; §3.8 exige a mesma validação de
+    // schema/evidência da leitura de cache, então ambos são MISS.
+    const valoresMalformados: unknown[] = [
+      {},
+      { sinais: undefined, situacao: undefined, ambiguidades: undefined },
+    ];
+
+    for (const valor of valoresMalformados) {
+      const interpretador = criarInterpretadorFake([resposta(api, SINAIS_PARTICULAR)]);
+      const emitidos: EventoRedigido[] = [];
+      const registrador = api.criarRegistradorRedigido((evento) => {
+        emitidos.push(evento);
+      });
+
+      // Adaptador ESTRUTURAL malformado: `ler` RESOLVE (Promise legítima) um
+      // valor truthy inválido. O valor inválido não pode virar decisão nem
+      // lançar por acesso a propriedade que escapa de `conferirGuia`.
+      const cache = {
+        async ler() {
+          return valor as SinaisObservacao;
+        },
+        async gravar() {},
+      } as unknown as AdaptadorCacheSemantico;
+
+      const resultado = await api.conferirGuia(guia, catalogo, {
+        interpretador: interpretador.interpretador,
+        cache,
+        registrador,
+      });
+
+      // Sem rejeição: resolve no resultado aprovado. O valor inválido degrada
+      // para MISS, então a extração injetada é entregue `completa`.
+      expect(resultado.checagem_textual).toBe("completa");
+      expect(codigos(resultado)).toContain("modalidade_particular_contraditoria");
+      // EXATAMENTE uma chamada ao interpretador: nem hit aceito por truthiness
+      // (que não chamaria o modelo) nem nova tentativa pelo valor inválido.
+      expect(interpretador.chamadas).toHaveLength(1);
+    }
   });
 });
 
