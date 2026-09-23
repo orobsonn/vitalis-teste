@@ -508,13 +508,17 @@ export async function conferirGuia(
     // Quota consultada sob guarda: um `consumir()` que lance (por exemplo, um
     // observador hostil injetado na quota) é tratado como recusa fechada e cai
     // no MESMO caminho de recusa abaixo — a exceção nunca escapa da conferência
-    // nem pula o evento, a contagem e o resultado `incompleta`.
+    // nem pula o evento, a contagem e o resultado `incompleta`. O flag distingue
+    // o `false` normal da exceção: só o `false` normal pode confiar no marcador
+    // de auto-reporte da quota.
     let quotaAutorizou = true;
+    let quotaConsumiuLancou = false;
     if (quota) {
       try {
         quotaAutorizou = quota.consumir();
       } catch {
         quotaAutorizou = false;
+        quotaConsumiuLancou = true;
       }
     }
     if (!quotaAutorizou) {
@@ -523,10 +527,14 @@ export async function conferirGuia(
       // conta de novo; só quotas sem esse marcador (plain/fake, sem observador,
       // ou com marcador forjado/ilegível) são contadas aqui. A leitura é sempre
       // guardada por `quotaSeAutoReporta`: um acessor que lance NUNCA rejeita a
-      // conferência nem pula o evento/contagem. Em ambos os casos emite
+      // conferência nem pula o evento/contagem. Um `consumir()` que LANÇOU nunca
+      // confia no marcador: a quota pode não ter reportado antes de lançar, então
+      // a conferência sempre notifica nesse caso (um throw posterior a um report
+      // bem-sucedido, no pior caso, conta duas vezes — direção fechada e
+      // indetectável a partir de `consumir(): boolean`). Em ambos os casos emite
       // exatamente um `quota_recusada` — antes de `registrarChamada()` e de
       // qualquer envio — e retorna imediatamente, sem segunda contagem.
-      if (!quotaSeAutoReporta(quota)) {
+      if (quotaConsumiuLancou || !quotaSeAutoReporta(quota)) {
         notificarObservador(observador, (o) => o.registrarRecusaQuota());
       }
       emitir(registrador, "quota_recusada", {
