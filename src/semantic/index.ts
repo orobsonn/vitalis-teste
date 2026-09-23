@@ -37,6 +37,7 @@ export type {
 } from "./workers-ai";
 
 export {
+  LIMITE_VALOR_CACHE_BYTES,
   NAMESPACE_CACHE_SEMANTICO,
   TTL_PADRAO_CACHE_SEGUNDOS,
   criarAdaptadorCacheSemantico,
@@ -74,6 +75,18 @@ export type {
   OpcoesQuotaDeChamadas,
   QuotaDeChamadas,
 } from "./quota";
+
+export {
+  MAXIMO_TENTATIVAS,
+  LIMITE_CONTEXTO,
+  LIMITE_OBSERVACAO,
+  LIMITE_RESPOSTA_BYTES,
+  LIMITACAO_OBSERVACAO_ACIMA_DO_LIMITE,
+  LIMITACAO_QUOTA_EXCEDIDA,
+  TIMEOUT_PADRAO_MS,
+  conferirGuia,
+} from "./conferencia";
+export type { ClassificacaoFalha, OpcoesConferencia } from "./conferencia";
 
 export {
   CHAVES_PERMITIDAS,

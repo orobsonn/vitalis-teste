@@ -1,0 +1,102 @@
+{
+  "versao": 1,
+  "descricao": "Oráculo offline da conferência semântica. Mapeia o TEXTO integral da observação (conteúdo, nunca id_guia) para a resposta bruta de extração. O interpretador de fixture consulta apenas EntradaObservacao; qualquer texto não mapeado falha alto em vez de produzir extração benigna. Cobre exatamente os 9 textos distintos não vazios de docs/fontes/guias.csv.",
+  "porTexto": {
+    "Trouxe exame novo, anexado ao prontuário.": {
+      "sinais": [{ "tipo": "nota_administrativa", "evidencia": "exame novo" }],
+      "situacao": {
+        "autorizacao": "nenhuma",
+        "modalidade": "nenhuma",
+        "procedimento": "nenhuma",
+        "reagendamento": "nenhum"
+      },
+      "ambiguidades": []
+    },
+    "Pediu recibo para reembolso do plano.": {
+      "sinais": [{ "tipo": "pedido_de_recibo", "evidencia": "Pediu recibo" }],
+      "situacao": {
+        "autorizacao": "nenhuma",
+        "modalidade": "nenhuma",
+        "procedimento": "nenhuma",
+        "reagendamento": "nenhum"
+      },
+      "ambiguidades": []
+    },
+    "Paciente chegou 10 min atrasado.": {
+      "sinais": [{ "tipo": "nota_administrativa", "evidencia": "chegou 10 min atrasado" }],
+      "situacao": {
+        "autorizacao": "nenhuma",
+        "modalidade": "nenhuma",
+        "procedimento": "nenhuma",
+        "reagendamento": "nenhum"
+      },
+      "ambiguidades": []
+    },
+    "Confirmado pelo WhatsApp na véspera.": {
+      "sinais": [{ "tipo": "nota_administrativa", "evidencia": "Confirmado pelo WhatsApp" }],
+      "situacao": {
+        "autorizacao": "nenhuma",
+        "modalidade": "nenhuma",
+        "procedimento": "nenhuma",
+        "reagendamento": "nenhum"
+      },
+      "ambiguidades": []
+    },
+    "Paciente trouxe autorização nova, número ainda não lançado. Validade 30/09.": {
+      "sinais": [
+        { "tipo": "autorizacao_nova_nao_cadastrada", "evidencia": "autorização nova" }
+      ],
+      "situacao": {
+        "autorizacao": "nova_nao_cadastrada",
+        "modalidade": "nenhuma",
+        "procedimento": "nenhuma",
+        "reagendamento": "nenhum"
+      },
+      "ambiguidades": []
+    },
+    "Sessão remarcada de 12/08 para hoje, autorização era da data original.": {
+      "sinais": [{ "tipo": "reagendamento_mencionado", "evidencia": "remarcada de 12/08" }],
+      "situacao": {
+        "autorizacao": "nenhuma",
+        "modalidade": "nenhuma",
+        "procedimento": "nenhuma",
+        "reagendamento": "mencionado"
+      },
+      "ambiguidades": []
+    },
+    "Paciente pediu para faturar como particular, não quer usar o convênio.": {
+      "sinais": [{ "tipo": "decisao_por_particular", "evidencia": "faturar como particular" }],
+      "situacao": {
+        "autorizacao": "nenhuma",
+        "modalidade": "particular_decidido",
+        "procedimento": "nenhuma",
+        "reagendamento": "nenhum"
+      },
+      "ambiguidades": []
+    },
+    "Autorizado por telefone, protocolo 771203, aguardando número.": {
+      "sinais": [
+        { "tipo": "autorizacao_verbal_sem_numero", "evidencia": "Autorizado por telefone" }
+      ],
+      "situacao": {
+        "autorizacao": "verbal_sem_numero",
+        "modalidade": "nenhuma",
+        "procedimento": "nenhuma",
+        "reagendamento": "nenhum"
+      },
+      "ambiguidades": []
+    },
+    "Procedimento realizado foi drenagem linfática, lançar o código certo.": {
+      "sinais": [
+        { "tipo": "procedimento_realizado_divergente", "evidencia": "drenagem linfática" }
+      ],
+      "situacao": {
+        "autorizacao": "nenhuma",
+        "modalidade": "nenhuma",
+        "procedimento": "realizado_divergente",
+        "reagendamento": "nenhum"
+      },
+      "ambiguidades": []
+    }
+  }
+}
