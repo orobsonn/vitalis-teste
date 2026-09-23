@@ -24,6 +24,17 @@
  * disparar inferência. Não é um limite semântico de entrada — esses continuam
  * nos contratos próprios — e nada de retentativa, timeout, cache ou quota aqui:
  * essas políticas permanecem na orquestração.
+ *
+ * Teto de COMPRIMENTO da identidade configurada: o adaptador — e SOMENTE o
+ * adaptador — recusa, já na construção, uma `opcoes.modelo` textual acima de
+ * 200 caracteres, medidos no valor CRU (sem `trim`), com `ErroModeloInvalido`.
+ * O teto é alinhado NUMERICAMENTE ao limite de contexto do contrato
+ * compartilhado (`LIMITE_CONTEXTO = 200`, usado para convênio/procedimento no
+ * caminho central), mas mantido local de propósito, para não criar ciclo de
+ * importação com `conferencia.ts`. O caminho central NÃO aplica esse teto à
+ * identidade do modelo: `normalizarModelo` só trata vazio/whitespace/não-string.
+ * A recusa na construção impede que a identidade hostil seja retida no closure
+ * ou enviada ao provedor.
  */
 
 import type {
@@ -41,6 +52,17 @@ export const MODELO_OBSERVACAO = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 const MAX_TOKENS_RESPOSTA = 512;
 
 /**
+ * Teto de COMPRIMENTO da identidade configurada do modelo: 200 caracteres,
+ * medidos no valor CRU (sem `trim`) no momento da construção. Alinhado
+ * NUMERICAMENTE ao teto de contexto do contrato compartilhado
+ * (`LIMITE_CONTEXTO = 200`, usado para convênio/procedimento no caminho
+ * central) e mantido LOCAL de propósito, para não criar ciclo de importação
+ * com `conferencia.ts`. O caminho central não aplica esse teto à identidade do
+ * modelo; a recusa é responsabilidade deste adaptador.
+ */
+const LIMITE_MODELO_CARACTERES = 200;
+
+/**
  * Erro tipado e distinguível de teto de abuso por campo cru.
  *
  * Lançado quando algum dos três campos brutos enviados ao provedor excede o teto
@@ -56,6 +78,24 @@ export class ErroTetoDeAbuso extends Error {
       `Campo bruto acima do teto de abuso de ${LIMITE_TEXTO_BRUTO_BYTES} bytes UTF-8: ${campo}.`,
     );
     this.name = "ErroTetoDeAbuso";
+  }
+}
+
+/**
+ * Erro tipado e distinguível de identidade de modelo inválida.
+ *
+ * Lançado na CONSTRUÇÃO do interpretador quando `opcoes.modelo` é uma string
+ * acima do teto de comprimento (`LIMITE_MODELO_CARACTERES`, 200 caracteres),
+ * medido no valor CRU antes de qualquer `trim`. A recusa precede a
+ * normalização e a retenção do valor no closure, de modo que a identidade
+ * hostil jamais chega ao provedor. `name` é estável (`"ErroModeloInvalido"`)
+ * para que o chamador classifique a falha sem inspecionar a mensagem; a
+ * mensagem cita APENAS o limite e NUNCA o valor de entrada.
+ */
+export class ErroModeloInvalido extends Error {
+  constructor() {
+    super(`Identidade de modelo acima do teto de ${LIMITE_MODELO_CARACTERES} caracteres.`);
+    this.name = "ErroModeloInvalido";
   }
 }
 
@@ -93,8 +133,10 @@ export interface BindingAi {
 export interface OpcoesInterpretadorWorkersAi {
   /**
    * Modelo fixado por configuração; padrão `MODELO_OBSERVACAO`. Só uma string
-   * não vazia (após `trim`) é aceita como identidade; qualquer outra forma
-   * recai no padrão (ver `normalizarModelo`).
+   * não vazia (após `trim`) é aceita como identidade; vazio, só espaços ou
+   * valor não-string recaem no padrão (ver `normalizarModelo`). Uma string
+   * acima de 200 caracteres (valor CRU, sem `trim`) é recusada na construção
+   * com `ErroModeloInvalido`.
    */
   modelo?: string;
 }
@@ -159,6 +201,11 @@ function textoDaResposta(resultado: unknown): string {
  * `ErroTetoDeAbuso` sem nenhuma chamada ao binding, deixando ao chamador a
  * classificação como `limite_excedido`.
  *
+ * Antes de normalizar, uma `opcoes.modelo` textual acima de 200 caracteres
+ * (valor CRU, sem `trim`) é recusada com `ErroModeloInvalido` ainda na
+ * construção: nenhum interpretador é devolvido, o valor hostil não é retido e
+ * o binding nunca é tocado.
+ *
  * O modelo de `opcoes` passa por `normalizarModelo`: só uma string não vazia
  * (após `trim`), preservada literalmente, é aceita como identidade; vazio, só
  * espaços ou valor não-string em runtime recaem em `MODELO_OBSERVACAO`. Esse é
@@ -170,6 +217,10 @@ export function criarInterpretadorWorkersAi(
   ai: BindingAi,
   opcoes: OpcoesInterpretadorWorkersAi = {},
 ): InterpretadorObservacao {
+  if (typeof opcoes.modelo === "string" && opcoes.modelo.length > LIMITE_MODELO_CARACTERES) {
+    throw new ErroModeloInvalido();
+  }
+
   const modelo = normalizarModelo(opcoes.modelo);
 
   return {
