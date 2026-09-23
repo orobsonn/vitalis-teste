@@ -39,13 +39,14 @@
  */
 
 import type { Catalogo } from "../domain/catalogo";
-import type { ColunaGuia } from "../domain/contratos";
+import { COLUNAS_GUIA } from "../domain/contratos";
+import type { ColunaGuia, GuiaOriginal } from "../domain/contratos";
 import { dataParaIso, parseDataCivil } from "../domain/datas";
 import type { DataCivil } from "../domain/datas";
 import { valorParaCentavos } from "../domain/dinheiro";
 import { verificarGuia } from "../domain/motor";
 import type { ResultadoVerificacao } from "../domain/motor";
-import { inteiroDaGuia } from "../domain/normalizacao";
+import { inteiroDaGuia, normalizarGuia } from "../domain/normalizacao";
 import type { CodigoProblema, GuiaNormalizada, ProblemaNormalizacao } from "../domain/normalizacao";
 import type { TextualValidado } from "../domain/policies/textuais";
 
@@ -665,6 +666,137 @@ const CAMPOS_INTEIRO_DA_GUIA_INERTES: readonly string[] = [
 const CAMPOS_CENTAVOS_INERTES: readonly string[] = ["valorCentavos"];
 
 /**
+ * Igualdade ESTRUTURAL de duas datas civis do snapshot: `null` só casa com
+ * `null`; dois registros casam quando `ano`/`mes`/`dia` são iguais. O lado do
+ * snapshot já é um registro INERTE de dados e o lado recomputado vem do
+ * normalizador do domínio, então a leitura direta é sobre dados próprios.
+ */
+function mesmasDatas(
+  fornecida: DataCivil | null,
+  recomputada: DataCivil | null,
+): boolean {
+  if (fornecida === null || recomputada === null) {
+    return fornecida === recomputada;
+  }
+  return (
+    fornecida.ano === recomputada.ano &&
+    fornecida.mes === recomputada.mes &&
+    fornecida.dia === recomputada.dia
+  );
+}
+
+/**
+ * Identidade EXATA de um problema de normalização: os três campos observáveis
+ * que `normalizarGuia` produz. A chave NUL-separada evita colisão entre campos
+ * de texto livre (o vocabulário de `codigo`/`campo` já é fechado).
+ */
+function identidadeProblema(problema: ProblemaNormalizacao): string {
+  return `${problema.codigo}\u0000${problema.campo}\u0000${problema.valorOriginal}`;
+}
+
+/**
+ * Igualdade de CONJUNTO entre os problemas DECLARADOS e os RECOMPUTADOS: mesma
+ * cardinalidade, nenhum duplicado e todo item declarado presente no conjunto
+ * recomputado com o MESMO `valorOriginal`. Prova que a lista não fabrica um
+ * achado que as células não produzem nem omite um achado real.
+ */
+function mesmosProblemas(
+  declarados: readonly ProblemaNormalizacao[],
+  recomputados: readonly ProblemaNormalizacao[],
+): boolean {
+  if (declarados.length !== recomputados.length) {
+    return false;
+  }
+  const esperados = new Set<string>();
+  for (const problema of recomputados) {
+    esperados.add(identidadeProblema(problema));
+  }
+  if (esperados.size !== recomputados.length) {
+    return false;
+  }
+  const vistos = new Set<string>();
+  for (const problema of declarados) {
+    const identidade = identidadeProblema(problema);
+    if (!esperados.has(identidade) || vistos.has(identidade)) {
+      return false;
+    }
+    vistos.add(identidade);
+  }
+  return true;
+}
+
+/**
+ * Coerência DERIVADO×CRU do snapshot (§3.7/#ac-17/#ac-18): a representação
+ * entregue ao motor tem de ser EXATAMENTE o que a normalização do próprio
+ * domínio (`normalizarGuia`) produziria a partir das células CRUAS validadas.
+ *
+ * Sem esta prova, cada campo derivado era validado apenas de forma ISOLADA: uma
+ * sessão crua válida (`original.sessao_numero_na_autorizacao = "10000"`) podia
+ * ser pareada com `sessaoNumero = 1` e `problemas = []`, omitindo o achado
+ * `sessao_acima_do_limite`; uma célula AUSENTE não gerava problema esperado; e
+ * um valor derivado diferente do que a célula normaliza chegava a cache, quota,
+ * provedor e à decisão determinística.
+ *
+ * O contrato exige:
+ * 1. TODA coluna consumida pelo normalizador é uma célula PRÓPRIA de DADO com
+ *    string primitiva dentro do teto de abuso `LIMITE_TEXTO_BRUTO_BYTES`; uma
+ *    célula ausente, um acessor ou um não-string fecham o snapshot;
+ * 2. a guia é RECOMPUTADA a partir dessas mesmas células com o normalizador do
+ *    domínio, sobre um `LinhaGuiaCsv` mínimo cuja `linhaOriginal` não é
+ *    comparada (o snapshot preserva a linha CRUA legítima);
+ * 3. TODO campo consumido pelo motor casa com o recomputado — cópias textuais,
+ *    datas, inteiros de sessão, centavos e o CONJUNTO exato de problemas (mesmos
+ *    pares `(codigo, campo)` e os mesmos `valorOriginal`);
+ * 4. qualquer divergência, célula ausente/malformada, falha de reflexão ou
+ *    exceção da recomputação devolve `false`, e o chamador cai no caminho
+ *    determinístico de `guiaMinima()` (sem cache, quota, provedor ou eco).
+ */
+function snapshotCoerenteComCelulas(
+  snapshot: GuiaNormalizada,
+  original: Record<string, unknown>,
+): boolean {
+  for (const coluna of COLUNAS_GUIA) {
+    const descritor = Object.getOwnPropertyDescriptor(original, coluna);
+    if (!descritor || !("value" in descritor) || !stringInerte(descritor.value)) {
+      return false;
+    }
+  }
+
+  let recomputado: GuiaNormalizada;
+  try {
+    recomputado = normalizarGuia({
+      numero: 0,
+      linhaOriginal: "",
+      original: original as unknown as GuiaOriginal,
+    });
+  } catch {
+    return false;
+  }
+
+  return (
+    snapshot.id === recomputado.id &&
+    snapshot.unidade === recomputado.unidade &&
+    snapshot.paciente === recomputado.paciente &&
+    snapshot.convenio === recomputado.convenio &&
+    snapshot.carteirinha === recomputado.carteirinha &&
+    snapshot.cid === recomputado.cid &&
+    snapshot.procedimentoCodigo === recomputado.procedimentoCodigo &&
+    snapshot.procedimentoDescricao === recomputado.procedimentoDescricao &&
+    snapshot.numeroAutorizacao === recomputado.numeroAutorizacao &&
+    snapshot.profissional === recomputado.profissional &&
+    snapshot.profissionalRegistro === recomputado.profissionalRegistro &&
+    snapshot.observacaoRecepcao === recomputado.observacaoRecepcao &&
+    mesmasDatas(snapshot.dataAtendimento, recomputado.dataAtendimento) &&
+    mesmasDatas(snapshot.autorizacaoValidade, recomputado.autorizacaoValidade) &&
+    mesmasDatas(snapshot.dataLancamento, recomputado.dataLancamento) &&
+    snapshot.autorizacaoSessoesLimite === recomputado.autorizacaoSessoesLimite &&
+    snapshot.sessaoNumero === recomputado.sessaoNumero &&
+    snapshot.valorCentavos === recomputado.valorCentavos &&
+    mesmosProblemas(snapshot.problemas, recomputado.problemas)
+  );
+}
+
+/**
  * Snapshot VALIDADO em TEMPO DE EXECUÇÃO e INERTE da guia entregue ao motor
  * (§3.7/#ac-17/#ac-18). Os três campos semânticos recebem os valores já
  * CAPTURADOS e limitados uma única vez; TODO campo consumido pelo motor é
@@ -776,7 +908,17 @@ function montarSnapshotInerte(
   definirDado(saida, "original", original);
   definirDado(saida, "problemas", problemas);
 
-  return saida as unknown as GuiaNormalizada;
+  // Coerência DERIVADO×CRU por último: o snapshot completo precisa ser o que
+  // `normalizarGuia` produziria das MESMAS células cruas. Uma divergência,
+  // célula ausente, malformada ou exceção da recomputação fecha o snapshot
+  // (`null`) e o chamador cai em `guiaMinima()` — sem cache, quota, provedor
+  // nem eco — preservando toda a validação independente anterior.
+  const snapshot = saida as unknown as GuiaNormalizada;
+  if (!snapshotCoerenteComCelulas(snapshot, original)) {
+    return null;
+  }
+
+  return snapshot;
 }
 
 /**
