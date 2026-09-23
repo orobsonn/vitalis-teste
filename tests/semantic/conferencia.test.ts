@@ -206,6 +206,17 @@
 //     rejeitar a Promise de `conferirGuia`. A tentativa ACONTECEU, então
 //     `inferencia_textual` vem da IDENTIDADE CONFIGURADA (a do envelope é
 //     ilegível), sem retentativa (exatamente UMA chamada) e sem gravar cache.
+// 15. Identidade divergente não ecoa metadados do provedor (reforço da revisão
+//     adversarial final): `modelo`/`promptVersao` do envelope RESOLVIDO por
+//     `extrair` são entrada NÃO CONFIÁVEL. Quando DIVERGEM da configuração, a
+//     conferência já falha fechada (`PENDENTE`/`incompleta`, UMA tentativa,
+//     sem retentativa e sem gravar cache), mas NÃO pode copiar esses metadados
+//     para `inferencia_textual`: um interpretador hostil com `texto` pequeno e
+//     válido poderia devolver `modelo`/`promptVersao` gigantes e amplificar o
+//     corpo do resultado. Na divergência reporta-se APENAS a identidade
+//     CONFIGURADA (`MODELO_OBSERVACAO`/modelo efetivo e a versão efetiva do
+//     prompt), e o resultado serializado permanece abaixo do teto de abuso de
+//     64 KiB.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import regrasRaw from "../../docs/fontes/regras_convenio.json?raw";
@@ -485,6 +496,10 @@ const EVIDENCIA_PARTICULAR = "faturar como particular";
 const EVIDENCIA_ADMIN = "Confirmado pelo WhatsApp";
 const LIMITE_ENTRADA = 1000;
 const LIMITE_RESPOSTA_BYTES = 16 * 1024;
+// Teto ABSOLUTO de abuso do payload do provedor, em BYTES UTF-8 (item 11).
+// Declarado no escopo do MÓDULO para ser reutilizado também pelo reforço de
+// identidade divergente (item 15).
+const LIMITE_TEXTO_BRUTO_BYTES = 64 * 1024;
 const TIMEOUT_PADRAO_MS = 5000;
 
 const SITUACAO_NEUTRA: SituacaoTextual = {
@@ -1791,7 +1806,7 @@ describe("lt-retentativa-timeout-e-limites — reforço: teto absoluto de ABUSO 
   // preservado na chave/payload e os limites SEMÂNTICOS trimados (1000/200)
   // continuam sendo os únicos limites de entrada. A medição é em BYTES UTF-8,
   // nunca em unidades UTF-16 de `String.length`: `á` custa 2 bytes.
-  const LIMITE_TEXTO_BRUTO_BYTES = 64 * 1024;
+  // (`LIMITE_TEXTO_BRUTO_BYTES` é declarado no escopo do módulo.)
 
   it("padding de espaços acima do teto absoluto não lê cache, não chama o modelo e produz incompleta", async () => {
     const api = exigirSemantica();
@@ -3083,5 +3098,92 @@ describe("lt-conferencia-vazio-cache-e-falhas — reforço: resposta malformada 
         modelo: api.MODELO_OBSERVACAO,
       }),
     );
+  });
+});
+
+describe("lt-retentativa-timeout-e-limites — reforço: identidade divergente não ecoa metadados do provedor", () => {
+  // A identidade efetiva do provedor (`modelo`/`promptVersao` do envelope
+  // RESOLVIDO por `extrair`) é entrada NÃO CONFIÁVEL. Quando DIVERGE da
+  // configuração, a conferência já fecha fechada (`PENDENTE`/`incompleta`, UMA
+  // tentativa, sem retentativa e sem gravar cache) — mas NÃO pode copiar esses
+  // metadados para `inferencia_textual`. Um interpretador hostil com `texto`
+  // pequeno e válido poderia devolver `modelo`/`promptVersao` gigantes e
+  // amplificar o corpo do resultado. A correção reporta APENAS a identidade
+  // CONFIGURADA e o corpo permanece limitado (abaixo do teto de abuso de
+  // 64 KiB).
+  const TAMANHO_HOSTIL = 200_000;
+  const TAMANHO_PREFIXO = 1024;
+
+  async function conferirIdentidadeDivergente(
+    override: Partial<Pick<RespostaBruta, "modelo" | "promptVersao">>,
+  ): Promise<{
+    api: ApiSemantica;
+    resultado: ResultadoVerificacao;
+    kv: KvFake;
+    chamadas: number;
+  }> {
+    const api = exigirSemantica();
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const kv = criarKvFake();
+    const cache = api.criarAdaptadorCacheSemantico(kv.kv);
+    const observador = criarObservadorFake();
+    const quota = criarQuotaFake();
+    const base = resposta(api, SINAIS_PARTICULAR);
+    const interpretador = criarInterpretadorFake([{ ...base, ...override }]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: interpretador.interpretador,
+      cache,
+      quota: quota.quota,
+      observador: observador.observador,
+    });
+
+    return { api, resultado, kv, chamadas: interpretador.chamadas.length };
+  }
+
+  function afirmarFechadoSemEco(
+    contexto: {
+      api: ApiSemantica;
+      resultado: ResultadoVerificacao;
+      kv: KvFake;
+      chamadas: number;
+    },
+    metadadoHostil: string,
+  ): void {
+    const { api, resultado, kv, chamadas } = contexto;
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(codigos(resultado)).toContain("checagem_textual_incompleta");
+
+    // Só a identidade CONFIGURADA é reportada; o metadado do provedor não ecoa.
+    const serializado = JSON.stringify(resultado);
+    expect(
+      resultado.inferencia_textual,
+      `resultado serializado com ${serializado.length} bytes`,
+    ).toEqual(identidadeConfig(api));
+
+    // O corpo permanece limitado e não expõe o metadado hostil nem seu prefixo.
+    expect(serializado.length).toBeLessThanOrEqual(LIMITE_TEXTO_BRUTO_BYTES);
+    expect(serializado).not.toContain(metadadoHostil);
+    expect(serializado).not.toContain(metadadoHostil.slice(0, TAMANHO_PREFIXO));
+
+    // Exatamente UMA tentativa: identidade divergente não retenta.
+    expect(chamadas).toBe(1);
+    expect(kv.leituras).toBe(1);
+    expect(kv.gravacoes).toBe(0);
+  }
+
+  it("modelo divergente gigante não é ecoado e o resultado é fechado e limitado", async () => {
+    const modeloGigante = "M".repeat(TAMANHO_HOSTIL);
+    const contexto = await conferirIdentidadeDivergente({ modelo: modeloGigante });
+    afirmarFechadoSemEco(contexto, modeloGigante);
+  });
+
+  it("promptVersao divergente gigante não é ecoado e o resultado é fechado e limitado", async () => {
+    const promptGigante = "P".repeat(TAMANHO_HOSTIL);
+    const contexto = await conferirIdentidadeDivergente({ promptVersao: promptGigante });
+    afirmarFechadoSemEco(contexto, promptGigante);
   });
 });
