@@ -99,13 +99,23 @@ function bytesDoTexto(texto: string): number {
   return CODIFICADOR.encode(texto).length;
 }
 
-/** Lê `status` numérico de um erro desconhecido sem lançar. */
+/**
+ * Lê `status` numérico de um erro desconhecido sem lançar nem avaliar
+ * acessores arbitrários: só a propriedade própria de dado é lida, e qualquer
+ * exceção (inclusive de um `Proxy`) na obtenção fecha como sem status.
+ */
 function statusDoErro(erro: unknown): number | null {
-  if (typeof erro === "object" && erro !== null) {
-    const status = (erro as { status?: unknown }).status;
+  if (typeof erro !== "object" || erro === null) {
+    return null;
+  }
+  try {
+    const descritor = Object.getOwnPropertyDescriptor(erro, "status");
+    const status = descritor && "value" in descritor ? descritor.value : undefined;
     if (typeof status === "number" && Number.isFinite(status)) {
       return status;
     }
+  } catch {
+    return null;
   }
   return null;
 }
@@ -163,6 +173,30 @@ function contextoDaConfiguracao(): ContextoChaveCacheSemantica {
     promptVersao: versaoEfetivaDoPrompt(),
     promptHash: PROMPT_HASH,
   };
+}
+
+/**
+ * A resposta só é aceita quando o provedor confirma a identidade configurada
+ * (`modelo` e versão efetiva do prompt); uma resposta de outra identidade é
+ * tratada como `configuracao` (sem código estável) e nunca é cacheada.
+ */
+function identidadeConfere(
+  resposta: RespostaBruta,
+  contexto: ContextoChaveCacheSemantica,
+): boolean {
+  return resposta.modelo === contexto.modelo && resposta.promptVersao === contexto.promptVersao;
+}
+
+/** Classifica a falha de uma tentativa sem deixar exceção escapar (fecha como não transitória). */
+function classificarFalhaComGuarda(
+  classificar: (erro: unknown) => ClassificacaoFalha,
+  erro: unknown,
+): ClassificacaoFalha {
+  try {
+    return classificar(erro);
+  } catch {
+    return "nao_transitorio";
+  }
 }
 
 type ResultadoTentativa =
@@ -371,6 +405,24 @@ export async function conferirGuia(
     if (tentativa.tipo === "ok") {
       const resposta = tentativa.resposta;
 
+      // Identidade efetiva do provedor: só a configurada é aceita. Mismatch
+      // fecha sem gravar cache, sem retentar e sem relabelar como padrão.
+      if (!identidadeConfere(resposta, contexto)) {
+        registrador?.info("extracao_falhou", {
+          estado: "incompleta",
+          tentativas,
+        });
+        return concluir(
+          {
+            estado: "incompleta",
+            sinais: null,
+            modelo: contexto.modelo,
+            prompt_versao: contexto.promptVersao,
+          },
+          { estado: "incompleta" },
+        );
+      }
+
       // Teto de saída antes do parse.
       if (bytesDoTexto(resposta.texto) > LIMITE_RESPOSTA_BYTES) {
         registrador?.info("extracao_falhou", {
@@ -438,7 +490,9 @@ export async function conferirGuia(
     }
 
     const classificacao =
-      tentativa.tipo === "timeout" ? "timeout" : classificar(tentativa.erro);
+      tentativa.tipo === "timeout"
+        ? "timeout"
+        : classificarFalhaComGuarda(classificar, tentativa.erro);
     const codigoFalha = codigoDaClassificacao(classificacao);
     registrador?.info("extracao_falhou", {
       estado: "incompleta",
