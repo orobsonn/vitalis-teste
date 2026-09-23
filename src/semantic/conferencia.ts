@@ -332,6 +332,22 @@ const CAMPOS_POR_CODIGO_PROBLEMA: Record<CodigoProblema, readonly ColunaGuia[]> 
 };
 
 /**
+ * Campo NORMALIZADO que uma célula com problema deixa `null` em
+ * `normalizarGuia`: a data, o inteiro de sessão ou `valorCentavos`
+ * correspondente. É o marcador de falha observável que um problema
+ * REPRODUZÍVEL precisa carregar no snapshot. O acesso só ocorre após
+ * `problemaCompativel` garantir um `campo` pertencente a este mapa.
+ */
+const CAMPO_NORMALIZADO_POR_PROBLEMA: Record<string, string> = {
+  data_atendimento: "dataAtendimento",
+  autorizacao_validade: "autorizacaoValidade",
+  data_lancamento: "dataLancamento",
+  autorizacao_sessoes_limite: "autorizacaoSessoesLimite",
+  sessao_numero_na_autorizacao: "sessaoNumero",
+  valor: "valorCentavos",
+};
+
+/**
  * Cardinalidade máxima legítima da lista: um problema por campo verificável do
  * normalizador (três datas, dois inteiros de sessão e `valor`).
  */
@@ -349,17 +365,38 @@ function problemaCompativel(codigo: string, campo: string): boolean {
 }
 
 /**
- * Clona os problemas de normalização como registros INERTES: cada elemento
- * precisa ser registro simples com `campo`/`codigo`/`valorOriginal` em
- * descritores PRÓPRIOS de DADO e strings primitivas dentro do teto de abuso,
- * com o par `(codigo, campo)` no vocabulário FECHADO e na compatibilidade do
- * normalizador, no máximo um por par e no máximo `MAXIMO_PROBLEMAS` no total.
+ * Clona os problemas de normalização como registros INERTES e exige que cada
+ * elemento seja REPRODUZÍVEL a partir do próprio snapshot:
+ * - forma simples com `campo`/`codigo`/`valorOriginal` em descritores PRÓPRIOS
+ *   de DADO e strings primitivas dentro do teto de abuso;
+ * - par `(codigo, campo)` no vocabulário FECHADO e na compatibilidade do
+ *   normalizador, no máximo um por par e no máximo `MAXIMO_PROBLEMAS`;
+ * - `valorOriginal` EXATAMENTE igual (igualdade de string, sem normalização) à
+ *   célula inerte correspondente `original[campo]`: o normalizador registra o
+ *   texto CRU daquela célula;
+ * - campo DERIVADO carregando o marcador de falha que o normalizador
+ *   produziria: todo problema real deixa o campo normalizado correspondente
+ *   `null` (`data_invalida` ⇒ data nula, `campo_numerico_invalido` ⇒ inteiro
+ *   nulo e `valor_ilegivel` ⇒ `valorCentavos` nulo);
+ * - extensão AGREGADA dos `valorOriginal` dentro do teto compartilhado
+ *   `LIMITE_TEXTO_BRUTO_BYTES`.
+ *
  * Qualquer outra forma (não-array, buraco, acessor, tipo errado, string
- * gigante, código desconhecido/incompatível, duplicado ou lista acima do
- * máximo) é MALFORMADA e fecha o snapshot (`null`) — sem chegar ao motor (que
- * indexa `TEXTOS[codigo]` e lançaria) nem amplificar a resposta.
+ * gigante, código desconhecido/incompatível, duplicado, lista acima do máximo,
+ * texto original divergente da célula, campo derivado não nulo ou evidência
+ * agregada acima do teto) é MALFORMADA e fecha o snapshot (`null`) — sem chegar
+ * ao motor (que indexa `TEXTOS[codigo]` e interpola `valorOriginal` em
+ * `motivos[].evidencia`) nem amplificar a resposta com problemas FABRICADOS.
+ *
+ * `original` é o registro INERTE já reconstruído e `snapshotParcial` já contém
+ * os campos normalizados derivados (datas, inteiros e centavos), de modo que a
+ * reprodução compara contra os MESMOS valores entregues ao motor.
  */
-function clonarProblemasInertes(valor: unknown): ProblemaNormalizacao[] | null {
+function clonarProblemasInertes(
+  valor: unknown,
+  original: Record<string, unknown>,
+  snapshotParcial: Record<string, unknown>,
+): ProblemaNormalizacao[] | null {
   if (!Array.isArray(valor)) {
     return null;
   }
@@ -380,6 +417,7 @@ function clonarProblemasInertes(valor: unknown): ProblemaNormalizacao[] | null {
   }
   const saida: ProblemaNormalizacao[] = [];
   const vistos = new Set<string>();
+  let bytesEvidencia = 0;
   for (let indice = 0; indice < tamanho; indice += 1) {
     const descritor = descritores[String(indice)];
     if (!descritor || !("value" in descritor)) {
@@ -398,6 +436,7 @@ function clonarProblemasInertes(valor: unknown): ProblemaNormalizacao[] | null {
     const registro = registroInerte();
     let campoLido = "";
     let codigoLido = "";
+    let valorOriginalLido = "";
     for (const chave of ["campo", "codigo", "valorOriginal"]) {
       const campo = campos[chave];
       if (!campo || !("value" in campo) || !stringInerte(campo.value)) {
@@ -408,9 +447,29 @@ function clonarProblemasInertes(valor: unknown): ProblemaNormalizacao[] | null {
         campoLido = campo.value;
       } else if (chave === "codigo") {
         codigoLido = campo.value;
+      } else {
+        valorOriginalLido = campo.value;
       }
     }
     if (!problemaCompativel(codigoLido, campoLido)) {
+      return null;
+    }
+    // Reprodução EXATA do texto: o normalizador registra o texto CRU de
+    // `original[campo]`, sem trimar nem normalizar. Um `valorOriginal` que não
+    // bata com a célula é FABRICADO (eco de texto que a guia não possui).
+    if (original[campoLido] !== valorOriginalLido) {
+      return null;
+    }
+    // Marcador de falha derivado: todo problema real deixa o campo normalizado
+    // correspondente `null`; um derivado válido prova um problema inventado
+    // para uma célula boa (e o motivo divergiria da decisão determinística).
+    if (snapshotParcial[CAMPO_NORMALIZADO_POR_PROBLEMA[campoLido]] !== null) {
+      return null;
+    }
+    // Teto AGREGADO da evidência: a soma dos `valorOriginal` não pode passar do
+    // teto compartilhado de abuso, senão as cópias somadas amplificam a resposta.
+    bytesEvidencia += bytesDoTexto(valorOriginalLido);
+    if (bytesEvidencia > LIMITE_TEXTO_BRUTO_BYTES) {
       return null;
     }
     const identificador = `${codigoLido}\u0000${campoLido}`;
@@ -576,15 +635,6 @@ function montarSnapshotInerte(
     return null;
   }
 
-  const descritorProblemas = descritores.problemas;
-  if (!descritorProblemas || !("value" in descritorProblemas)) {
-    return null;
-  }
-  const problemas = clonarProblemasInertes(descritorProblemas.value);
-  if (problemas === null) {
-    return null;
-  }
-
   const descritorLinha = descritores.linhaOriginal;
   if (
     !descritorLinha ||
@@ -640,6 +690,20 @@ function montarSnapshotInerte(
       return null;
     }
     definirDado(saida, chave, numero);
+  }
+
+  // `problemas` é validado DEPOIS dos campos derivados: cada problema
+  // REPRODUZÍVEL precisa provar que sua célula `original[campo]` carrega o mesmo
+  // texto cru E que o campo normalizado correspondente ficou `null` — a
+  // assinatura que `normalizarGuia` deixa ao registrar um problema. A evidência
+  // agregada também é limitada aqui, antes de qualquer cache, quota ou envio.
+  const descritorProblemas = descritores.problemas;
+  if (!descritorProblemas || !("value" in descritorProblemas)) {
+    return null;
+  }
+  const problemas = clonarProblemasInertes(descritorProblemas.value, original, saida);
+  if (problemas === null) {
+    return null;
   }
 
   definirDado(saida, "observacaoRecepcao", observacaoFinal);
