@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Claude Harness v3.3.6 — vendored Pi entry point.
+ * Claude Harness v3.4.0 — vendored Pi entry point.
  * Runs the LOCAL launcher under .pi/harness/bin/. No download, no network: @earendil-works/pi-coding-agent
  * and @gotgenes/pi-subagents are resolved from the verified user/host runtime cache.
  * Every flag, --verify included, is forwarded verbatim.
