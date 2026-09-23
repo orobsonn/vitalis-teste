@@ -664,20 +664,35 @@ export async function conferirGuia(
     );
   }
 
-  const entrada: EntradaObservacao = {
-    observacao_recepcao: guia.observacaoRecepcao,
-    convenio: guia.convenio,
-    procedimento_codigo: guia.procedimentoCodigo,
-  };
-  const modeloEfetivo = normalizarModelo(opcoes.modelo);
-
   // 3. Identidade CONFIGURADA sob teto COMPARTILHADO de 200 caracteres: a
   // identidade efetiva é aplicada em cache, chamada e resultado, então uma
   // configuração acima do teto falha fechada AQUI — ANTES de qualquer leitura
   // de cache, chamada ou eco — reutilizando a MESMA forma de falha de
   // configuração (`PENDENTE`/`incompleta`, `inferencia_textual` nula) usada
   // quando não há interpretador. O valor hostil nunca é copiado para o
-  // resultado; exatamente 200 caracteres são aceitos.
+  // resultado; exatamente 200 caracteres são aceitos. O comprimento é medido
+  // no valor CRU, ANTES de `normalizarModelo`: um valor só-espaços acima do
+  // teto seria trimado para vazio e recairia no padrão, escapando da recusa.
+  // Aqui ele é recusado como qualquer identidade acima do teto, sem ser
+  // trimado, normalizado ou copiado primeiro.
+  const modeloCru = opcoes.modelo;
+  if (typeof modeloCru === "string" && modeloCru.length > LIMITE_IDENTIDADE_CONFIGURADA) {
+    return concluir(
+      { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
+      { estado: "incompleta" },
+    );
+  }
+
+  const entrada: EntradaObservacao = {
+    observacao_recepcao: guia.observacaoRecepcao,
+    convenio: guia.convenio,
+    procedimento_codigo: guia.procedimentoCodigo,
+  };
+  const modeloEfetivo = normalizarModelo(modeloCru);
+  // Guarda redundante: a normalização só pode manter o valor cru (já sob o
+  // teto) ou recair no padrão curto, então nunca AUMENTA o comprimento e este
+  // teste não dispara quando o teto cru já foi aplicado; permanece como defesa
+  // em profundidade para qualquer normalização futura.
   if (modeloEfetivo.length > LIMITE_IDENTIDADE_CONFIGURADA) {
     return concluir(
       { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
