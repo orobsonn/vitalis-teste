@@ -31,6 +31,29 @@ async function contarFalhasDaJanela(
   return linha === null || linha === undefined ? 0 : Number(linha.total);
 }
 
+/**
+ * Lotes ainda em PROCESSANDO iniciados dentro da janela (J20): expõe o estado
+ * intermediário usando a mesma regra temporal de J6 para falhas. Somente
+ * leitura; valores sempre por `bind`.
+ */
+async function contarLotesProcessandoDaJanela(
+  db: D1Database,
+  de: string,
+  ate: string,
+): Promise<number> {
+  const linha = await db
+    .prepare(
+      `SELECT COUNT(*) AS total
+         FROM imports
+        WHERE status = ?
+          AND substr(iniciado_em, 1, 10) >= ?
+          AND substr(iniciado_em, 1, 10) <= ?`,
+    )
+    .bind("PROCESSANDO", de, ate)
+    .first<{ total: number }>();
+  return linha === null || linha === undefined ? 0 : Number(linha.total);
+}
+
 export async function relatorioAtividade(
   db: D1Database,
   opcoes: OpcoesRelatorioAtividade,
@@ -39,10 +62,12 @@ export async function relatorioAtividade(
   const linhas = await carregarLinhas(db, recorte);
   const findings = await carregarFindings(db);
   const falhasProcessamento = await contarFalhasDaJanela(db, opcoes.de, opcoes.ate);
+  const lotesProcessando = await contarLotesProcessandoDaJanela(db, opcoes.de, opcoes.ate);
   return montarRelatorio(
     linhas,
     findings,
     falhasProcessamento,
+    lotesProcessando,
     { de: opcoes.de, ate: opcoes.ate },
     opcoes.referencia ?? null,
   );

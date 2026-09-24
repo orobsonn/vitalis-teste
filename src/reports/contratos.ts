@@ -37,6 +37,8 @@ export interface RelatorioGuias {
   ok: number;
   pendentes: number;
   falhasProcessamento: number;
+  /** Lotes em PROCESSANDO observáveis (J20): estado intermediário, não métrica final. */
+  lotesProcessando: number;
   valorRegistradoCentavos: number;
   totalIncompleto: boolean;
   exposicaoCentavos: number;
