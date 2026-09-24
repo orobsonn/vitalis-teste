@@ -1570,7 +1570,9 @@ export async function conferirGuia(
     );
   }
 
-  // 5. Cache semântico: hit válido entrega `completa` sem modelo nem quota.
+  // 5. Cache semântico: a LEITURA do KV permanece permitida mesmo sem
+  // configuração; o ACEITE do hit, porém, exige o interpretador efetivo
+  // (etapa 6) — um cache pré-existente não decide `completa`/`OK` sozinho.
   // Cada operação de cache (leitura E gravação) corre sob o MESMO limite
   // temporal configurável, com o mesmo mecanismo de corrida por `setTimeout`
   // das tentativas: um KV que aceita a chamada e nunca resolve degrada a
@@ -1581,8 +1583,8 @@ export async function conferirGuia(
   // evento emitido. Nada aqui trava nem rejeita a conferência.
   const timeoutCacheMs = normalizarTimeout(opcoes.timeoutCacheMs);
   const cache = opcoes.cache ?? null;
+  let sinaisCache: SinaisObservacao | null = null;
   if (cache) {
-    let sinais: SinaisObservacao | null = null;
     const leitura = await correrComTimeout<SinaisObservacao | null>(
       () => cache.ler(entrada, contexto),
       timeoutCacheMs,
@@ -1600,38 +1602,44 @@ export async function conferirGuia(
       // propriedade escapar.
       try {
         const validacaoCache = validarExtracao(leitura.valor, entrada.observacao_recepcao);
-        sinais = validacaoCache.ok ? validacaoCache.sinais : null;
+        sinaisCache = validacaoCache.ok ? validacaoCache.sinais : null;
       } catch {
-        sinais = null;
+        sinaisCache = null;
       }
     } else {
-      sinais = null;
       emitir(registrador, "cache_leitura_falhou", {
         estado: "incompleta",
         codigo: "cache_indisponivel",
         cache_prefixo: montarChaveCacheSemantica(entrada, contexto).prefixo,
       });
     }
-    if (sinais) {
-      notificarObservador(observador, (o) => o.registrarCacheHit());
-      return concluir(
-        {
-          estado: "completa",
-          sinais,
-          modelo: contexto.modelo,
-          prompt_versao: contexto.promptVersao,
-        },
-        { estado: "completa" },
-      );
-    }
   }
 
   // 6. Configuração ausente: sem tentativa e sem identidade de inferência.
+  // Valida a presença do interpretador EFETIVO ANTES do ACEITE do hit (§3.6):
+  // a leitura do cache é permitida, mas um hit VÁLIDO não pode ser aceito como
+  // decisão enquanto a configuração que sustenta a inferência não estiver
+  // presente — senão um cache pré-existente liberaria uma observação não
+  // interpretada. Nada é gravado e `inferencia_textual` permanece nula.
   const interpretador = opcoes.interpretador ?? null;
   if (!interpretador) {
     return concluir(
       { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
       { estado: "incompleta" },
+    );
+  }
+
+  // 7. Hit válido do cache: entrega `completa` sem modelo nem quota.
+  if (sinaisCache) {
+    notificarObservador(observador, (o) => o.registrarCacheHit());
+    return concluir(
+      {
+        estado: "completa",
+        sinais: sinaisCache,
+        modelo: contexto.modelo,
+        prompt_versao: contexto.promptVersao,
+      },
+      { estado: "completa" },
     );
   }
 
@@ -1641,7 +1649,7 @@ export async function conferirGuia(
   // do isolate (nunca uma nova instância por chamada).
   const quota = opcoes.quota ?? QUOTA_PADRAO;
 
-  // 7. Tentativas estritamente sequenciais, com no máximo uma retentativa.
+  // 8. Tentativas estritamente sequenciais, com no máximo uma retentativa.
   for (;;) {
     // Quota consultada sob guarda: um `consumir()` que lance (por exemplo, um
     // observador hostil injetado na quota) é tratado como recusa fechada e cai
