@@ -98,6 +98,37 @@ function mensagemDeErro(erro: unknown): string {
 }
 
 /**
+ * Detecta code units surrogate UTF-16 isolados. O adapter D1/`node:sqlite`
+ * normaliza um surrogate isolado para U+FFFD ao vincular/gravar TEXT, o que
+ * conflaciona identidades distintas e tornaria um digest não injetivo. A
+ * fronteira rejeita a identidade/texto malformado antes de qualquer
+ * `prepare`/`batch`/`exec`; pares válidos (emoji) são preservados.
+ */
+function temSurrogateIsolado(valor: string): boolean {
+  for (let i = 0; i < valor.length; i += 1) {
+    const codigo = valor.charCodeAt(i);
+    if (codigo >= 0xd800 && codigo <= 0xdbff) {
+      const proximo = valor.charCodeAt(i + 1);
+      if (!(proximo >= 0xdc00 && proximo <= 0xdfff)) {
+        return true;
+      }
+      i += 1;
+      continue;
+    }
+    if (codigo >= 0xdc00 && codigo <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function exigirSemSurrogateIsolado(valor: string, campo: string): void {
+  if (temSurrogateIsolado(valor)) {
+    throw new TypeError(`${campo} não pode conter surrogate UTF-16 isolado`);
+  }
+}
+
+/**
  * Monta as linhas físicas do lote na ordem do arquivo. Guias aceitas ficam
  * `PENDENTE` com `original_json`; rejeições do parser ficam `FALHOU` com o
  * motivo. `numero_linha` preserva o número físico do parser (cabeçalho = 1,
@@ -211,7 +242,22 @@ async function iniciarImportacaoInterna(
 ): Promise<{ lote: LoteImportacao; replay: boolean }> {
   const tamanhoChunk = o.tamanhoChunk ?? TAMANHO_CHUNK_PADRAO;
   validarTamanhoChunk(tamanhoChunk);
-  const arquivoHash = sha256Hex(o.csv);
+  // Fronteira fail-closed: rejeita identidade/texto malformado antes de
+  // qualquer `prepare`/escrita para que o digest não conflacione surrogates.
+  exigirSemSurrogateIsolado(o.csv, "csv");
+  exigirSemSurrogateIsolado(o.idempotencyKey, "idempotencyKey");
+  exigirSemSurrogateIsolado(o.arquivoNome, "arquivoNome");
+  // `o.regras.hash` é chave de identidade: UNIQUE em `rulesets.hash`, coluna
+  // `imports.regras_hash` e comparação de replay em `responderReplay`. Sem a
+  // guarda, um surrogate isolado viraria U+FFFD e uma segunda chamada com
+  // `regras.hash = "\uFFFD"` (ou digest de ruleset) seria aceita como o mesmo
+  // lote. `versao`/`regrasVersao` são rótulos TEXT sem igualdade/UNIQUE e
+  // permanecem apenas armazenados (não são identidade injetiva).
+  exigirSemSurrogateIsolado(o.regras.hash, "regras.hash");
+  // `JSON.stringify` é injetivo sobre strings JS: um surrogate isolado é
+  // serializado como escape ASCII, mas já foi rejeitado acima, de modo que dois
+  // CSVs distintos nunca casam o mesmo digest.
+  const arquivoHash = sha256Hex(JSON.stringify(o.csv));
   const regrasHash = o.regras.hash;
   const loteId = sha256Hex(`lote\u0000${o.idempotencyKey}`);
   const linhas = montarLinhasIniciais(loteId, parseGuiasCsv(o.csv));
@@ -551,6 +597,9 @@ export async function processarProximoChunk(
   db: D1Database,
   o: OpcoesProcessarChunk,
 ): Promise<ProgressoImportacao> {
+  // Recusa o dono malformado ANTES de qualquer `prepare`: nenhuma reserva,
+  // nenhuma linha reivindicada e nenhum `import_chunks` é criado.
+  exigirSemSurrogateIsolado(o.dono, "dono");
   const reivindicacao = await serializar(() => reivindicar(db, o));
 
   if (reivindicacao.linhas.length > 0) {
