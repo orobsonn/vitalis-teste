@@ -1275,6 +1275,14 @@ type ResultadoTentativa =
   | { tipo: "timeout" }
   | { tipo: "erro"; erro: unknown };
 
+/**
+ * Capacidade `extrair` capturada UMA única vez do interpretador configurado
+ * (§3.6): a MESMA referência validada sustenta a presença da configuração, o
+ * aceite do hit de cache e TODAS as tentativas — nenhum vazio de
+ * validação/uso (a propriedade nunca é relida entre a validação e a chamada).
+ */
+type ExtrairObservacao = (entrada: EntradaObservacao) => Promise<RespostaBruta>;
+
 type ResultadoCorrida<T> =
   | { tipo: "ok"; valor: T }
   | { tipo: "timeout" }
@@ -1337,12 +1345,12 @@ function correrComTimeout<T>(
  * timeout vence a corrida e a promessa em voo é descartada sem sobreposição.
  */
 async function tentarExtracao(
-  interpretador: InterpretadorObservacao,
+  extrair: ExtrairObservacao,
   entrada: EntradaObservacao,
   timeoutMs: number,
 ): Promise<ResultadoTentativa> {
   const corrida = await correrComTimeout<RespostaBruta>(
-    () => interpretador.extrair(entrada),
+    () => extrair(entrada),
     timeoutMs,
   );
   if (corrida.tipo === "ok") {
@@ -1615,14 +1623,35 @@ export async function conferirGuia(
     }
   }
 
-  // 6. Configuração ausente: sem tentativa e sem identidade de inferência.
-  // Valida a presença do interpretador EFETIVO ANTES do ACEITE do hit (§3.6):
-  // a leitura do cache é permitida, mas um hit VÁLIDO não pode ser aceito como
-  // decisão enquanto a configuração que sustenta a inferência não estiver
-  // presente — senão um cache pré-existente liberaria uma observação não
-  // interpretada. Nada é gravado e `inferencia_textual` permanece nula.
-  const interpretador = opcoes.interpretador ?? null;
-  if (!interpretador) {
+  // 6. Configuração ausente OU MALFORMADA: sem tentativa e sem identidade de
+  // inferência. Valida a CAPACIDADE do interpretador EFETIVO ANTES do ACEITE do
+  // hit (§3.6): a leitura do cache é permitida, mas um hit VÁLIDO não pode ser
+  // aceito como decisão enquanto a configuração que sustenta a inferência não
+  // estiver presente e utilizável — senão um cache pré-existente liberaria uma
+  // observação não interpretada. A presença por truthiness não basta: um valor
+  // truthy mas runtime-inválido (`{}`, `{ extrair: 1 }`, `true`, `1`,
+  // `"invalid"`) passaria pela checagem antiga e, com um hit válido, devolveria
+  // `completa` sem NUNCA acessar `extrair`. Por isso a CAPACIDADE é capturada
+  // sob acesso guardado: exige objeto/função não nulo cujo `extrair` seja
+  // CALLABLE, com a leitura da propriedade dentro de `try/catch` — um getter
+  // hostil ou um `Proxy` que lance também fecham fechada. A MESMA referência
+  // capturada aqui é reusada nas tentativas (sem reler `extrair`, sem vão de
+  // validação/uso). Configuração malformada segue EXATAMENTE o mesmo caminho da
+  // ausente/`null`: `incompleta`, `inferencia_textual` nula, motivos
+  // determinísticos preservados e nenhuma gravação/alteração de cache.
+  const candidato = opcoes.interpretador ?? null;
+  let extrair: ExtrairObservacao | null = null;
+  if (candidato !== null && (typeof candidato === "object" || typeof candidato === "function")) {
+    try {
+      const metodo: unknown = (candidato as { readonly extrair?: unknown }).extrair;
+      if (typeof metodo === "function") {
+        extrair = (metodo as ExtrairObservacao).bind(candidato);
+      }
+    } catch {
+      extrair = null;
+    }
+  }
+  if (extrair === null) {
     return concluir(
       { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
       { estado: "incompleta" },
@@ -1709,7 +1738,7 @@ export async function conferirGuia(
     tentativas += 1;
     emitir(registrador, "extracao_iniciada", { tentativas });
 
-    const tentativa = await tentarExtracao(interpretador, entrada, timeoutMs);
+    const tentativa = await tentarExtracao(extrair, entrada, timeoutMs);
 
     if (tentativa.tipo === "ok") {
       // Envelope NÃO CONFIÁVEL: snapshot guardado ANTES de qualquer acesso a
