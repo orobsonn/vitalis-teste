@@ -18,6 +18,12 @@
 // existe): a primeira asserção é de superfície, de modo que o RED é falha de
 // asserção, nunca erro de coleta/import. Sem `node:fs`, sem rede, sem relógio de
 // parede e sem dependência nova.
+//
+// Cobertura adicional de #ac-16 (cláusula J20): `lotesProcessando` cobre TODO
+// lote `PROCESSANDO` capaz de ainda escrever no recorte, sem corte por
+// `iniciado_em`. Um lote iniciado DEPOIS da janela com linhas `PENDENTE` mantém
+// guias com `data_lancamento` dentro de `[de, ate]` e, por isso, tem de aparecer
+// nos DOIS relatórios; só zerar quando todos os lotes forem terminais.
 import { describe, expect, it } from "vitest";
 
 import { criarBanco } from "../storage/support/banco";
@@ -284,7 +290,9 @@ async function semearImportComFalhas(
   }
 }
 
-/** Snapshot comparável das métricas operacionais + janela/referência. */
+/** Snapshot das métricas operacionais + janela/referência, exceto
+ * `lotesProcessando`: prova que o estado em andamento não altera nenhuma outra
+ * métrica do mesmo recorte. */
 function metricas(rel: RelatorioGuias): Record<string, unknown> {
   return {
     guias: rel.guias,
@@ -339,6 +347,43 @@ async function semearLoteComStatus(
       status === "PROCESSANDO" ? null : iniciadoEm,
     )
     .run();
+}
+
+/**
+ * Insere linhas de um lote com `estado` explícito, sempre por `bind`. Dar ao
+ * lote PROCESSANDO linhas ainda `PENDENTE` reproduz a condição real em que o
+ * lote continua habilitado a escrever guias no recorte; por isso o estado
+ * intermediário precisa aparecer no relatório.
+ */
+async function semearLinhasDoLote(
+  db: D1Database,
+  importId: string,
+  estado: "PENDENTE" | "FALHOU",
+  quantidade: number,
+  atualizadoEm: string,
+): Promise<void> {
+  for (let indice = 0; indice < quantidade; indice += 1) {
+    await db
+      .prepare(
+        `INSERT INTO import_lines (id, import_id, numero_linha, estado, linha_original, original_json, guia_id, revisao_id, motivo, dono, reservado_em, atualizado_em)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        `${importId}-l${indice}`,
+        importId,
+        indice + 1,
+        estado,
+        "linha crua",
+        null,
+        null,
+        null,
+        "motivo",
+        null,
+        null,
+        atualizadoEm,
+      )
+      .run();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -466,14 +511,20 @@ describe("lt-atividade-data-lancamento: borda inclusive e processado_em como aud
     expect(depois.referencia).toBe("REF-ATIVIDADE");
   });
 
-  it("expõe lotesProcessando da atividade recortado por iniciado_em da janela (#ac-16)", async () => {
+  it("conta lotesProcessando de TODO lote PROCESSANDO em ambos os recortes, sem tocar em J6 (#ac-16)", async () => {
     const api = exigirApi();
     const db = await criarBanco();
     await semearBase(db);
 
     const DE = "2026-08-10";
     const ATE = "2026-08-20";
+    const INICIADO_DENTRO = "2026-08-15T08:00:00.000Z";
+    const INICIADO_DEPOIS = "2026-09-30T08:00:00.000Z";
 
+    // Guia vigente com `data_lancamento` DENTRO da janela. Ela pertence ao
+    // recorte da atividade ainda que venha a ser escrita por um lote iniciado
+    // DEPOIS da janela — por isso o estado intermediário desse lote precisa ser
+    // exposto, e não apresentado como final.
     await semearGuia(db, "g-8301", "G-2608-8301");
     await semearRevisao(db, {
       guiaId: "g-8301",
@@ -492,23 +543,65 @@ describe("lt-atividade-data-lancamento: borda inclusive e processado_em como aud
       codigos: ["procedimento_nao_coberto"],
     });
 
-    const antes = await api.relatorioAtividade(db, {
+    // J6: 2 linhas FALHOU de um lote iniciado DENTRO da janela e 1 de um lote
+    // iniciado FORA. A atividade conta apenas as 2 primeiras; o estoque conta
+    // as 3. Esse contraste é preservado pelo fix.
+    await semearImportComFalhas(db, "imp-falha-dentro", "K-falha-dentro", INICIADO_DENTRO, 2);
+    await semearImportComFalhas(db, "imp-falha-fora", "K-falha-fora", INICIADO_DEPOIS, 1);
+
+    const antesAtv = await api.relatorioAtividade(db, {
       de: DE,
       ate: ATE,
       agora: AGORA,
       referencia: "REF-PROC-ATV",
     });
-    expect(antes.lotesProcessando).toBe(0);
+    const antesEstoque = await api.relatorioEstoque(db, {
+      agora: AGORA,
+      referencia: "REF-PROC-ESTOQUE",
+    });
+    expect(antesAtv.lotesProcessando).toBe(0);
+    expect(antesEstoque.lotesProcessando).toBe(0);
+    // J6 intacto: a atividade só vê as falhas do lote iniciado na janela.
+    expect(antesAtv.falhasProcessamento).toBe(2);
+    expect(antesEstoque.falhasProcessamento).toBe(3);
 
-    // Lote PROCESSANDO iniciado DENTRO da janela e outro iniciado FORA.
+    // Lote PROCESSANDO iniciado DEPOIS da janela, ainda com linhas PENDENTE e,
+    // portanto, capaz de escrever guias cuja `data_lancamento` cai no recorte.
     await semearLoteComStatus(
       db,
-      "imp-atv-dentro",
-      "K-atv-dentro",
+      "imp-proc-depois",
+      "K-proc-depois",
       "PROCESSANDO",
-      "2026-08-15T08:00:00.000Z",
+      INICIADO_DEPOIS,
     );
-    await semearLoteComStatus(db, "imp-atv-fora", "K-atv-fora", "PROCESSANDO", FORA_DA_JANELA);
+    await semearLinhasDoLote(db, "imp-proc-depois", "PENDENTE", 2, INICIADO_DEPOIS);
+
+    const soDepoisAtv = await api.relatorioAtividade(db, {
+      de: DE,
+      ate: ATE,
+      agora: AGORA,
+      referencia: "REF-PROC-ATV",
+    });
+    const soDepoisEstoque = await api.relatorioEstoque(db, {
+      agora: AGORA,
+      referencia: "REF-PROC-ESTOQUE",
+    });
+    // RED: a atividade não pode ignorar um lote em andamento só porque ele foi
+    // iniciado fora da janela; ele ainda é observável no recorte.
+    expect(soDepoisAtv.lotesProcessando).toBe(1);
+    expect(soDepoisEstoque.lotesProcessando).toBe(1);
+    expect(metricas(soDepoisAtv)).toEqual(metricas(antesAtv));
+
+    // Lote PROCESSANDO iniciado DENTRO da janela: os dois relatórios contam
+    // TODOS os lotes em andamento, sem corte temporal.
+    await semearLoteComStatus(
+      db,
+      "imp-proc-dentro",
+      "K-proc-dentro",
+      "PROCESSANDO",
+      INICIADO_DENTRO,
+    );
+    await semearLinhasDoLote(db, "imp-proc-dentro", "PENDENTE", 1, INICIADO_DENTRO);
 
     const duranteAtv = await api.relatorioAtividade(db, {
       de: DE,
@@ -516,46 +609,43 @@ describe("lt-atividade-data-lancamento: borda inclusive e processado_em como aud
       agora: AGORA,
       referencia: "REF-PROC-ATV",
     });
-    // Atividade conta só o lote iniciado na janela, sem alterar outra métrica.
-    expect(duranteAtv.lotesProcessando).toBe(1);
-    expect(metricas(duranteAtv)).toEqual(metricas(antes));
-
-    // O estoque conta os dois lotes (sem corte temporal).
     const duranteEstoque = await api.relatorioEstoque(db, {
       agora: AGORA,
       referencia: "REF-PROC-ESTOQUE",
     });
+    expect(duranteAtv.lotesProcessando).toBe(2);
     expect(duranteEstoque.lotesProcessando).toBe(2);
+    // Mesmo banco: mesmíssimo total de lotes em andamento nos dois recortes.
+    expect(duranteAtv.lotesProcessando).toBe(duranteEstoque.lotesProcessando);
 
-    // Finalizar o lote de fora reduz o estoque, mas a atividade segue 1.
-    await db.prepare("UPDATE imports SET status = 'PARCIAL' WHERE id = ?").bind("imp-atv-fora").run();
-    const meioAtv = await api.relatorioAtividade(db, {
-      de: DE,
-      ate: ATE,
-      agora: AGORA,
-      referencia: "REF-PROC-ATV",
-    });
-    expect(meioAtv.lotesProcessando).toBe(1);
-    const meioEstoque = await api.relatorioEstoque(db, {
-      agora: AGORA,
-      referencia: "REF-PROC-ESTOQUE",
-    });
-    expect(meioEstoque.lotesProcessando).toBe(1);
+    // Nenhuma outra métrica muda por haver lotes em andamento — inclusive J6.
+    expect(metricas(duranteAtv)).toEqual(metricas(antesAtv));
+    expect(metricas(duranteEstoque)).toEqual(metricas(antesEstoque));
+    expect(duranteAtv.falhasProcessamento).toBe(2);
+    expect(duranteEstoque.falhasProcessamento).toBe(3);
 
-    // Finalizar o último lote em andamento zera o indicador nos dois recortes.
-    await db.prepare("UPDATE imports SET status = 'FALHOU' WHERE id = ?").bind("imp-atv-dentro").run();
+    // Terminais (PARCIAL/FALHOU): o indicador zera nos DOIS relatórios. As
+    // linhas PENDENTE do lote que virou FALHOU continuam fora de
+    // `falhasProcessamento`, provando que a métrica lê `import_lines.estado` e
+    // nunca o status do lote.
+    await db.prepare("UPDATE imports SET status = 'FALHOU' WHERE id = ?").bind("imp-proc-depois").run();
+    await db.prepare("UPDATE imports SET status = 'PARCIAL' WHERE id = ?").bind("imp-proc-dentro").run();
+
     const fimAtv = await api.relatorioAtividade(db, {
       de: DE,
       ate: ATE,
       agora: AGORA,
       referencia: "REF-PROC-ATV",
     });
-    expect(fimAtv.lotesProcessando).toBe(0);
-    expect(metricas(fimAtv)).toEqual(metricas(antes));
     const fimEstoque = await api.relatorioEstoque(db, {
       agora: AGORA,
       referencia: "REF-PROC-ESTOQUE",
     });
+    expect(fimAtv.lotesProcessando).toBe(0);
     expect(fimEstoque.lotesProcessando).toBe(0);
+    expect(fimAtv.falhasProcessamento).toBe(2);
+    expect(fimEstoque.falhasProcessamento).toBe(3);
+    expect(metricas(fimAtv)).toEqual(metricas(antesAtv));
+    expect(metricas(fimEstoque)).toEqual(metricas(antesEstoque));
   });
 });
