@@ -19,12 +19,15 @@ import { SQL_DESATIVAR_VALIDACAO, SQL_INSERIR_FINDING, SQL_INSERIR_VALIDACAO } f
 const CHAVE_DUPLICIDADE = "duplicidade";
 const MAX_TENTATIVAS = 5;
 
-// Guarda de reserva (J14): só muta se a reserva CAS que abre o lote tiver
-// produzido exatamente a versão esperada. SQLite/D1 `batch` não aborta os
-// statements restantes quando a reserva afeta 0 linhas; a condição em cada
-// mutação garante atomicamente que um perdedor da corrida seja um no-op.
+// Guarda de reserva (J14): a reserva CAS abre o lote e `changes()` reporta
+// quantas linhas ela afetou. `EXISTS(... versao = ?)` sozinho não distingue o
+// vencedor do perdedor (o vencedor já escreveu a versão N+1), então encadeamos
+// `changes() = 1` em cada mutação: uma reserva perdida afeta 0 linhas, o
+// primeiro statement vira no-op, `changes()` permanece 0 e todo o restante do
+// lote também é no-op. O vencedor afeta 1 linha e cada mutação subsequente
+// muda exatamente uma linha, mantendo `changes() = 1` por toda a cadeia.
 const CLAUSULA_RESERVA =
-  "EXISTS (SELECT 1 FROM estado_global WHERE chave = ? AND versao = ?)";
+  "EXISTS (SELECT 1 FROM estado_global WHERE chave = ? AND versao = ?) AND changes() = 1";
 
 interface FindingCorrente {
   ordem: number;
