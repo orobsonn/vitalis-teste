@@ -14,6 +14,15 @@
 // O RED inicial é falha de asserção (barrel/migration ausentes), nunca erro de
 // coleta/import. Sem `node:fs`, sem rede, sem dependências novas.
 //
+// Cobertura adicional do mesmo contrato aprovado (#ac-4, J1, centavos seguros,
+// "consultas de linhas/status"), ausente na versão anterior deste arquivo:
+//   - inserirRevisaoVigente/inserirValidacaoVigente recusam vigente = 0 sem
+//     desativar a vigente anterior;
+//   - inserirGuia recusa idGuia vazio ou só espaços (J1);
+//   - inserirRevisaoVigente recusa centavos não seguros (MAX_SAFE_INTEGER+2, NaN);
+//   - lerImportacao/lerLinhasDoLote devolvem metadados do lote e linhas tipadas.
+// Nenhum desses itens já estava coberto por asserção anterior.
+//
 // Superfície congelada do barrel (todas as funções recebem `db: D1Database` como
 // 1º argumento e são async):
 //
@@ -29,22 +38,29 @@
 //     { aplicado: true, versao: <nova> } e incremento exatamente uma vez;
 //     versaoLida null inicializa a chave em 1.
 //   inserirGuia(db, guia: GuiaPersistida): Promise<void>
+//     Recusa `idGuia` vazio ou só espaços antes de qualquer SQL (J1: identidade
+//     de armazenamento não vazia).
 //   lerGuia(db, idGuia): Promise<GuiaPersistida | null>
 //     Consulta por `id_guia` (identidade de armazenamento).
 //   inserirRevisaoVigente(db, revisao: RevisaoPersistida): Promise<RevisaoPersistida>
 //     No MESMO lote atômico: desativa a revisão vigente anterior e insere a nova.
-//     `vigente` de entrada é 0 | 1 inteiro; booleanos são recusados antes de
-//     qualquer SQL.
+//     A operação exige `vigente` exatamente 1 (0 e booleanos são recusados antes
+//     de qualquer SQL); `entradaNormalizada.valorCentavos` precisa ser null ou
+//     inteiro seguro.
 //   lerRevisaoVigente(db, guiaId): Promise<RevisaoPersistida | null>
 //   lerHistoricoRevisoes(db, guiaId): Promise<RevisaoPersistida[]>
 //     Todas as revisões da guia, ordenadas por `numero` crescente.
 //   inserirValidacaoVigente(db, validacao: ValidacaoPersistida): Promise<ValidacaoPersistida>
-//     Mesmo padrão de vigência única por revisão.
+//     Mesmo padrão de vigência única por revisão (exige `vigente` exatamente 1).
 //   lerValidacaoVigente(db, revisaoId): Promise<ValidacaoPersistida | null>
 //   contarLinhasPorEstado(db, importId): Promise<ContagemLinhasImportacao>
 //     { encontradas, pendentes, emAndamento, processadas, reaproveitadas,
 //       comFalha } derivados de COUNT(*) agrupado por `estado` de import_lines
 //     (fonte única de progresso); `encontradas` é o total físico.
+//   lerImportacao(db, id): Promise<ImportacaoPersistida | null>
+//     Metadados tipados do lote (`imports`); `null` para id inexistente.
+//   lerLinhasDoLote(db, importId): Promise<LinhaImportacao[]>
+//     Linhas do lote (`import_lines`) em ordem de `numero_linha`, com estado e posse.
 //   traduzirConflitoUnicidade(erro): ResultadoTraducaoUnicidade
 //     Parseia `UNIQUE constraint failed: t.c[, t.c]` ⇒
 //     { tipo: "unicidade", tabela, colunas }; qualquer outro erro (FK, CHECK,
@@ -105,6 +121,36 @@ interface ContagemLinhasImportacao {
   comFalha: number;
 }
 
+interface ImportacaoPersistida {
+  id: string;
+  idempotencyKey: string;
+  arquivoNome: string;
+  arquivoHash: string;
+  regrasVersao: string;
+  regrasHash: string;
+  status: "PROCESSANDO" | "CONCLUIDO" | "PARCIAL" | "FALHOU";
+  tamanhoChunk: number;
+  linhasEncontradas: number;
+  iniciadoEm: TimestampIso;
+  atualizadoEm: TimestampIso;
+  concluidoEm: string | null;
+}
+
+interface LinhaImportacao {
+  id: string;
+  importId: string;
+  numeroLinha: number;
+  estado: "PENDENTE" | "EM_ANDAMENTO" | "PROCESSADO" | "REAPROVEITADO" | "FALHOU";
+  linhaOriginal: string;
+  originalJson: string | null;
+  guiaId: string | null;
+  revisaoId: string | null;
+  motivo: string | null;
+  dono: string | null;
+  reservadoEm: string | null;
+  atualizadoEm: TimestampIso;
+}
+
 type ResultadoTraducaoUnicidade =
   | { tipo: "unicidade"; tabela: string; colunas: string[] }
   | { tipo: "outro" };
@@ -133,6 +179,8 @@ interface ApiAprovada {
   ): Promise<ValidacaoPersistida>;
   lerValidacaoVigente(db: D1Database, revisaoId: string): Promise<ValidacaoPersistida | null>;
   contarLinhasPorEstado(db: D1Database, importId: string): Promise<ContagemLinhasImportacao>;
+  lerImportacao(db: D1Database, id: string): Promise<ImportacaoPersistida | null>;
+  lerLinhasDoLote(db: D1Database, importId: string): Promise<LinhaImportacao[]>;
   traduzirConflitoUnicidade(erro: unknown): ResultadoTraducaoUnicidade;
 }
 
@@ -184,6 +232,8 @@ function exigirApi(): ApiAprovada {
   expect(typeof api?.inserirValidacaoVigente).toBe("function");
   expect(typeof api?.lerValidacaoVigente).toBe("function");
   expect(typeof api?.contarLinhasPorEstado).toBe("function");
+  expect(typeof api?.lerImportacao).toBe("function");
+  expect(typeof api?.lerLinhasDoLote).toBe("function");
   expect(typeof api?.traduzirConflitoUnicidade).toBe("function");
   return api!;
 }
@@ -201,6 +251,40 @@ async function semearImport(db: D1Database, id: string, chave: string): Promise<
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(id, chave, "guias.csv", "hash-arquivo", "regras-v1", "hash-regras", "PROCESSANDO", 25, 80, AGORA, AGORA, null)
+    .run();
+}
+
+async function semearLinha(
+  db: D1Database,
+  linha: {
+    id: string;
+    importId: string;
+    numeroLinha: number;
+    estado: string;
+    linhaOriginal: string;
+    originalJson?: string | null;
+    motivo?: string | null;
+    dono?: string | null;
+    reservadoEm?: string | null;
+  },
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO import_lines (id, import_id, numero_linha, estado, linha_original, original_json, motivo, dono, reservado_em, atualizado_em)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      linha.id,
+      linha.importId,
+      linha.numeroLinha,
+      linha.estado,
+      linha.linhaOriginal,
+      linha.originalJson ?? null,
+      linha.motivo ?? null,
+      linha.dono ?? null,
+      linha.reservadoEm ?? null,
+      AGORA,
+    )
     .run();
 }
 
@@ -531,5 +615,185 @@ describe("repositorios transacionais", () => {
       reaproveitadas: 1,
       comFalha: 1,
     });
+  });
+
+  it("recusa vigente = 0 nas operações de vigência sem desativar as vigentes anteriores (#ac-4)", async () => {
+    const api = exigirApi();
+    const db = await abrirBanco();
+    await semearImport(db, "imp-1", "chave-1");
+    await semearRuleset(db, "rs-1");
+    await api.inserirGuia(db, novaGuia());
+    await api.inserirRevisaoVigente(db, novaRevisao());
+    await api.inserirValidacaoVigente(db, {
+      id: "val-1",
+      revisaoId: "rev-1",
+      sequencia: 1,
+      vigente: 1,
+      decisao: "OK",
+      checagemTextual: "completa",
+      regrasVersao: "regras-v1",
+      regrasHash: "hash-regras",
+      rulesetId: "rs-1",
+      orientacoes: [],
+      limitacoes: [],
+      processadoEm: AGORA,
+    });
+
+    // `vigente = 0` é um valor válido do tipo 0 | 1, mas incompatível com a
+    // operação "Vigente": aceitar deixaria guia/revisão sem linha vigente.
+    await expect(
+      api.inserirRevisaoVigente(db, novaRevisao({ id: "rev-2", numero: 2, vigente: 0 })),
+    ).rejects.toThrow(TypeError);
+    await expect(
+      api.inserirValidacaoVigente(db, {
+        id: "val-2",
+        revisaoId: "rev-1",
+        sequencia: 2,
+        vigente: 0,
+        decisao: "OK",
+        checagemTextual: "completa",
+        regrasVersao: "regras-v1",
+        regrasHash: "hash-regras",
+        rulesetId: "rs-1",
+        orientacoes: [],
+        limitacoes: [],
+        processadoEm: DEPOIS,
+      }),
+    ).rejects.toThrow(TypeError);
+
+    const revisaoVigente = await api.lerRevisaoVigente(db, "guia-1");
+    expect(revisaoVigente?.id).toBe("rev-1");
+    expect(revisaoVigente?.vigente).toBe(1);
+    expect(await api.lerHistoricoRevisoes(db, "guia-1")).toHaveLength(1);
+
+    const validacaoVigente = await api.lerValidacaoVigente(db, "rev-1");
+    expect(validacaoVigente?.id).toBe("val-1");
+    expect(validacaoVigente?.vigente).toBe(1);
+  });
+
+  it("recusa idGuia vazio ou só espaços sem gravar guia (J1)", async () => {
+    const api = exigirApi();
+    const db = await abrirBanco();
+    await semearImport(db, "imp-1", "chave-1");
+    await api.inserirGuia(db, novaGuia());
+
+    for (const identidade of ["", "   "]) {
+      await expect(
+        api.inserirGuia(db, { ...novaGuia(), id: "guia-invalida", idGuia: identidade }),
+      ).rejects.toThrow(TypeError);
+    }
+
+    expect(await api.lerGuia(db, "   ")).toBeNull();
+    const original = await api.lerGuia(db, "G-2608-0030");
+    expect(original?.id).toBe("guia-1");
+    const contagem = await db
+      .prepare("SELECT COUNT(*) AS total FROM guides")
+      .first<{ total: number }>();
+    expect(contagem?.total).toBe(1);
+  });
+
+  it("recusa centavos não seguros sem gravar nem desativar a vigente (centavos seguros)", async () => {
+    const api = exigirApi();
+    const db = await abrirBanco();
+    await semearImport(db, "imp-1", "chave-1");
+    await api.inserirGuia(db, novaGuia());
+    await api.inserirRevisaoVigente(db, novaRevisao());
+
+    // MAX_SAFE_INTEGER + 2 perde exatidão no double e NaN vira null no JSON.
+    for (const valorCentavos of [Number.MAX_SAFE_INTEGER + 2, Number.NaN]) {
+      await expect(
+        api.inserirRevisaoVigente(
+          db,
+          novaRevisao({
+            id: "rev-2",
+            numero: 2,
+            entradaNormalizada: { ...ENTRADA_NORMALIZADA, valorCentavos },
+            conteudoHash: "hash-2",
+            criadoEm: DEPOIS,
+          }),
+        ),
+      ).rejects.toThrow(TypeError);
+    }
+
+    const vigente = await api.lerRevisaoVigente(db, "guia-1");
+    expect(vigente?.id).toBe("rev-1");
+    expect(vigente?.vigente).toBe(1);
+    expect(await api.lerHistoricoRevisoes(db, "guia-1")).toHaveLength(1);
+  });
+
+  it("lê metadados do lote e linhas tipadas em ordem de numero_linha (consultas de linhas/status)", async () => {
+    const api = exigirApi();
+    const db = await abrirBanco();
+    await semearImport(db, "imp-lote", "chave-lote");
+
+    // Inserção fora de ordem: a leitura precisa devolver por `numero_linha`.
+    await semearLinha(db, {
+      id: "linha-3",
+      importId: "imp-lote",
+      numeroLinha: 3,
+      estado: "PROCESSADO",
+      linhaOriginal: "linha 3",
+      dono: "worker-b",
+      reservadoEm: AGORA,
+    });
+    await semearLinha(db, {
+      id: "linha-1",
+      importId: "imp-lote",
+      numeroLinha: 1,
+      estado: "PENDENTE",
+      linhaOriginal: "linha 1",
+    });
+    await semearLinha(db, {
+      id: "linha-2",
+      importId: "imp-lote",
+      numeroLinha: 2,
+      estado: "EM_ANDAMENTO",
+      linhaOriginal: "linha 2",
+      originalJson: '{"a":1}',
+      motivo: "em processamento",
+      dono: "worker-a",
+      reservadoEm: AGORA,
+    });
+
+    const lote = await api.lerImportacao(db, "imp-lote");
+    expect(lote).toEqual({
+      id: "imp-lote",
+      idempotencyKey: "chave-lote",
+      arquivoNome: "guias.csv",
+      arquivoHash: "hash-arquivo",
+      regrasVersao: "regras-v1",
+      regrasHash: "hash-regras",
+      status: "PROCESSANDO",
+      tamanhoChunk: 25,
+      linhasEncontradas: 80,
+      iniciadoEm: AGORA,
+      atualizadoEm: AGORA,
+      concluidoEm: null,
+    });
+    expect(await api.lerImportacao(db, "imp-inexistente")).toBeNull();
+
+    const linhas = await api.lerLinhasDoLote(db, "imp-lote");
+    expect(linhas.map((linha) => linha.numeroLinha)).toEqual([1, 2, 3]);
+    expect(linhas.map((linha) => linha.id)).toEqual(["linha-1", "linha-2", "linha-3"]);
+    expect(linhas[1]).toEqual({
+      id: "linha-2",
+      importId: "imp-lote",
+      numeroLinha: 2,
+      estado: "EM_ANDAMENTO",
+      linhaOriginal: "linha 2",
+      originalJson: '{"a":1}',
+      guiaId: null,
+      revisaoId: null,
+      motivo: "em processamento",
+      dono: "worker-a",
+      reservadoEm: AGORA,
+      atualizadoEm: AGORA,
+    });
+    expect(linhas[0].estado).toBe("PENDENTE");
+    expect(linhas[0].dono).toBeNull();
+    expect(linhas[0].reservadoEm).toBeNull();
+    expect(linhas[2].estado).toBe("PROCESSADO");
+    expect(linhas[2].dono).toBe("worker-b");
+    expect(linhas[2].reservadoEm).toBe(AGORA);
   });
 });
