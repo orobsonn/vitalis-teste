@@ -28,7 +28,6 @@ import type {
   ImportacaoPersistida,
   LinhaImportacao,
   LinhaBanco,
-  StatusImportacao,
 } from "../../storage";
 import { sha256Hex } from "../../shared/sha256";
 import type {
@@ -48,6 +47,7 @@ import {
   SQL_INSERIR_IMPORT,
   SQL_INSERIR_LINHA,
   SQL_INSERIR_RULESET,
+  SQL_LER_ESTADO_LINHA,
   SQL_LIBERAR_EXPIRADAS,
   SQL_LINHAS_REIVINDICADAS,
   SQL_PROCESSAR_CHUNK,
@@ -57,6 +57,7 @@ import {
 
 const TAMANHO_CHUNK_PADRAO = 25;
 const LEASE_MS = 5 * 60 * 1000;
+const MOTIVO_ID_INVALIDO = "id_guia_invalido";
 
 interface LinhaInicial {
   id: string;
@@ -89,18 +90,6 @@ function montarLote(
   };
 }
 
-/** Status derivado exclusivamente dos estados duráveis das linhas. */
-function derivarStatus(contagem: ContagemLinhasImportacao): StatusImportacao {
-  if (contagem.pendentes > 0 || contagem.emAndamento > 0) {
-    return "PROCESSANDO";
-  }
-  if (contagem.comFalha === 0) {
-    return "CONCLUIDO";
-  }
-  const sucessos = contagem.processadas + contagem.reaproveitadas;
-  return sucessos > 0 ? "PARCIAL" : "FALHOU";
-}
-
 function mensagemDeErro(erro: unknown): string {
   if (erro instanceof Error) {
     return erro.message;
@@ -111,8 +100,9 @@ function mensagemDeErro(erro: unknown): string {
 /**
  * Monta as linhas físicas do lote na ordem do arquivo. Guias aceitas ficam
  * `PENDENTE` com `original_json`; rejeições do parser ficam `FALHOU` com o
- * motivo. Nenhum parser pode emitir números duplicados, mas a numeração é
- * densificada (1..N) para garantir a unicidade de `(import_id, numero_linha)`.
+ * motivo. `numero_linha` preserva o número físico do parser (cabeçalho = 1,
+ * primeira linha de dados = 2) e o id é derivado do lote + esse número, o que
+ * mantém `(import_id, numero_linha)` único sem densificar a numeração.
  */
 function montarLinhasIniciais(loteId: string, resultado: ResultadoCsv): LinhaInicial[] {
   interface Cru {
@@ -146,9 +136,9 @@ function montarLinhasIniciais(loteId: string, resultado: ResultadoCsv): LinhaIni
     });
   }
   cruas.sort((a, b) => a.numero - b.numero || a.ordem - b.ordem);
-  return cruas.map((crua, indice) => ({
-    id: sha256Hex(`${loteId}\u0000${indice + 1}`),
-    numeroLinha: indice + 1,
+  return cruas.map((crua) => ({
+    id: sha256Hex(`${loteId}\u0000${crua.numero}`),
+    numeroLinha: crua.numero,
     estado: crua.estado,
     linhaOriginal: crua.linhaOriginal,
     originalJson: crua.originalJson,
@@ -197,15 +187,30 @@ async function responderReplay(
 }
 
 /**
+ * O `tamanhoChunk` é o `LIMIT` da reivindicação atômica: rejeitar valor não
+ * inteiro/seguro ou `<= 0` antes de persistir impede `LIMIT 0`/`LIMIT -1`.
+ */
+function validarTamanhoChunk(tamanhoChunk: number): void {
+  if (!Number.isSafeInteger(tamanhoChunk) || tamanhoChunk <= 0) {
+    throw new TypeError(
+      `tamanhoChunk deve ser um inteiro positivo seguro; recebido ${String(tamanhoChunk)}`,
+    );
+  }
+}
+
+/**
  * Inicializa o lote: registra o ruleset por hash, persiste TODA linha física e
  * insere `imports` + `import_lines` num único batch atômico. Somente a violação
- * de unicidade de `imports.idempotency_key` é tratada como replay.
+ * de unicidade de `imports.idempotency_key` é tratada como replay. O retorno
+ * distingue a criação nova (`replay: false`) do replay idempotente
+ * (`replay: true`), que não executa nenhuma escrita nem drenagem.
  */
-export async function iniciarImportacao(
+async function iniciarImportacaoInterna(
   db: D1Database,
   o: OpcoesIniciarImportacao,
-): Promise<LoteImportacao> {
+): Promise<{ lote: LoteImportacao; replay: boolean }> {
   const tamanhoChunk = o.tamanhoChunk ?? TAMANHO_CHUNK_PADRAO;
+  validarTamanhoChunk(tamanhoChunk);
   const arquivoHash = sha256Hex(o.csv);
   const regrasHash = o.regras.hash;
   const loteId = sha256Hex(`lote\u0000${o.idempotencyKey}`);
@@ -258,9 +263,10 @@ export async function iniciarImportacao(
     await serializar(() => db.batch(statements));
   } catch (erro) {
     if (ehReplayDeImportacao(erro)) {
-      return serializar(() =>
+      const lote = await serializar(() =>
         responderReplay(db, o, arquivoHash, tamanhoChunk),
       );
+      return { lote, replay: true };
     }
     throw erro;
   }
@@ -273,7 +279,18 @@ export async function iniciarImportacao(
     throw new Error(`lote ${loteId} ausente após a inicialização`);
   }
   const progresso = await contarLinhasPorEstado(db, loteId);
-  return montarLote(importacao, progresso);
+  return { lote: montarLote(importacao, progresso), replay: false };
+}
+
+/**
+ * Inicializa o lote e devolve apenas a visão pública. Em replay idempotente o
+ * lote durável existente é devolvido sem qualquer escrita.
+ */
+export async function iniciarImportacao(
+  db: D1Database,
+  o: OpcoesIniciarImportacao,
+): Promise<LoteImportacao> {
+  return (await iniciarImportacaoInterna(db, o)).lote;
 }
 
 /** Recarrega o catálogo a partir do ruleset persistido (J12, sem memória). */
@@ -346,6 +363,29 @@ function mapearTerminal(preparo: ResultadoPreparo): Terminal {
 
 type ResultadoExecucaoLinha = "aplicado" | "noop" | "unicidade";
 
+const ESTADOS_TERMINAIS: ReadonlySet<EstadoLinhaImportacao> = new Set<EstadoLinhaImportacao>([
+  "PROCESSADO",
+  "REAPROVEITADO",
+  "FALHOU",
+]);
+
+/**
+ * Releitura de verificação (J18): confirma no próprio banco que a linha alcançou
+ * um estado terminal. Uma tentativa cujo guarda perdeu a posse não é contada
+ * como aplicada e jamais sobrescreve o vencedor.
+ */
+async function confirmarTerminal(db: D1Database, linhaId: string): Promise<boolean> {
+  const linha = await db
+    .prepare(SQL_LER_ESTADO_LINHA)
+    .bind(linhaId)
+    .first<{ estado: string }>();
+  return (
+    linha !== null &&
+    linha !== undefined &&
+    ESTADOS_TERMINAIS.has(String(linha.estado) as EstadoLinhaImportacao)
+  );
+}
+
 /** Um único batch com os statements preparados + a transição terminal guardada. */
 async function executarBatchDaLinha(
   db: D1Database,
@@ -372,7 +412,10 @@ async function executarBatchDaLinha(
   try {
     const resultados = await db.batch(statements);
     const changes = resultados[resultados.length - 1]?.meta.changes ?? 0;
-    return changes > 0 ? "aplicado" : "noop";
+    if (changes <= 0) {
+      return "noop";
+    }
+    return (await confirmarTerminal(db, linhaId)) ? "aplicado" : "noop";
   } catch (erro) {
     if (traduzirConflitoUnicidade(erro).tipo === "unicidade") {
       return "unicidade";
@@ -415,19 +458,25 @@ async function persistirLinha(
   // no-op e nenhuma transição terminal pode sobrescrever o vencedor.
 }
 
-/** Aplica uma transição terminal guardada isolada (exceção da porta). */
-async function aplicarFalhaDaPorta(
+/**
+ * Aplica uma transição terminal guardada isolada (exceção da porta ou dado
+ * inválido da linha) e confirma por releitura que a posse vigente produziu o
+ * estado terminal; se não confirmar, a tentativa é descartada sem qualquer
+ * escrita sobre o vencedor.
+ */
+async function aplicarFalhaDaLinha(
   db: D1Database,
   linhaId: string,
   token: string,
   motivo: string,
   agora: string,
-): Promise<void> {
+): Promise<boolean> {
   await db.batch([
     db
       .prepare(SQL_TRANSICAO_TERMINAL)
       .bind("FALHOU", null, null, motivo, agora, linhaId, token),
   ]);
+  return confirmarTerminal(db, linhaId);
 }
 
 function reconstruirGuia(linha: LinhaImportacao): GuiaNormalizada {
@@ -508,12 +557,27 @@ export async function processarProximoChunk(
     const regras = await serializar(() => carregarRegrasDoLote(db, o.loteId));
     for (const linha of reivindicacao.linhas) {
       const guia = reconstruirGuia(linha);
+      // Dado inválido da própria linha (id vazio/não textual) é falha durável
+      // daquela linha, não erro de infraestrutura: transiciona FALHOU guardado e
+      // segue com o restante do chunk, sem invocar a porta nem abortá-lo.
+      if (typeof guia.id !== "string" || guia.id.trim() === "") {
+        await serializar(() =>
+          aplicarFalhaDaLinha(
+            db,
+            linha.id,
+            reivindicacao.token,
+            MOTIVO_ID_INVALIDO,
+            o.agora,
+          ),
+        );
+        continue;
+      }
       let conferencia: ConferenciaPersistivel;
       try {
         conferencia = await o.conferir(guia);
       } catch (erro) {
         await serializar(() =>
-          aplicarFalhaDaPorta(
+          aplicarFalhaDaLinha(
             db,
             linha.id,
             reivindicacao.token,
@@ -578,12 +642,20 @@ export async function continuarImportacao(
   return progresso;
 }
 
-/** Inicializa e drena o lote; devolve o lote final e o progresso derivado. */
+/**
+ * Inicializa e drena o lote; devolve o lote final e o progresso derivado. Um
+ * replay idempotente (mesma chave/payload) devolve o lote durável sem chamar
+ * `continuarImportacao`: nenhuma geração global é incrementada nem `imports` é
+ * reescrito. `continuarImportacao` segue sendo a API explícita de retomada.
+ */
 export async function importarLote(
   db: D1Database,
   o: OpcoesIniciarImportacao,
 ): Promise<ResultadoImportacaoLote> {
-  const lote = await iniciarImportacao(db, o);
+  const { lote, replay } = await iniciarImportacaoInterna(db, o);
+  if (replay) {
+    return { lote, progresso: lote.progresso };
+  }
   const progresso = await continuarImportacao(db, {
     loteId: lote.id,
     conferir: o.conferir,
@@ -607,26 +679,30 @@ export async function lerProgresso(
   return montarLote(importacao, progresso);
 }
 
-/** Deriva e persiste o status do lote a partir dos estados das linhas. */
+/**
+ * Deriva e persiste o status do lote a partir dos estados das linhas. A
+ * derivação e a escrita acontecem numa única instrução SQL (subqueries `CASE`
+ * sobre `import_lines`), de modo que uma contagem obsoleta não pode sobrescrever
+ * um status terminal gravado por outro worker; o valor retornado é relido.
+ */
 export async function finalizarLoteSeTerminal(
   db: D1Database,
   o: OpcoesFinalizarLote,
 ): Promise<LoteImportacao> {
   return serializar(async () => {
-    const importacao = await lerImportacao(db, o.loteId);
-    if (importacao === null) {
+    const existente = await lerImportacao(db, o.loteId);
+    if (existente === null) {
       throw new Error(`lote inexistente: ${o.loteId}`);
     }
-    const progresso = await contarLinhasPorEstado(db, o.loteId);
-    const status = derivarStatus(progresso);
-    const concluidoEm = status === "PROCESSANDO" ? null : o.agora;
     await db
       .prepare(SQL_FINALIZAR_IMPORT)
-      .bind(status, o.agora, concluidoEm, o.loteId)
+      .bind(o.agora, o.agora, o.loteId)
       .run();
-    return montarLote(
-      { ...importacao, status, atualizadoEm: o.agora, concluidoEm },
-      progresso,
-    );
+    const importacao = await lerImportacao(db, o.loteId);
+    if (importacao === null) {
+      throw new Error(`lote ${o.loteId} ausente após a finalização`);
+    }
+    const progresso = await contarLinhasPorEstado(db, o.loteId);
+    return montarLote(importacao, progresso);
   });
 }

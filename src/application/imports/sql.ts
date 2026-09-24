@@ -58,5 +58,20 @@ export const SQL_TRANSICAO_TERMINAL =
   "dono = NULL, reservado_em = NULL, atualizado_em = ? " +
   "WHERE id = ? AND dono = ? AND estado = 'EM_ANDAMENTO'";
 
+export const SQL_LER_ESTADO_LINHA = "SELECT estado FROM import_lines WHERE id = ?";
+
+// Status derivado das linhas ATUAIS numa única instrução: a leitura de
+// `import_lines` e a escrita de `imports` não podem ser separadas por outra
+// worker que terminalize linhas no meio (J5/J12). A ordem dos `CASE` reproduz
+// exatamente a derivação: pendente/em andamento ⇒ PROCESSANDO; sem falha ⇒
+// CONCLUIDO; com sucesso e falha ⇒ PARCIAL; sem sucesso ⇒ FALHOU. `concluido_em`
+// acompanha o status não-PROCESSANDO.
 export const SQL_FINALIZAR_IMPORT =
-  "UPDATE imports SET status = ?, atualizado_em = ?, concluido_em = ? WHERE id = ?";
+  "UPDATE imports SET status = CASE " +
+  "WHEN (SELECT COUNT(*) FROM import_lines WHERE import_id = imports.id AND estado IN ('PENDENTE','EM_ANDAMENTO')) > 0 THEN 'PROCESSANDO' " +
+  "WHEN (SELECT COUNT(*) FROM import_lines WHERE import_id = imports.id AND estado = 'FALHOU') = 0 THEN 'CONCLUIDO' " +
+  "WHEN (SELECT COUNT(*) FROM import_lines WHERE import_id = imports.id AND estado IN ('PROCESSADO','REAPROVEITADO')) > 0 THEN 'PARCIAL' " +
+  "ELSE 'FALHOU' END, " +
+  "atualizado_em = ?, " +
+  "concluido_em = CASE WHEN (SELECT COUNT(*) FROM import_lines WHERE import_id = imports.id AND estado IN ('PENDENTE','EM_ANDAMENTO')) > 0 THEN NULL ELSE ? END " +
+  "WHERE id = ?";
