@@ -865,6 +865,7 @@ describe("lt-claim-fence-geracao: reserva atômica, lease e fencing", () => {
         guia: normalizarGuia(parseGuiasCsv(csvDuas).guias[0]!),
         conferencia: conferenciaSintetica(regras),
         idempotencyKey: "K-pre-X",
+        importId: lote.id,
         regras,
         agora: AGORA,
       });
