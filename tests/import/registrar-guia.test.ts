@@ -503,6 +503,36 @@ function envolverDbComColisao(
 }
 
 // ---------------------------------------------------------------------------
+// Wrapper de contagem: quantos statements de MUTAÇÃO a SUT prepara via
+// `db.prepare` durante a chamada. Reads `SELECT` (lerGuia/idempotência) NÃO
+// contam; o contrato é "antes de preparar qualquer statement [de escrita]".
+// ---------------------------------------------------------------------------
+
+interface ContadorPreparos {
+  preparosDeMutacao: number;
+}
+
+function envolverDbContandoMutacoes(db: D1Database, contador: ContadorPreparos): D1Database {
+  const alvo = db as unknown as object;
+  return new Proxy(alvo, {
+    get(target, prop, receiver) {
+      if (prop === "prepare") {
+        return (sql: string) => {
+          if (ehEscrita(sql)) {
+            contador.preparosDeMutacao += 1;
+          }
+          return (target as D1Database).prepare(sql);
+        };
+      }
+      const valor = Reflect.get(target, prop, receiver);
+      return typeof valor === "function"
+        ? (valor as (...args: unknown[]) => unknown).bind(target)
+        : valor;
+    },
+  }) as unknown as D1Database;
+}
+
+// ---------------------------------------------------------------------------
 // Casos
 // ---------------------------------------------------------------------------
 
@@ -763,5 +793,126 @@ describe("registrar guia: histórico A→B→A, idempotência e retry de colisã
     // A conferência fornecida persiste por inteiro: um motivo e uma extração.
     expect(await contar(db, "findings")).toBe(1);
     expect(await contar(db, "semantic_extractions")).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regressões da revisão final global: fronteiras de escrita que passavam sem
+// validar centavos, com hash de conteúdo ambíguo sob NUL e com `importId`
+// ausente (NOT NULL em `guides.import_id_inicial`).
+// ---------------------------------------------------------------------------
+
+describe("regressões da revisão final: centavos, hash injetivo e importId", () => {
+  it("rejeita guia nova com centavos não normalizados antes de qualquer escrita", async () => {
+    const api = exigirApi();
+    const regras = carregarRegras();
+    const hash = hashCatalogo(CATALOGO_JSON);
+
+    // NaN/Infinity virariam `null` silenciosamente no JSON e inteiros acima de
+    // MAX_SAFE_INTEGER (ou fracionários) entrariam inexatos; o preparo deve
+    // falhar com erro tipado ANTES de preparar/executar qualquer statement.
+    for (const valorCentavos of [Number.NaN, Number.MAX_SAFE_INTEGER + 2, 1.5]) {
+      const db = await criarBanco();
+      await semearImport(db, "imp-1", "chave-imp");
+      await semearRuleset(db, "rs-1", hash);
+      const guia: GuiaNormalizada = { ...GUIA_A(), valorCentavos };
+
+      // Rejeitar + zero linhas não basta: o preparo deve falhar ANTES de
+      // preparar qualquer statement de MUTAÇÃO. Reads `SELECT` de decisão não
+      // contam; só SQL com prefixo INSERT/UPDATE/DELETE incrementa o contador.
+      const contador: ContadorPreparos = { preparosDeMutacao: 0 };
+      const dbEnvolvido = envolverDbContandoMutacoes(db, contador);
+      let erro: unknown = null;
+      try {
+        await api.prepararPersistenciaConferencia(dbEnvolvido, {
+          guia,
+          conferencia: conferenciaA(regras),
+          importId: "imp-1",
+          regras,
+          agora: AGORA,
+        });
+      } catch (capturado) {
+        erro = capturado;
+      }
+
+      expect(erro).toBeInstanceOf(TypeError);
+      expect(contador.preparosDeMutacao).toBe(0);
+      expect(await contar(db, "guides")).toBe(0);
+      expect(await contar(db, "guide_revisions")).toBe(0);
+    }
+  });
+
+  it("hash de conteúdo é injetivo: NUL dentro de célula não colide com a célula adjacente", async () => {
+    const api = exigirApi();
+    const db = await criarBanco();
+    const regras = carregarRegras();
+    await semearImport(db, "imp-1", "chave-imp");
+    await semearRuleset(db, "rs-1", hashCatalogo(CATALOGO_JSON));
+
+    // X e Y têm conteúdo CRU diferente, mas o join interno das células cruas
+    // com "\u0000" produz exatamente a mesma string `S\u0000A\u0000B`.
+    const X = normalizar({ unidade: "S\u0000A", data_atendimento: "B" });
+    const Y = normalizar({ unidade: "S", data_atendimento: "A\u0000B" });
+    expect(X.original.unidade).toBe("S\u0000A");
+    expect(Y.original.unidade).toBe("S");
+    expect(X.original.unidade).not.toBe(Y.original.unidade);
+    // Datas inválidas ⇒ assinatura de duplicidade nula; nenhum grupo acidental.
+    expect(X.dataAtendimento).toBeNull();
+    expect(Y.dataAtendimento).toBeNull();
+
+    const r1 = await api.registrarGuia(db, {
+      guia: X,
+      conferencia: conferenciaA(regras),
+      idempotencyKey: "K-NUL-X",
+      importId: "imp-1",
+      regras,
+      agora: AGORA,
+    });
+    expect(r1.tipo).toBe("criada");
+
+    // Y é conteúdo distinto de X: precisa virar nova revisão, nunca
+    // `reaproveitada` por colisão do digest.
+    const r2 = await api.registrarGuia(db, {
+      guia: Y,
+      conferencia: conferenciaA(regras),
+      importId: "imp-1",
+      regras,
+      agora: DEPOIS,
+    });
+    expect(r2.tipo).toBe("criada");
+
+    expect(await contar(db, "guides")).toBe(1);
+    expect(await contar(db, "guide_revisions")).toBe(2);
+  });
+
+  it("guia nova sem importId falha com erro tipado antes de gravar", async () => {
+    const api = exigirApi();
+    const db = await criarBanco();
+    const regras = carregarRegras();
+    await semearImport(db, "imp-1", "chave-imp");
+    await semearRuleset(db, "rs-1", hashCatalogo(CATALOGO_JSON));
+
+    // `guides.import_id_inicial` é NOT NULL: sem `importId` o preparo deve
+    // falhar antes de montar/executar o batch, sem lote sintético. Além do
+    // erro tipado e de zero linhas, NENHUM statement de MUTAÇÃO pode ter sido
+    // preparado via `db.prepare` (reads `SELECT` de decisão não contam).
+    const contador: ContadorPreparos = { preparosDeMutacao: 0 };
+    const dbEnvolvido = envolverDbContandoMutacoes(db, contador);
+    let erro: unknown = null;
+    try {
+      await api.prepararPersistenciaConferencia(dbEnvolvido, {
+        guia: GUIA_A(),
+        conferencia: conferenciaA(regras),
+        regras,
+        agora: AGORA,
+      });
+    } catch (capturado) {
+      erro = capturado;
+    }
+
+    expect(erro).toBeInstanceOf(TypeError);
+    expect(contador.preparosDeMutacao).toBe(0);
+    expect(await contar(db, "guides")).toBe(0);
+    expect(await contar(db, "guide_revisions")).toBe(0);
   });
 });

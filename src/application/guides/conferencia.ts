@@ -40,7 +40,11 @@ export const ORIENTACAO_DUPLICIDADE =
  */
 export function conteudoHashDaGuia(guia: GuiaNormalizada): string {
   const celulas = COLUNAS_GUIA.map((coluna) => guia.original[coluna]);
-  return sha256Hex(celulas.join("\u0000"));
+  // Codificação injetiva sobre todas as strings JS: o array JSON canônico
+  // escapa fronteiras e NUL internos, e o `JSON.stringify` bem-formado
+  // (ES2019+) serializa surrogate isolado como `\ud800` ASCII, impedindo a
+  // colisão com U+FFFD introduzida por `codificarUtf8`.
+  return sha256Hex(JSON.stringify(celulas));
 }
 
 /** Representação textual canônica da posição da sessão (ausência = vazio). */
