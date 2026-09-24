@@ -1280,6 +1280,10 @@ type ResultadoTentativa =
  * (§3.6): a MESMA referência validada sustenta a presença da configuração, o
  * aceite do hit de cache e TODAS as tentativas — nenhum vazio de
  * validação/uso (a propriedade nunca é relida entre a validação e a chamada).
+ * O wrapper de invocação é SEMPRE LOCALMENTE POSSUÍDO (`Reflect.apply`), de
+ * modo que um callable/`Proxy` não confiável com `bind` próprio que devolva
+ * `{}`/`undefined` não forja uma capacidade presente nem libera um hit de
+ * cache sem a inferência real.
  */
 type ExtrairObservacao = (entrada: EntradaObservacao) => Promise<RespostaBruta>;
 
@@ -1634,9 +1638,14 @@ export async function conferirGuia(
   // `completa` sem NUNCA acessar `extrair`. Por isso a CAPACIDADE é capturada
   // sob acesso guardado: exige objeto/função não nulo cujo `extrair` seja
   // CALLABLE, com a leitura da propriedade dentro de `try/catch` — um getter
-  // hostil ou um `Proxy` que lance também fecham fechada. A MESMA referência
-  // capturada aqui é reusada nas tentativas (sem reler `extrair`, sem vão de
-  // validação/uso). Configuração malformada segue EXATAMENTE o mesmo caminho da
+  // hostil ou um `Proxy` que lance também fecham fechada. A capacidade NÃO
+  // CONFIÁVEL nunca é consultada por `bind`: a invocação é feita por um wrapper
+  // LOCALMENTE POSSUÍDO com `Reflect.apply`, então um callable/`Proxy` com
+  // `bind` próprio devolvendo `{}`/`undefined` não forja presença nem libera um
+  // hit de cache sem a inferência real. A MESMA função capturada aqui é reusada
+  // nas tentativas (sem reler `extrair`/`bind`, sem vão de validação/uso) e o
+  // resultado precisa ser uma FUNÇÃO antes de aceitar qualquer hit.
+  // Configuração malformada segue EXATAMENTE o mesmo caminho da
   // ausente/`null`: `incompleta`, `inferencia_textual` nula, motivos
   // determinísticos preservados e nenhuma gravação/alteração de cache.
   const candidato = opcoes.interpretador ?? null;
@@ -1645,13 +1654,14 @@ export async function conferirGuia(
     try {
       const metodo: unknown = (candidato as { readonly extrair?: unknown }).extrair;
       if (typeof metodo === "function") {
-        extrair = (metodo as ExtrairObservacao).bind(candidato);
+        const alvo = metodo as ExtrairObservacao;
+        extrair = (entrada: EntradaObservacao) => Reflect.apply(alvo, candidato, [entrada]);
       }
     } catch {
       extrair = null;
     }
   }
-  if (extrair === null) {
+  if (typeof extrair !== "function") {
     return concluir(
       { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
       { estado: "incompleta" },
