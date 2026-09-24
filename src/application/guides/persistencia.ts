@@ -103,8 +103,10 @@ async function prepararExtracao(
   if (existente !== null && existente !== undefined) {
     return String(existente.id);
   }
+  // Array JSON canônico: injetivo sobre a tripla (concatenar com "\u0000"
+  // colidiria "H\u0000m"+"x"+"p" com "H"+"m"+"x\u0000p").
   const id = sha256Hex(
-    `${extracao.observacaoHash}\u0000${extracao.modelo}\u0000${extracao.promptVersao}`,
+    JSON.stringify([extracao.observacaoHash, extracao.modelo, extracao.promptVersao]),
   );
   statements.push(
     db
@@ -150,7 +152,9 @@ async function construirCriacao(
   ) {
     throw new TypeError("importId deve ser uma string não vazia ao criar uma guia nova");
   }
-  const guiaId = guiaPersistida?.id ?? sha256Hex(`guia\u0000${opcoes.guia.id}`);
+  // Array JSON canônico: injetivo sobre o prefixo e o `id_guia`, preservando
+  // surrogates isolados que um join textual tornaria ambíguo.
+  const guiaId = guiaPersistida?.id ?? sha256Hex(JSON.stringify(["guia", opcoes.guia.id]));
   const statements: D1PreparedStatement[] = [];
 
   if (!guiaPersistida) {

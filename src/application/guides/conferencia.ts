@@ -71,7 +71,9 @@ export function assinaturaDuplicidadeDaGuia(guia: GuiaNormalizada): string | nul
     normalizarChave(guia.unidade),
     normalizarChave(guia.profissionalRegistro),
   ];
-  return sha256Hex(campos.join("\u0000"));
+  // Injetivo sobre as 9 strings: o array JSON canônico escapa fronteiras e
+  // NUL internos (um join com "\u0000" colidiria "A\u0000B"+"C" com "A"+"B\u0000C").
+  return sha256Hex(JSON.stringify(campos));
 }
 
 /** Motivo de overlay determinístico: assinatura curta + cardinalidade, sem id_guia. */
@@ -93,7 +95,9 @@ export function extrairOverlay(motivos: readonly Motivo[]): Motivo | null {
 
 /** Conteúdo canônico de uma validação, usado no id determinístico (J10). */
 export function conteudoDaValidacao(conteudo: ConteudoValidacao): string {
-  return [
+  // Injetivo sobre os 12 itens: o array JSON canônico preserva a ordem e escapa
+  // qualquer NUL interno que um join textual tornaria ambíguo.
+  return JSON.stringify([
     conteudo.decisao,
     conteudo.checagemTextual,
     conteudo.referenciaTemporal ?? "",
@@ -106,5 +110,5 @@ export function conteudoDaValidacao(conteudo: ConteudoValidacao): string {
     JSON.stringify(conteudo.limitacoes),
     conteudo.extracaoId ?? "",
     conteudo.processadoEm,
-  ].join("\u0000");
+  ]);
 }
