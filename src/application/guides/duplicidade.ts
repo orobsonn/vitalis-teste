@@ -14,10 +14,17 @@ import { lerEstadoGlobal, traduzirConflitoUnicidade } from "../../storage";
 import { sha256Hex } from "../../shared/sha256";
 import { CODIGO_DUPLICIDADE, conteudoDaValidacao, overlayDuplicidade } from "./conferencia";
 import type { OpcoesDuplicidade, ResultadoDuplicidade } from "./contratos";
-import { SQL_INSERIR_FINDING, SQL_INSERIR_VALIDACAO } from "./sql";
+import { SQL_DESATIVAR_VALIDACAO, SQL_INSERIR_FINDING, SQL_INSERIR_VALIDACAO } from "./sql";
 
 const CHAVE_DUPLICIDADE = "duplicidade";
 const MAX_TENTATIVAS = 5;
+
+// Guarda de reserva (J14): só muta se a reserva CAS que abre o lote tiver
+// produzido exatamente a versão esperada. SQLite/D1 `batch` não aborta os
+// statements restantes quando a reserva afeta 0 linhas; a condição em cada
+// mutação garante atomicamente que um perdedor da corrida seja um no-op.
+const CLAUSULA_RESERVA =
+  "EXISTS (SELECT 1 FROM estado_global WHERE chave = ? AND versao = ?)";
 
 interface FindingCorrente {
   ordem: number;
@@ -224,6 +231,7 @@ function construirStatements(
   mudancas: readonly RevisaoCorrente[],
   desejado: Map<string, Motivo | null>,
   agora: string,
+  novaVersao: number,
 ): D1PreparedStatement[] {
   const statements: D1PreparedStatement[] = [];
   for (const revisao of mudancas) {
@@ -263,12 +271,12 @@ function construirStatements(
 
     statements.push(
       db
-        .prepare("UPDATE validations SET vigente = 0 WHERE revision_id = ? AND vigente = 1")
-        .bind(revisao.id),
+        .prepare(`${SQL_DESATIVAR_VALIDACAO} AND ${CLAUSULA_RESERVA}`)
+        .bind(revisao.id, CHAVE_DUPLICIDADE, novaVersao),
     );
     statements.push(
       db
-        .prepare(SQL_INSERIR_VALIDACAO)
+        .prepare(`${SQL_INSERIR_VALIDACAO} WHERE ${CLAUSULA_RESERVA}`)
         .bind(
           validacaoId,
           revisao.id,
@@ -286,13 +294,15 @@ function construirStatements(
           JSON.stringify(validacao.limitacoes),
           validacao.extracaoId,
           agora,
+          CHAVE_DUPLICIDADE,
+          novaVersao,
         ),
     );
     novos.forEach((motivo, ordem) => {
       const findingId = sha256Hex(`${validacaoId}\u0000${ordem}\u0000${motivo.codigo}`);
       statements.push(
         db
-          .prepare(SQL_INSERIR_FINDING)
+          .prepare(`${SQL_INSERIR_FINDING} WHERE ${CLAUSULA_RESERVA}`)
           .bind(
             findingId,
             validacaoId,
@@ -303,6 +313,8 @@ function construirStatements(
             motivo.regra,
             motivo.evidencia,
             motivo.orientacao,
+            CHAVE_DUPLICIDADE,
+            novaVersao,
           ),
       );
     });
@@ -330,6 +342,7 @@ export async function reavaliarDuplicidade(
     }
 
     const versaoLida = await lerEstadoGlobal(db, CHAVE_DUPLICIDADE);
+    const novaVersao = versaoLida === null ? 1 : versaoLida + 1;
     const reserva =
       versaoLida === null
         ? db
@@ -344,14 +357,25 @@ export async function reavaliarDuplicidade(
     // J14: a reserva CAS é o PRIMEIRO statement do lote de mutação, de modo que
     // um lote falho não deixe o contador incrementado sem o overlay e uma reserva
     // perdida não aplique silenciosamente um overlay obsoleto.
-    const statements = [reserva, ...construirStatements(db, mudancas, desejado, opcoes.agora)];
+    const statements = [
+      reserva,
+      ...construirStatements(db, mudancas, desejado, opcoes.agora, novaVersao),
+    ];
+    let resultados: D1Result[];
     try {
-      await db.batch(statements);
+      resultados = await db.batch(statements);
     } catch (erro) {
       if (traduzirConflitoUnicidade(erro).tipo === "unicidade") {
         continue;
       }
       throw erro;
+    }
+
+    // J14: `batch` não aborta as mutações seguintes quando a reserva afeta 0
+    // linhas; se a reserva foi perdida, nenhuma mutação é aplicada (as guardas
+    // acima já as tornam no-op) e a tentativa seguinte relê o estado.
+    if ((resultados[0]?.meta.changes ?? 0) === 0) {
+      continue;
     }
 
     const apos = await lerEstadoCorrente(db);
