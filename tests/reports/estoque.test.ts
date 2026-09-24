@@ -47,6 +47,7 @@ interface RelatorioGuias {
   ok: number;
   pendentes: number;
   falhasProcessamento: number;
+  lotesProcessando: number;
   valorRegistradoCentavos: number;
   totalIncompleto: boolean;
   exposicaoCentavos: number;
@@ -287,6 +288,67 @@ async function semearImportComFalhas(
   }
 }
 
+/**
+ * Insere um lote (`imports`) com status explícito e sem linhas, para exercitar
+ * `lotesProcessando` sem criar falhas de processamento.
+ */
+async function semearLoteComStatus(
+  db: D1Database,
+  importId: string,
+  chave: string,
+  status: "PROCESSANDO" | "CONCLUIDO" | "PARCIAL" | "FALHOU",
+  iniciadoEm: string,
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO imports (id, idempotency_key, arquivo_nome, arquivo_hash, regras_versao, regras_hash, status, tamanho_chunk, linhas_encontradas, iniciado_em, atualizado_em, concluido_em)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      importId,
+      chave,
+      `${importId}.csv`,
+      "hash-arquivo",
+      "relatorios-v1",
+      "hash-relatorios",
+      status,
+      25,
+      0,
+      iniciadoEm,
+      iniciadoEm,
+      status === "PROCESSANDO" ? null : iniciadoEm,
+    )
+    .run();
+}
+
+/**
+ * Snapshot comparável de TODAS as métricas publicadas, exceto
+ * `lotesProcessando`: prova que a presença de lote em andamento não altera
+ * nenhuma outra métrica do mesmo recorte.
+ */
+function metricas(rel: RelatorioGuias): Record<string, unknown> {
+  return {
+    guias: rel.guias,
+    ok: rel.ok,
+    pendentes: rel.pendentes,
+    falhasProcessamento: rel.falhasProcessamento,
+    valorRegistradoCentavos: rel.valorRegistradoCentavos,
+    totalIncompleto: rel.totalIncompleto,
+    exposicaoCentavos: rel.exposicaoCentavos,
+    exposicaoEstruturadaCentavos: rel.exposicaoEstruturadaCentavos,
+    exposicaoTextualDuplicidadeCentavos: rel.exposicaoTextualDuplicidadeCentavos,
+    possivelExcessoCentavos: rel.possivelExcessoCentavos,
+    possivelExcessoIncompleto: rel.possivelExcessoIncompleto,
+    valorSemPendenciaCentavos: rel.valorSemPendenciaCentavos,
+    porCodigo: rel.porCodigo,
+    porConvenio: rel.porConvenio,
+    porUnidade: rel.porUnidade,
+    referenciasTemporais: rel.referenciasTemporais,
+    periodo: rel.periodo,
+    referencia: rel.referencia,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Caso
 // ---------------------------------------------------------------------------
@@ -487,5 +549,129 @@ describe("lt-estoque-unicidade-valores: unicidade, partições exclusivas e exce
     expect(rel.periodo).toEqual({ de: null, ate: null });
     expect(rel.referencia).toBe("REF-ESTOQUE");
     expect(rel.falhasProcessamento).toBe(3);
+  });
+
+  it("preserva chaves colidentes de toString/__proto__/constructor em porCodigo, porConvenio e porUnidade (#ac-10)", async () => {
+    const api = exigirApi();
+    const db = await criarBanco();
+    await semearBase(db);
+
+    // G-8801: `convenio`/`unidade`/código de finding nas chaves herdadas mais
+    // problemáticas. Uma contagem indexada diretamente em `{}` perde o valor
+    // (`__proto__` vira prototype) ou o converte em string/function.
+    await semearGuia(db, "g-8801", "G-2608-8801");
+    await semearRevisao(db, {
+      guiaId: "g-8801",
+      idGuia: "G-2608-8801",
+      revisaoId: "rev-8801-1",
+      numero: 1,
+      vigente: true,
+      valorCentavos: 5000,
+      convenio: "__proto__",
+      unidade: "toString",
+      dataLancamento: "2026-08-10",
+      assinatura: null,
+      decisao: "PENDENTE",
+      referenciaTemporal: "2026-08-10",
+      processadoEm: FORA_DA_JANELA,
+      codigos: ["toString"],
+    });
+
+    // G-8802: chaves inversas, para provar as duas direções em cada mapa.
+    await semearGuia(db, "g-8802", "G-2608-8802");
+    await semearRevisao(db, {
+      guiaId: "g-8802",
+      idGuia: "G-2608-8802",
+      revisaoId: "rev-8802-1",
+      numero: 1,
+      vigente: true,
+      valorCentavos: 7000,
+      convenio: "toString",
+      unidade: "__proto__",
+      dataLancamento: "2026-08-11",
+      assinatura: null,
+      decisao: "PENDENTE",
+      referenciaTemporal: "2026-08-11",
+      processadoEm: FORA_DA_JANELA,
+      codigos: ["constructor"],
+    });
+
+    const rel = await api.relatorioEstoque(db, { agora: AGORA, referencia: "REF-CHAVES" });
+
+    expect(rel.guias).toBe(2);
+    expect(rel.pendentes).toBe(2);
+
+    // porConvenio/porUnidade: cada guia conta UMA vez em chave PRÓPRIA, com
+    // valor numérico exato (nunca herdado, string ou função).
+    for (const mapa of [rel.porConvenio, rel.porUnidade]) {
+      expect(Object.prototype.hasOwnProperty.call(mapa, "__proto__")).toBe(true);
+      expect(typeof mapa["__proto__"]).toBe("number");
+      expect(mapa["__proto__"]).toBe(1);
+      expect(Object.prototype.hasOwnProperty.call(mapa, "toString")).toBe(true);
+      expect(typeof mapa["toString"]).toBe("number");
+      expect(mapa["toString"]).toBe(1);
+    }
+
+    // porCodigo: chave própria com a contagem exata { guias, ocorrencias }.
+    expect(Object.prototype.hasOwnProperty.call(rel.porCodigo, "toString")).toBe(true);
+    expect(rel.porCodigo["toString"]).toEqual({ guias: 1, ocorrencias: 1 });
+    expect(Object.prototype.hasOwnProperty.call(rel.porCodigo, "constructor")).toBe(true);
+    expect(rel.porCodigo["constructor"]).toEqual({ guias: 1, ocorrencias: 1 });
+
+    // A serialização JSON preserva as chaves colidentes como chaves próprias.
+    const chavesConvenio = Object.keys(JSON.parse(JSON.stringify(rel.porConvenio)));
+    expect(chavesConvenio).toContain("__proto__");
+    expect(chavesConvenio).toContain("toString");
+    const chavesCodigo = Object.keys(JSON.parse(JSON.stringify(rel.porCodigo)));
+    expect(chavesCodigo).toContain("toString");
+    expect(chavesCodigo).toContain("constructor");
+  });
+
+  it("expõe lotesProcessando do estoque sem alterar métricas e zera ao finalizar os lotes (#ac-16)", async () => {
+    const api = exigirApi();
+    const db = await criarBanco();
+    await semearBase(db);
+
+    await semearGuia(db, "g-8201", "G-2608-8201");
+    await semearRevisao(db, {
+      guiaId: "g-8201",
+      idGuia: "G-2608-8201",
+      revisaoId: "rev-8201-1",
+      numero: 1,
+      vigente: true,
+      valorCentavos: 4200,
+      convenio: "Vitalcard",
+      unidade: "Sul",
+      dataLancamento: "2026-08-15",
+      assinatura: null,
+      decisao: "OK",
+      referenciaTemporal: "2026-08-15",
+      processadoEm: FORA_DA_JANELA,
+      codigos: [],
+    });
+
+    const antes = await api.relatorioEstoque(db, { agora: AGORA, referencia: "REF-PROC" });
+    expect(antes.lotesProcessando).toBe(0);
+
+    // Um lote PROCESSANDO iniciado dentro da janela de atividade e outro fora:
+    // o estoque conta TODOS, sem corte temporal.
+    await semearLoteComStatus(
+      db,
+      "imp-proc-dentro",
+      "K-proc-dentro",
+      "PROCESSANDO",
+      "2026-08-15T08:00:00.000Z",
+    );
+    await semearLoteComStatus(db, "imp-proc-fora", "K-proc-fora", "PROCESSANDO", FORA_DA_JANELA);
+
+    const durante = await api.relatorioEstoque(db, { agora: AGORA, referencia: "REF-PROC" });
+    expect(durante.lotesProcessando).toBe(2);
+    expect(metricas(durante)).toEqual(metricas(antes));
+
+    // Finalizar os lotes em andamento zera o indicador e não mexe no resto.
+    await db.prepare("UPDATE imports SET status = 'CONCLUIDO' WHERE status = 'PROCESSANDO'").run();
+    const depois = await api.relatorioEstoque(db, { agora: AGORA, referencia: "REF-PROC" });
+    expect(depois.lotesProcessando).toBe(0);
+    expect(metricas(depois)).toEqual(metricas(antes));
   });
 });

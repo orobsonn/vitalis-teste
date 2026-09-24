@@ -48,6 +48,7 @@ interface RelatorioGuias {
   ok: number;
   pendentes: number;
   falhasProcessamento: number;
+  lotesProcessando: number;
   valorRegistradoCentavos: number;
   totalIncompleto: boolean;
   exposicaoCentavos: number;
@@ -307,6 +308,39 @@ function metricas(rel: RelatorioGuias): Record<string, unknown> {
   };
 }
 
+/**
+ * Insere um lote (`imports`) com status explícito e sem linhas, para exercitar
+ * `lotesProcessando` sem criar falhas de processamento.
+ */
+async function semearLoteComStatus(
+  db: D1Database,
+  importId: string,
+  chave: string,
+  status: "PROCESSANDO" | "CONCLUIDO" | "PARCIAL" | "FALHOU",
+  iniciadoEm: string,
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO imports (id, idempotency_key, arquivo_nome, arquivo_hash, regras_versao, regras_hash, status, tamanho_chunk, linhas_encontradas, iniciado_em, atualizado_em, concluido_em)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      importId,
+      chave,
+      `${importId}.csv`,
+      "hash-arquivo",
+      "relatorios-v1",
+      "hash-relatorios",
+      status,
+      25,
+      0,
+      iniciadoEm,
+      iniciadoEm,
+      status === "PROCESSANDO" ? null : iniciadoEm,
+    )
+    .run();
+}
+
 // ---------------------------------------------------------------------------
 // Caso
 // ---------------------------------------------------------------------------
@@ -430,5 +464,98 @@ describe("lt-atividade-data-lancamento: borda inclusive e processado_em como aud
     expect(depois.falhasProcessamento).toBe(2);
     expect(depois.periodo).toEqual({ de: DE, ate: ATE });
     expect(depois.referencia).toBe("REF-ATIVIDADE");
+  });
+
+  it("expõe lotesProcessando da atividade recortado por iniciado_em da janela (#ac-16)", async () => {
+    const api = exigirApi();
+    const db = await criarBanco();
+    await semearBase(db);
+
+    const DE = "2026-08-10";
+    const ATE = "2026-08-20";
+
+    await semearGuia(db, "g-8301", "G-2608-8301");
+    await semearRevisao(db, {
+      guiaId: "g-8301",
+      idGuia: "G-2608-8301",
+      revisaoId: "rev-8301-1",
+      numero: 1,
+      vigente: true,
+      valorCentavos: 3300,
+      convenio: "Vitalcard",
+      unidade: "Sul",
+      dataLancamento: DE,
+      assinatura: null,
+      decisao: "PENDENTE",
+      referenciaTemporal: DE,
+      processadoEm: FORA_DA_JANELA,
+      codigos: ["procedimento_nao_coberto"],
+    });
+
+    const antes = await api.relatorioAtividade(db, {
+      de: DE,
+      ate: ATE,
+      agora: AGORA,
+      referencia: "REF-PROC-ATV",
+    });
+    expect(antes.lotesProcessando).toBe(0);
+
+    // Lote PROCESSANDO iniciado DENTRO da janela e outro iniciado FORA.
+    await semearLoteComStatus(
+      db,
+      "imp-atv-dentro",
+      "K-atv-dentro",
+      "PROCESSANDO",
+      "2026-08-15T08:00:00.000Z",
+    );
+    await semearLoteComStatus(db, "imp-atv-fora", "K-atv-fora", "PROCESSANDO", FORA_DA_JANELA);
+
+    const duranteAtv = await api.relatorioAtividade(db, {
+      de: DE,
+      ate: ATE,
+      agora: AGORA,
+      referencia: "REF-PROC-ATV",
+    });
+    // Atividade conta só o lote iniciado na janela, sem alterar outra métrica.
+    expect(duranteAtv.lotesProcessando).toBe(1);
+    expect(metricas(duranteAtv)).toEqual(metricas(antes));
+
+    // O estoque conta os dois lotes (sem corte temporal).
+    const duranteEstoque = await api.relatorioEstoque(db, {
+      agora: AGORA,
+      referencia: "REF-PROC-ESTOQUE",
+    });
+    expect(duranteEstoque.lotesProcessando).toBe(2);
+
+    // Finalizar o lote de fora reduz o estoque, mas a atividade segue 1.
+    await db.prepare("UPDATE imports SET status = 'PARCIAL' WHERE id = ?").bind("imp-atv-fora").run();
+    const meioAtv = await api.relatorioAtividade(db, {
+      de: DE,
+      ate: ATE,
+      agora: AGORA,
+      referencia: "REF-PROC-ATV",
+    });
+    expect(meioAtv.lotesProcessando).toBe(1);
+    const meioEstoque = await api.relatorioEstoque(db, {
+      agora: AGORA,
+      referencia: "REF-PROC-ESTOQUE",
+    });
+    expect(meioEstoque.lotesProcessando).toBe(1);
+
+    // Finalizar o último lote em andamento zera o indicador nos dois recortes.
+    await db.prepare("UPDATE imports SET status = 'FALHOU' WHERE id = ?").bind("imp-atv-dentro").run();
+    const fimAtv = await api.relatorioAtividade(db, {
+      de: DE,
+      ate: ATE,
+      agora: AGORA,
+      referencia: "REF-PROC-ATV",
+    });
+    expect(fimAtv.lotesProcessando).toBe(0);
+    expect(metricas(fimAtv)).toEqual(metricas(antes));
+    const fimEstoque = await api.relatorioEstoque(db, {
+      agora: AGORA,
+      referencia: "REF-PROC-ESTOQUE",
+    });
+    expect(fimEstoque.lotesProcessando).toBe(0);
   });
 });
