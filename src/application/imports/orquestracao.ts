@@ -247,6 +247,13 @@ async function iniciarImportacaoInterna(
   exigirSemSurrogateIsolado(o.csv, "csv");
   exigirSemSurrogateIsolado(o.idempotencyKey, "idempotencyKey");
   exigirSemSurrogateIsolado(o.arquivoNome, "arquivoNome");
+  // `o.regras.hash` é chave de identidade: UNIQUE em `rulesets.hash`, coluna
+  // `imports.regras_hash` e comparação de replay em `responderReplay`. Sem a
+  // guarda, um surrogate isolado viraria U+FFFD e uma segunda chamada com
+  // `regras.hash = "\uFFFD"` (ou digest de ruleset) seria aceita como o mesmo
+  // lote. `versao`/`regrasVersao` são rótulos TEXT sem igualdade/UNIQUE e
+  // permanecem apenas armazenados (não são identidade injetiva).
+  exigirSemSurrogateIsolado(o.regras.hash, "regras.hash");
   // `JSON.stringify` é injetivo sobre strings JS: um surrogate isolado é
   // serializado como escape ASCII, mas já foi rejeitado acima, de modo que dois
   // CSVs distintos nunca casam o mesmo digest.
