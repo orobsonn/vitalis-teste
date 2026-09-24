@@ -6,7 +6,50 @@
  * somam `COUNT(*)` agrupado por `estado`.
  */
 
-import type { ContagemLinhasImportacao, EstadoLinhaImportacao } from "./contratos";
+import type {
+  ContagemLinhasImportacao,
+  EstadoLinhaImportacao,
+  ImportacaoPersistida,
+  LinhaImportacao,
+} from "./contratos";
+import { mapearImportacao, mapearLinhaImportacao, type LinhaBanco } from "./mapeadores";
+
+const COLUNAS_IMPORTACAO = `
+  id, idempotency_key, arquivo_nome, arquivo_hash, regras_versao, regras_hash,
+  status, tamanho_chunk, linhas_encontradas, iniciado_em, atualizado_em, concluido_em
+`;
+
+const COLUNAS_LINHA = `
+  id, import_id, numero_linha, estado, linha_original, original_json,
+  guia_id, revisao_id, motivo, dono, reservado_em, atualizado_em
+`;
+
+/** Metadados tipados do lote (`imports`) ou `null` quando o id não existe. */
+export async function lerImportacao(
+  db: D1Database,
+  id: string,
+): Promise<ImportacaoPersistida | null> {
+  const linha = await db
+    .prepare(`SELECT ${COLUNAS_IMPORTACAO} FROM imports WHERE id = ?`)
+    .bind(id)
+    .first<LinhaBanco>();
+  return linha === null || linha === undefined ? null : mapearImportacao(linha);
+}
+
+/**
+ * Todas as linhas do lote (`import_lines`) em ordem física crescente, com
+ * estado e posse — sem escrita nem transição, apenas leitura tipada.
+ */
+export async function lerLinhasDoLote(
+  db: D1Database,
+  importId: string,
+): Promise<LinhaImportacao[]> {
+  const resultado = await db
+    .prepare(`SELECT ${COLUNAS_LINHA} FROM import_lines WHERE import_id = ? ORDER BY numero_linha ASC`)
+    .bind(importId)
+    .all<LinhaBanco>();
+  return resultado.results.map(mapearLinhaImportacao);
+}
 
 export async function contarLinhasPorEstado(
   db: D1Database,

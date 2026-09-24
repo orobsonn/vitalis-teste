@@ -11,6 +11,10 @@ import type { ResultadoTraducaoUnicidade } from "./contratos";
 
 const PREFIXO_UNICIDADE = "UNIQUE constraint failed: ";
 
+// Frase de falha de constraint que, aparecendo ANTES do prefixo de unicidade,
+// indica mensagem composta (ex.: FK seguida de UNIQUE) e não um conflito puro.
+const OUTRA_FALHA_DE_CONSTRAINT = "constraint failed";
+
 function mensagemDe(erro: unknown): string | null {
   if (erro instanceof Error) {
     return erro.message;
@@ -35,6 +39,12 @@ export function traduzirConflitoUnicidade(erro: unknown): ResultadoTraducaoUnici
 
   const inicio = mensagem.indexOf(PREFIXO_UNICIDADE);
   if (inicio === -1) {
+    return { tipo: "outro" };
+  }
+
+  // Toleramos o prefixo do D1 (não exigimos início absoluto), mas se houver
+  // outra falha de constraint antes da unicidade a mensagem é composta.
+  if (mensagem.slice(0, inicio).includes(OUTRA_FALHA_DE_CONSTRAINT)) {
     return { tipo: "outro" };
   }
 

@@ -6,7 +6,16 @@
  * colunas `*_json` e normalizando `vigente` para 0 | 1.
  */
 
-import type { GuiaPersistida, RevisaoPersistida, ValidacaoPersistida, Vigente } from "./contratos";
+import type {
+  EstadoLinhaImportacao,
+  GuiaPersistida,
+  ImportacaoPersistida,
+  LinhaImportacao,
+  RevisaoPersistida,
+  StatusImportacao,
+  ValidacaoPersistida,
+  Vigente,
+} from "./contratos";
 
 export type LinhaBanco = Record<string, unknown>;
 
@@ -97,5 +106,41 @@ export function mapearValidacao(linha: LinhaBanco): ValidacaoPersistida {
     limitacoes: jsonDaLinha(linha, "limitacoes_json"),
     extracaoId: textoOpcional(linha, "extracao_id"),
     processadoEm: exigirTexto(linha, "processado_em"),
+  };
+}
+
+/** Metadados do lote (`imports`) mapeados para o contrato tipado. */
+export function mapearImportacao(linha: LinhaBanco): ImportacaoPersistida {
+  return {
+    id: exigirTexto(linha, "id"),
+    idempotencyKey: exigirTexto(linha, "idempotency_key"),
+    arquivoNome: exigirTexto(linha, "arquivo_nome"),
+    arquivoHash: exigirTexto(linha, "arquivo_hash"),
+    regrasVersao: exigirTexto(linha, "regras_versao"),
+    regrasHash: exigirTexto(linha, "regras_hash"),
+    status: exigirTexto(linha, "status") as StatusImportacao,
+    tamanhoChunk: exigirInteiro(linha, "tamanho_chunk"),
+    linhasEncontradas: exigirInteiro(linha, "linhas_encontradas"),
+    iniciadoEm: exigirTexto(linha, "iniciado_em"),
+    atualizadoEm: exigirTexto(linha, "atualizado_em"),
+    concluidoEm: textoOpcional(linha, "concluido_em"),
+  };
+}
+
+/** Linha de lote (`import_lines`) mapeada para o contrato tipado, com posse. */
+export function mapearLinhaImportacao(linha: LinhaBanco): LinhaImportacao {
+  return {
+    id: exigirTexto(linha, "id"),
+    importId: exigirTexto(linha, "import_id"),
+    numeroLinha: exigirInteiro(linha, "numero_linha"),
+    estado: exigirTexto(linha, "estado") as EstadoLinhaImportacao,
+    linhaOriginal: exigirTexto(linha, "linha_original"),
+    originalJson: textoOpcional(linha, "original_json"),
+    guiaId: textoOpcional(linha, "guia_id"),
+    revisaoId: textoOpcional(linha, "revisao_id"),
+    motivo: textoOpcional(linha, "motivo"),
+    dono: textoOpcional(linha, "dono"),
+    reservadoEm: textoOpcional(linha, "reservado_em"),
+    atualizadoEm: exigirTexto(linha, "atualizado_em"),
   };
 }

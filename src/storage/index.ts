@@ -7,8 +7,9 @@
 
 export { executarBatchAtomico } from "./batch";
 export { traduzirConflitoUnicidade } from "./conflitos";
-export { contarLinhasPorEstado } from "./consultas";
+export { contarLinhasPorEstado, lerImportacao, lerLinhasDoLote } from "./consultas";
 export {
+  exigirCentavosNormalizados,
   exigirVigente,
   inserirGuia,
   inserirRevisaoVigente,
@@ -20,13 +21,23 @@ export {
   lerValidacaoVigente,
   reservarVersaoGlobal,
 } from "./repositorios";
-export { jsonDaLinha, jsonParaBind, mapearGuia, mapearRevisao, mapearValidacao } from "./mapeadores";
+export {
+  jsonDaLinha,
+  jsonParaBind,
+  mapearGuia,
+  mapearImportacao,
+  mapearLinhaImportacao,
+  mapearRevisao,
+  mapearValidacao,
+} from "./mapeadores";
 
 export type {
   ContagemLinhasImportacao,
   EntradaReservaVersaoGlobal,
   EstadoLinhaImportacao,
   GuiaPersistida,
+  ImportacaoPersistida,
+  LinhaImportacao,
   ResultadoReservaVersaoGlobal,
   ResultadoTraducaoUnicidade,
   RevisaoPersistida,

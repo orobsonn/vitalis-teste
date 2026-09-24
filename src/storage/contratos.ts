@@ -70,6 +70,38 @@ export interface ContagemLinhasImportacao {
   comFalha: number;
 }
 
+/** Metadados persistidos de um lote de importação (`imports`). */
+export interface ImportacaoPersistida {
+  id: string;
+  idempotencyKey: string;
+  arquivoNome: string;
+  arquivoHash: string;
+  regrasVersao: string;
+  regrasHash: string;
+  status: StatusImportacao;
+  tamanhoChunk: number;
+  linhasEncontradas: number;
+  iniciadoEm: TimestampIso;
+  atualizadoEm: TimestampIso;
+  concluidoEm: string | null;
+}
+
+/** Linha durável de um lote (`import_lines`), inclusive colunas de posse. */
+export interface LinhaImportacao {
+  id: string;
+  importId: string;
+  numeroLinha: number;
+  estado: EstadoLinhaImportacao;
+  linhaOriginal: string;
+  originalJson: string | null;
+  guiaId: string | null;
+  revisaoId: string | null;
+  motivo: string | null;
+  dono: string | null;
+  reservadoEm: string | null;
+  atualizadoEm: TimestampIso;
+}
+
 export type ResultadoTraducaoUnicidade =
   | { tipo: "unicidade"; tabela: string; colunas: string[] }
   | { tipo: "outro" };

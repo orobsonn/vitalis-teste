@@ -3,8 +3,8 @@
  *
  * Toda SQL é parametrizada (`bind`); nenhum valor de entrada entra no texto da
  * query. Escritas de guia/validação e a vigência única usam `DB.batch` atômico.
- * `vigente` é validado antes de qualquer SQL: booleanos e valores fora de
- * {0, 1} são recusados sem gravar nada.
+ * `vigente` é validado antes de qualquer SQL: as operações *Vigente exigem o
+ * inteiro 1 (booleanos, 0 e demais valores são recusados sem gravar nada).
  */
 
 import { executarBatchAtomico } from "./batch";
@@ -35,6 +35,44 @@ export function exigirVigente(valor: unknown): Vigente {
     throw new TypeError("vigente deve ser exatamente o inteiro 0 ou 1");
   }
   return valor;
+}
+
+/**
+ * Operação de vigência única: a linha inserida precisa ser a nova vigente.
+ * Aceitar `0` deixaria a guia/revisão sem nenhuma linha vigente, então a
+ * operação exige explicitamente o inteiro 1 antes de montar/executar SQL.
+ */
+function exigirVigenteDaOperacao(valor: unknown): 1 {
+  if (valor !== 1) {
+    throw new TypeError("esta operação exige vigente = 1 (inteiro)");
+  }
+  return 1;
+}
+
+/**
+ * Valida os centavos de uma entrada normalizada antes de qualquer persistência.
+ *
+ * A entrada pode ser opaca (sem a propriedade `valorCentavos`, aceita nesta
+ * task), mas quando a propriedade própria existe seu valor precisa ser `null`
+ * ou um inteiro seguro: `NaN`/`Infinity` virariam `null` silenciosamente no
+ * JSON e inteiros acima de `Number.MAX_SAFE_INTEGER` perderiam exatidão.
+ */
+export function exigirCentavosNormalizados(entradaNormalizada: unknown): void {
+  if (
+    typeof entradaNormalizada !== "object" ||
+    entradaNormalizada === null ||
+    Array.isArray(entradaNormalizada) ||
+    !Object.prototype.hasOwnProperty.call(entradaNormalizada, "valorCentavos")
+  ) {
+    return;
+  }
+  const centavos = (entradaNormalizada as { valorCentavos: unknown }).valorCentavos;
+  if (centavos === null) {
+    return;
+  }
+  if (typeof centavos !== "number" || !Number.isSafeInteger(centavos)) {
+    throw new TypeError("entradaNormalizada.valorCentavos deve ser null ou inteiro seguro");
+  }
 }
 
 async function lerEstadoGlobal(db: D1Database, chave: string): Promise<number | null> {
@@ -78,6 +116,9 @@ export async function reservarVersaoGlobal(
 }
 
 export async function inserirGuia(db: D1Database, guia: GuiaPersistida): Promise<void> {
+  if (typeof guia.idGuia !== "string" || guia.idGuia.trim() === "") {
+    throw new TypeError("idGuia deve ser uma string não vazia");
+  }
   await db
     .prepare(
       "INSERT INTO guides (id, id_guia, import_id_inicial, criado_em, atualizado_em) VALUES (?, ?, ?, ?, ?)",
@@ -104,7 +145,8 @@ export async function inserirRevisaoVigente(
   db: D1Database,
   revisao: RevisaoPersistida,
 ): Promise<RevisaoPersistida> {
-  const vigente = exigirVigente(revisao.vigente);
+  const vigente = exigirVigenteDaOperacao(revisao.vigente);
+  exigirCentavosNormalizados(revisao.entradaNormalizada);
 
   const desativar = db
     .prepare("UPDATE guide_revisions SET vigente = 0 WHERE guide_id = ? AND vigente = 1")
@@ -172,7 +214,7 @@ export async function inserirValidacaoVigente(
   db: D1Database,
   validacao: ValidacaoPersistida,
 ): Promise<ValidacaoPersistida> {
-  const vigente = exigirVigente(validacao.vigente);
+  const vigente = exigirVigenteDaOperacao(validacao.vigente);
 
   const desativar = db
     .prepare("UPDATE validations SET vigente = 0 WHERE revision_id = ? AND vigente = 1")
