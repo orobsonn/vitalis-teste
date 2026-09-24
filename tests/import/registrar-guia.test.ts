@@ -229,6 +229,34 @@ function conferenciaB(regras: Catalogo): ConferenciaPersistivel {
   };
 }
 
+// Conferência neutra (decisão OK, sem motivos) com uma extração cujo id
+// determinístico é justamente o alvo das regressões de digest ambíguo.
+function conferenciaCom(
+  regras: Catalogo,
+  extracao: Pick<ExtracaoSemanticaPersistivel, "observacaoHash" | "modelo" | "promptVersao">,
+): ConferenciaPersistivel {
+  return {
+    resultado: {
+      decisao: "OK",
+      motivos: [],
+      orientacoes: [],
+      limitacoes: [],
+      checagem_textual: "nao_aplicavel",
+      referencia_temporal: null,
+      regras_versao: regras.regrasVersao,
+      inferencia_textual: null,
+    },
+    extracao: {
+      observacaoHash: extracao.observacaoHash,
+      modelo: extracao.modelo,
+      promptVersao: extracao.promptVersao,
+      sinais: [],
+      situacao: {},
+      ambiguidades: [],
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Semeadura de D1 e leituras diretas (a SUT só é exercitada pelas portas)
 // ---------------------------------------------------------------------------
@@ -914,5 +942,106 @@ describe("regressões da revisão final: centavos, hash injetivo e importId", ()
     expect(contador.preparosDeMutacao).toBe(0);
     expect(await contar(db, "guides")).toBe(0);
     expect(await contar(db, "guide_revisions")).toBe(0);
+  });
+
+  it("id de extração é injetivo: modelo/prompt com NUL não colidem entre triplas distintas (#ac-4)", async () => {
+    const api = exigirApi();
+    const db = await criarBanco();
+    const regras = carregarRegras();
+    await semearImport(db, "imp-1", "chave-imp");
+    await semearRuleset(db, "rs-1", hashCatalogo(CATALOGO_JSON));
+
+    // Duas triplas semânticas DISTINTAS cujo id determinístico concatena os
+    // mesmos pedaços: "H\u0000m\u0000x\u0000p" nos dois casos. A UNIQUE
+    // (observacao_hash, modelo, prompt_versao) as distingue, então o id do
+    // conteúdo precisa ser injetivo sobre os três campos.
+    const conferenciaX = conferenciaCom(regras, {
+      observacaoHash: "H",
+      modelo: "m\u0000x",
+      promptVersao: "p",
+    });
+    const conferenciaY = conferenciaCom(regras, {
+      observacaoHash: "H",
+      modelo: "m",
+      promptVersao: "x\u0000p",
+    });
+
+    const resultadoX = await api.registrarGuia(db, {
+      guia: normalizar({ id_guia: "G-2608-7101" }),
+      conferencia: conferenciaX,
+      idempotencyKey: "K-EXT-X",
+      importId: "imp-1",
+      regras,
+      agora: AGORA,
+    });
+    expect(resultadoX.tipo).toBe("criada");
+
+    // Captura a falha para que o RED seja de asserção: a segunda gravação
+    // precisa ser "criada", nunca rejeitada por colisão de PK da extração.
+    let erroY: unknown = null;
+    let resultadoY: ResultadoPersistencia | null = null;
+    try {
+      resultadoY = await api.registrarGuia(db, {
+        guia: normalizar({ id_guia: "G-2608-7102" }),
+        conferencia: conferenciaY,
+        idempotencyKey: "K-EXT-Y",
+        importId: "imp-1",
+        regras,
+        agora: DEPOIS,
+      });
+    } catch (capturado) {
+      erroY = capturado;
+    }
+    expect(erroY).toBeNull();
+    expect(resultadoY?.tipo).toBe("criada");
+    expect(await contar(db, "semantic_extractions")).toBe(2);
+  });
+
+  it("id interno da guia é injetivo: surrogate isolado não colide com U+FFFD (#ac-3)", async () => {
+    const api = exigirApi();
+    const db = await criarBanco();
+    const regras = carregarRegras();
+    await semearImport(db, "imp-1", "chave-imp");
+    await semearRuleset(db, "rs-1", hashCatalogo(CATALOGO_JSON));
+
+    const salvoA = await api.registrarGuia(db, {
+      guia: normalizar({ id_guia: "\uD800" }),
+      conferencia: conferenciaA(regras),
+      importId: "imp-1",
+      regras,
+      agora: AGORA,
+    });
+    expect(salvoA.tipo).toBe("criada");
+
+    // O adapter node:sqlite normaliza surrogate isolado para U+FFFD ao gravar
+    // `id_guia`, então o id interno de A é lido por U+FFFD.
+    const H = await idInternoDaGuia(db, "\uFFFD");
+    expect(H).not.toBeNull();
+
+    // Renomeia a coluna `id_guia` de A (normalização do adapter) para isolar a
+    // colisão do HASH do id interno: sem nenhuma guia com id_guia U+FFFD,
+    // `lerGuia("\uFFFD")` devolve null e a única causa de B reusar o id H é o
+    // digest ambíguo de `guia\u0000id`.
+    await db
+      .prepare("UPDATE guides SET id_guia = ? WHERE id = ?")
+      .bind("G-2608-8100", H)
+      .run();
+    expect(await idInternoDaGuia(db, "\uFFFD")).toBeNull();
+
+    const salvoB = await api.registrarGuia(db, {
+      guia: normalizar({ id_guia: "\uFFFD" }),
+      conferencia: conferenciaA(regras),
+      importId: "imp-1",
+      regras,
+      agora: DEPOIS,
+    });
+    expect(salvoB.tipo).toBe("criada");
+
+    // B é conteúdo distinto: cria guia NOVA com id interno diferente de H,
+    // nunca anexa a revisão à guia A.
+    expect(await contar(db, "guides")).toBe(2);
+    const idB = await idInternoDaGuia(db, "\uFFFD");
+    expect(idB).not.toBeNull();
+    expect(idB).not.toBe(H);
   });
 });
