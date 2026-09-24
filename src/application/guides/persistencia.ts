@@ -9,7 +9,12 @@
  */
 
 import type { Catalogo } from "../../domain";
-import { lerGuia, mapearRevisao, traduzirConflitoUnicidade } from "../../storage";
+import {
+  exigirCentavosNormalizados,
+  lerGuia,
+  mapearRevisao,
+  traduzirConflitoUnicidade,
+} from "../../storage";
 import type { RevisaoPersistida, ValidacaoPersistida } from "../../storage";
 import { sha256Hex } from "../../shared/sha256";
 import { assinaturaDuplicidadeDaGuia, conteudoDaValidacao, conteudoHashDaGuia } from "./conferencia";
@@ -130,8 +135,21 @@ async function construirCriacao(
   if (typeof opcoes.guia.id !== "string" || opcoes.guia.id.trim() === "") {
     throw new TypeError("id_guia deve ser uma string não vazia");
   }
+  // Fronteira de escrita: centavos `NaN`/`Infinity` virariam `null` no JSON e
+  // inteiros não-seguros/fracionários entrariam inexatos. Valida antes de
+  // preparar qualquer statement de mutação.
+  exigirCentavosNormalizados(opcoes.guia);
   const guarda = opcoes.guarda;
   const guiaPersistida = await lerGuia(db, opcoes.guia.id);
+  // `guides.import_id_inicial` é NOT NULL: criar uma guia nova sem `importId`
+  // válido falha aqui, antes de montar/executar o batch. Uma guia existente
+  // (correção) continua aceitando `importId` ausente.
+  if (
+    guiaPersistida === null &&
+    (typeof opcoes.importId !== "string" || opcoes.importId.trim() === "")
+  ) {
+    throw new TypeError("importId deve ser uma string não vazia ao criar uma guia nova");
+  }
   const guiaId = guiaPersistida?.id ?? sha256Hex(`guia\u0000${opcoes.guia.id}`);
   const statements: D1PreparedStatement[] = [];
 
