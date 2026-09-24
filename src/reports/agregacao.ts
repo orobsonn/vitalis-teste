@@ -14,11 +14,13 @@
  * `exposicaoTextualDuplicidadeCentavos`. O excesso potencial de duplicidade é
  * calculado por assinatura e NUNCA é somado à exposição.
  *
- * Somas em centavos: cada parcela já é um inteiro seguro; o acumulado é
- * verificado a cada passo. Se a soma exceder `Number.MAX_SAFE_INTEGER`, o total
- * satura nesse limite (mesma política já adotada em `agregarVerificacoes`), de
- * modo que um total arredondado/não seguro jamais é publicado e o resultado
- * permanece independente da ordem de entrada.
+ * Somas em centavos: cada parcela já é um inteiro seguro, mas o acumulado é
+ * mantido em aritmética inteira exata (`bigint`). A conversão para `number` só
+ * acontece no limite publicado e satura em `Number.MAX_SAFE_INTEGER` apenas
+ * quando o valor FINAL não cabe em um inteiro seguro. Nenhum acumulado
+ * intermediário é saturado antes de ser subtraído ou comparado, de modo que um
+ * excesso exato representável nunca é distorcido e o total permanece
+ * independente da ordem de entrada.
  *
  * Toda SQL usa `bind` para valores de entrada; nenhum valor é concatenado no
  * texto da query. O recorte temporal é aplicado em memória sobre a data civil,
@@ -75,7 +77,7 @@ interface NormalizadaProjetada {
 
 interface GrupoExcesso {
   membros: number;
-  soma: number;
+  soma: bigint;
   menor: number | null;
   ilegivel: boolean;
 }
@@ -158,9 +160,31 @@ function exigirId(valor: unknown): string {
   return typeof valor === "string" ? valor : String(valor);
 }
 
+/** Limites seguros da conversão de um acumulado exato em centavos. */
+const MAX_CENTAVOS = BigInt(Number.MAX_SAFE_INTEGER);
+const MIN_CENTAVOS = BigInt(Number.MIN_SAFE_INTEGER);
+
 /**
- * Soma verificada: satura em `Number.MAX_SAFE_INTEGER` em vez de publicar um
- * total não seguro/arredondado.
+ * Publica um acumulado exato de centavos como `number`. A saturação ocorre
+ * apenas quando o valor FINAL não cabe em um inteiro seguro; acumulados
+ * intermediários permanecem exatos em `bigint` e nunca são saturados antes de
+ * uma subtração ou comparação.
+ */
+function publicarCentavos(exato: bigint): number {
+  if (exato > MAX_CENTAVOS) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+  if (exato < MIN_CENTAVOS) {
+    return Number.MIN_SAFE_INTEGER;
+  }
+  return Number(exato);
+}
+
+/**
+ * Soma verificada de dois centavos já publicados: satura em
+ * `Number.MAX_SAFE_INTEGER` em vez de publicar um total não seguro/arredondado.
+ * Utilitário público para uma soma pontual; as agregações internas usam
+ * `bigint` para não saturar valores intermediários.
  */
 export function somarCentavos(acumulado: number, parcela: number): number {
   const total = acumulado + parcela;
@@ -282,11 +306,11 @@ export function montarRelatorio(
   let guias = 0;
   let ok = 0;
   let pendentes = 0;
-  let valorRegistradoCentavos = 0;
-  let valorSemPendenciaCentavos = 0;
+  let valorRegistradoCentavos = 0n;
+  let valorSemPendenciaCentavos = 0n;
   let totalIncompleto = false;
-  let exposicaoEstruturadaCentavos = 0;
-  let exposicaoTextualDuplicidadeCentavos = 0;
+  let exposicaoEstruturadaCentavos = 0n;
+  let exposicaoTextualDuplicidadeCentavos = 0n;
   const porConvenio: Record<string, number> = {};
   const porUnidade: Record<string, number> = {};
   const referenciasTemporais = new Set<string>();
@@ -301,14 +325,14 @@ export function montarRelatorio(
     if (linha.assinaturaDuplicidade !== null) {
       let grupo = grupos.get(linha.assinaturaDuplicidade);
       if (grupo === undefined) {
-        grupo = { membros: 0, soma: 0, menor: null, ilegivel: false };
+        grupo = { membros: 0, soma: 0n, menor: null, ilegivel: false };
         grupos.set(linha.assinaturaDuplicidade, grupo);
       }
       grupo.membros += 1;
       if (linha.valorCentavos === null) {
         grupo.ilegivel = true;
       } else {
-        grupo.soma = somarCentavos(grupo.soma, linha.valorCentavos);
+        grupo.soma += BigInt(linha.valorCentavos);
         if (grupo.menor === null || linha.valorCentavos < grupo.menor) {
           grupo.menor = linha.valorCentavos;
         }
@@ -318,16 +342,13 @@ export function montarRelatorio(
     if (linha.valorCentavos === null) {
       totalIncompleto = true;
     } else {
-      valorRegistradoCentavos = somarCentavos(valorRegistradoCentavos, linha.valorCentavos);
+      valorRegistradoCentavos += BigInt(linha.valorCentavos);
     }
 
     if (linha.decisao === "OK") {
       ok += 1;
       if (linha.valorCentavos !== null) {
-        valorSemPendenciaCentavos = somarCentavos(
-          valorSemPendenciaCentavos,
-          linha.valorCentavos,
-        );
+        valorSemPendenciaCentavos += BigInt(linha.valorCentavos);
       }
       continue;
     }
@@ -341,20 +362,14 @@ export function montarRelatorio(
       const estruturada =
         codigos !== undefined && [...codigos].some((codigo) => !CODIGOS_TEXTUAIS_DUPLICIDADE.has(codigo));
       if (estruturada) {
-        exposicaoEstruturadaCentavos = somarCentavos(
-          exposicaoEstruturadaCentavos,
-          linha.valorCentavos,
-        );
+        exposicaoEstruturadaCentavos += BigInt(linha.valorCentavos);
       } else {
-        exposicaoTextualDuplicidadeCentavos = somarCentavos(
-          exposicaoTextualDuplicidadeCentavos,
-          linha.valorCentavos,
-        );
+        exposicaoTextualDuplicidadeCentavos += BigInt(linha.valorCentavos);
       }
     }
   }
 
-  let possivelExcessoCentavos = 0;
+  let possivelExcessoCentavos = 0n;
   let possivelExcessoIncompleto = false;
   for (const grupo of grupos.values()) {
     if (grupo.membros < 2) {
@@ -364,7 +379,7 @@ export function montarRelatorio(
       possivelExcessoIncompleto = true;
       continue;
     }
-    possivelExcessoCentavos = somarCentavos(possivelExcessoCentavos, grupo.soma - grupo.menor);
+    possivelExcessoCentavos += grupo.soma - BigInt(grupo.menor);
   }
 
   return {
@@ -372,17 +387,18 @@ export function montarRelatorio(
     ok,
     pendentes,
     falhasProcessamento,
-    valorRegistradoCentavos,
+    valorRegistradoCentavos: publicarCentavos(valorRegistradoCentavos),
     totalIncompleto,
-    exposicaoCentavos: somarCentavos(
-      exposicaoEstruturadaCentavos,
+    exposicaoCentavos: publicarCentavos(
+      exposicaoEstruturadaCentavos + exposicaoTextualDuplicidadeCentavos,
+    ),
+    exposicaoEstruturadaCentavos: publicarCentavos(exposicaoEstruturadaCentavos),
+    exposicaoTextualDuplicidadeCentavos: publicarCentavos(
       exposicaoTextualDuplicidadeCentavos,
     ),
-    exposicaoEstruturadaCentavos,
-    exposicaoTextualDuplicidadeCentavos,
-    possivelExcessoCentavos,
+    possivelExcessoCentavos: publicarCentavos(possivelExcessoCentavos),
     possivelExcessoIncompleto,
-    valorSemPendenciaCentavos,
+    valorSemPendenciaCentavos: publicarCentavos(valorSemPendenciaCentavos),
     porCodigo,
     porConvenio,
     porUnidade,
