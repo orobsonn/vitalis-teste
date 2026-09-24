@@ -265,22 +265,26 @@ export function montarRelatorio(
   linhas: readonly LinhaRecorte[],
   findings: readonly FindingRecorte[],
   falhasProcessamento: number,
+  lotesProcessando: number,
   periodo: { de: string | null; ate: string | null },
   referencia: string | null,
 ): RelatorioGuias {
   const validacoesDoRecorte = new Set(linhas.map((linha) => linha.validacaoId));
 
   const pendenciasPorValidacao = new Map<string, Set<string>>();
-  const porCodigo: Record<string, ContagemCodigo> = {};
+  // Acumula em `Map` para que chaves colidentes (`__proto__`, `constructor`,
+  // `toString`) sejam chaves próprias. `Object.fromEntries` usa
+  // CreateDataProperty e preserva `__proto__` como own key na serialização.
+  const porCodigo = new Map<string, ContagemCodigo>();
   const guiasPorCodigo = new Map<string, Set<string>>();
 
   for (const finding of findings) {
     if (!validacoesDoRecorte.has(finding.validacaoId)) {
       continue;
     }
-    const contagem = porCodigo[finding.codigo] ?? { guias: 0, ocorrencias: 0 };
+    const contagem = porCodigo.get(finding.codigo) ?? { guias: 0, ocorrencias: 0 };
     contagem.ocorrencias += 1;
-    porCodigo[finding.codigo] = contagem;
+    porCodigo.set(finding.codigo, contagem);
     let conjunto = guiasPorCodigo.get(finding.codigo);
     if (conjunto === undefined) {
       conjunto = new Set<string>();
@@ -297,7 +301,7 @@ export function montarRelatorio(
     }
   }
   for (const [codigo, conjunto] of guiasPorCodigo) {
-    const contagem = porCodigo[codigo];
+    const contagem = porCodigo.get(codigo);
     if (contagem !== undefined) {
       contagem.guias = conjunto.size;
     }
@@ -311,8 +315,8 @@ export function montarRelatorio(
   let totalIncompleto = false;
   let exposicaoEstruturadaCentavos = 0n;
   let exposicaoTextualDuplicidadeCentavos = 0n;
-  const porConvenio: Record<string, number> = {};
-  const porUnidade: Record<string, number> = {};
+  const porConvenio = new Map<string, number>();
+  const porUnidade = new Map<string, number>();
   const referenciasTemporais = new Set<string>();
   const grupos = new Map<string, GrupoExcesso>();
 
@@ -354,8 +358,8 @@ export function montarRelatorio(
     }
 
     pendentes += 1;
-    porConvenio[linha.convenio] = (porConvenio[linha.convenio] ?? 0) + 1;
-    porUnidade[linha.unidade] = (porUnidade[linha.unidade] ?? 0) + 1;
+    porConvenio.set(linha.convenio, (porConvenio.get(linha.convenio) ?? 0) + 1);
+    porUnidade.set(linha.unidade, (porUnidade.get(linha.unidade) ?? 0) + 1);
 
     if (linha.valorCentavos !== null) {
       const codigos = pendenciasPorValidacao.get(linha.validacaoId);
@@ -387,6 +391,7 @@ export function montarRelatorio(
     ok,
     pendentes,
     falhasProcessamento,
+    lotesProcessando,
     valorRegistradoCentavos: publicarCentavos(valorRegistradoCentavos),
     totalIncompleto,
     exposicaoCentavos: publicarCentavos(
@@ -399,9 +404,9 @@ export function montarRelatorio(
     possivelExcessoCentavos: publicarCentavos(possivelExcessoCentavos),
     possivelExcessoIncompleto,
     valorSemPendenciaCentavos: publicarCentavos(valorSemPendenciaCentavos),
-    porCodigo,
-    porConvenio,
-    porUnidade,
+    porCodigo: Object.fromEntries(porCodigo),
+    porConvenio: Object.fromEntries(porConvenio),
+    porUnidade: Object.fromEntries(porUnidade),
     referenciasTemporais: [...referenciasTemporais].sort(),
     periodo,
     referencia,
