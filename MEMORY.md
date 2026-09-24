@@ -11,3 +11,10 @@
 - CSV parsing preserves physical-row accounting: blank rows between data are cardinality failures, final terminators do not create rows, invalid headers fail each physical row, and recovery reparses only the remainder of the current record.
 - Monetary aggregation saturates independently of operand order at `Number.MAX_SAFE_INTEGER`, records `soma_de_valores_nao_verificavel`, never treats rounded totals as valid, and deduplicates propagated global limitations.
 - Motor checks remain independently gated by their contractual preconditions; exercise-deadline policy is emitted once with calendar-day counting. Worker pathname canonicalization fails closed for encoded backslashes, controls, lexical/resolved namespace escapes, tolerant-decoding abuse, and paths over the analysis budget.
+
+
+## SQLite/D1 persistence and import lessons
+
+- `node:sqlite` on Node 22 and real D1 normalize an unpaired UTF-16 surrogate to U+FFFD when writing or comparing TEXT, so identity hashes or lookups over raw text can collide (an isolated high surrogate and U+FFFD). The adopted mitigation is injective canonical encoding for composite digests plus fail-closed boundary validation. `codificarUtf8` in `src/shared/sha256.ts` follows TextEncoder replacement behavior.
+- Counting maps indexed by external text must preserve own keys: names such as `__proto__` and `toString` can collide with the prototype.
+- The ownership fence/CAS chains `changes()=1` inside a single `DB.batch`, verified with the `node:sqlite` adapter rather than the D1 service. The mutex in `src/application/imports/serializacao.ts` is process-local.
