@@ -96,19 +96,21 @@ export function extrairOverlay(motivos: readonly Motivo[]): Motivo | null {
 /** Conteúdo canônico de uma validação, usado no id determinístico (J10). */
 export function conteudoDaValidacao(conteudo: ConteudoValidacao): string {
   // Injetivo sobre os 12 itens: o array JSON canônico preserva a ordem e escapa
-  // qualquer NUL interno que um join textual tornaria ambíguo.
+  // qualquer NUL interno que um join textual tornaria ambíguo. Os campos
+  // anuláveis são serializados como `null` (ausência explícita), que permanece
+  // distinto de `""` — colapsar os dois tornaria o conteúdo não injetivo.
   return JSON.stringify([
     conteudo.decisao,
     conteudo.checagemTextual,
-    conteudo.referenciaTemporal ?? "",
+    conteudo.referenciaTemporal,
     conteudo.regrasVersao,
     conteudo.regrasHash,
     conteudo.rulesetId,
-    conteudo.inferenciaModelo ?? "",
-    conteudo.inferenciaPromptVersao ?? "",
+    conteudo.inferenciaModelo,
+    conteudo.inferenciaPromptVersao,
     JSON.stringify(conteudo.orientacoes),
     JSON.stringify(conteudo.limitacoes),
-    conteudo.extracaoId ?? "",
+    conteudo.extracaoId,
     conteudo.processadoEm,
   ]);
 }
