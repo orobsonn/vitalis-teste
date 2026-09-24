@@ -10,7 +10,7 @@
  */
 
 import type { Motivo, SeveridadeMotivo } from "../../domain";
-import { lerEstadoGlobal, reservarVersaoGlobal, traduzirConflitoUnicidade } from "../../storage";
+import { lerEstadoGlobal, traduzirConflitoUnicidade } from "../../storage";
 import { sha256Hex } from "../../shared/sha256";
 import { CODIGO_DUPLICIDADE, conteudoDaValidacao, overlayDuplicidade } from "./conferencia";
 import type { OpcoesDuplicidade, ResultadoDuplicidade } from "./contratos";
@@ -179,13 +179,23 @@ function overlayPersistido(validacao: ValidacaoCorrente | null): Motivo | null {
   };
 }
 
+function mesmosCampos(persistido: readonly string[], desejado: readonly string[]): boolean {
+  return (
+    persistido.length === desejado.length &&
+    persistido.every((campo, indice) => campo === desejado[indice])
+  );
+}
+
 function mesmoOverlay(persistido: Motivo | null, desejado: Motivo | null): boolean {
   if (persistido === null || desejado === null) {
     return persistido === null && desejado === null;
   }
   return (
-    persistido.evidencia === desejado.evidencia &&
+    persistido.codigo === desejado.codigo &&
+    persistido.severidade === desejado.severidade &&
+    mesmosCampos(persistido.campos, desejado.campos) &&
     persistido.regra === desejado.regra &&
+    persistido.evidencia === desejado.evidencia &&
     persistido.orientacao === desejado.orientacao
   );
 }
@@ -320,12 +330,21 @@ export async function reavaliarDuplicidade(
     }
 
     const versaoLida = await lerEstadoGlobal(db, CHAVE_DUPLICIDADE);
-    const reserva = await reservarVersaoGlobal(db, { chave: CHAVE_DUPLICIDADE, versaoLida });
-    if (!reserva.aplicado) {
-      continue;
-    }
+    const reserva =
+      versaoLida === null
+        ? db
+            .prepare(
+              "INSERT INTO estado_global (chave, versao) SELECT ?, 1 WHERE NOT EXISTS (SELECT 1 FROM estado_global WHERE chave = ?)",
+            )
+            .bind(CHAVE_DUPLICIDADE, CHAVE_DUPLICIDADE)
+        : db
+            .prepare("UPDATE estado_global SET versao = versao + 1 WHERE chave = ? AND versao = ?")
+            .bind(CHAVE_DUPLICIDADE, versaoLida);
 
-    const statements = construirStatements(db, mudancas, desejado, opcoes.agora);
+    // J14: a reserva CAS é o PRIMEIRO statement do lote de mutação, de modo que
+    // um lote falho não deixe o contador incrementado sem o overlay e uma reserva
+    // perdida não aplique silenciosamente um overlay obsoleto.
+    const statements = [reserva, ...construirStatements(db, mudancas, desejado, opcoes.agora)];
     try {
       await db.batch(statements);
     } catch (erro) {

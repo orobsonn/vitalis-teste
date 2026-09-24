@@ -124,6 +124,12 @@ async function construirCriacao(
   opcoes: OpcoesPersistencia,
   conteudoHash: string,
 ): Promise<ResultadoPreparo> {
+  // J1: a identidade `id_guia` nunca é vazia; o schema aceita string vazia por
+  // `NOT NULL`, então a checagem que o storage faz em `inserirGuia` precisa ser
+  // aplicada aqui antes de preparar a inserção da guia.
+  if (typeof opcoes.guia.id !== "string" || opcoes.guia.id.trim() === "") {
+    throw new TypeError("id_guia deve ser uma string não vazia");
+  }
   const guarda = opcoes.guarda;
   const guiaPersistida = await lerGuia(db, opcoes.guia.id);
   const guiaId = guiaPersistida?.id ?? sha256Hex(`guia\u0000${opcoes.guia.id}`);
