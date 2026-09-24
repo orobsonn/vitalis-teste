@@ -2,7 +2,9 @@
  * Relatório de atividade semanal: guias com revisão e validação vigentes cuja
  * `data_lancamento` civil cai em `[de, ate]` (inclusivo). `processado_em` é
  * auditoria técnica e nunca filtra métrica. `falhasProcessamento` conta apenas
- * linhas `FALHOU` de lotes iniciados dentro da janela. Somente leitura.
+ * linhas `FALHOU` de lotes iniciados dentro da janela; `lotesProcessando` conta
+ * todo lote `PROCESSANDO`, sem corte temporal (J20), pois ainda pode escrever no
+ * recorte. Somente leitura.
  */
 
 import {
@@ -32,24 +34,15 @@ async function contarFalhasDaJanela(
 }
 
 /**
- * Lotes ainda em PROCESSANDO iniciados dentro da janela (J20): expõe o estado
- * intermediário usando a mesma regra temporal de J6 para falhas. Somente
- * leitura; valores sempre por `bind`.
+ * Lotes ainda em PROCESSANDO (J20): qualquer lote em andamento é observável,
+ * independente de `iniciado_em`, pois ele ainda pode escrever guias cuja
+ * `data_lancamento` cai no recorte. Assim o consumidor não trata estado
+ * intermediário como métrica final. Somente leitura; valores por `bind`.
  */
-async function contarLotesProcessandoDaJanela(
-  db: D1Database,
-  de: string,
-  ate: string,
-): Promise<number> {
+async function contarLotesProcessando(db: D1Database): Promise<number> {
   const linha = await db
-    .prepare(
-      `SELECT COUNT(*) AS total
-         FROM imports
-        WHERE status = ?
-          AND substr(iniciado_em, 1, 10) >= ?
-          AND substr(iniciado_em, 1, 10) <= ?`,
-    )
-    .bind("PROCESSANDO", de, ate)
+    .prepare("SELECT COUNT(*) AS total FROM imports WHERE status = ?")
+    .bind("PROCESSANDO")
     .first<{ total: number }>();
   return linha === null || linha === undefined ? 0 : Number(linha.total);
 }
@@ -62,7 +55,7 @@ export async function relatorioAtividade(
   const linhas = await carregarLinhas(db, recorte);
   const findings = await carregarFindings(db);
   const falhasProcessamento = await contarFalhasDaJanela(db, opcoes.de, opcoes.ate);
-  const lotesProcessando = await contarLotesProcessandoDaJanela(db, opcoes.de, opcoes.ate);
+  const lotesProcessando = await contarLotesProcessando(db);
   return montarRelatorio(
     linhas,
     findings,
