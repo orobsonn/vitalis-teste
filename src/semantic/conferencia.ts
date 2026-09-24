@@ -1275,6 +1275,18 @@ type ResultadoTentativa =
   | { tipo: "timeout" }
   | { tipo: "erro"; erro: unknown };
 
+/**
+ * Capacidade `extrair` capturada UMA única vez do interpretador configurado
+ * (§3.6): a MESMA referência validada sustenta a presença da configuração, o
+ * aceite do hit de cache e TODAS as tentativas — nenhum vazio de
+ * validação/uso (a propriedade nunca é relida entre a validação e a chamada).
+ * O wrapper de invocação é SEMPRE LOCALMENTE POSSUÍDO (`Reflect.apply`), de
+ * modo que um callable/`Proxy` não confiável com `bind` próprio que devolva
+ * `{}`/`undefined` não forja uma capacidade presente nem libera um hit de
+ * cache sem a inferência real.
+ */
+type ExtrairObservacao = (entrada: EntradaObservacao) => Promise<RespostaBruta>;
+
 type ResultadoCorrida<T> =
   | { tipo: "ok"; valor: T }
   | { tipo: "timeout" }
@@ -1337,12 +1349,12 @@ function correrComTimeout<T>(
  * timeout vence a corrida e a promessa em voo é descartada sem sobreposição.
  */
 async function tentarExtracao(
-  interpretador: InterpretadorObservacao,
+  extrair: ExtrairObservacao,
   entrada: EntradaObservacao,
   timeoutMs: number,
 ): Promise<ResultadoTentativa> {
   const corrida = await correrComTimeout<RespostaBruta>(
-    () => interpretador.extrair(entrada),
+    () => extrair(entrada),
     timeoutMs,
   );
   if (corrida.tipo === "ok") {
@@ -1570,7 +1582,9 @@ export async function conferirGuia(
     );
   }
 
-  // 5. Cache semântico: hit válido entrega `completa` sem modelo nem quota.
+  // 5. Cache semântico: a LEITURA do KV permanece permitida mesmo sem
+  // configuração; o ACEITE do hit, porém, exige o interpretador efetivo
+  // (etapa 6) — um cache pré-existente não decide `completa`/`OK` sozinho.
   // Cada operação de cache (leitura E gravação) corre sob o MESMO limite
   // temporal configurável, com o mesmo mecanismo de corrida por `setTimeout`
   // das tentativas: um KV que aceita a chamada e nunca resolve degrada a
@@ -1581,8 +1595,8 @@ export async function conferirGuia(
   // evento emitido. Nada aqui trava nem rejeita a conferência.
   const timeoutCacheMs = normalizarTimeout(opcoes.timeoutCacheMs);
   const cache = opcoes.cache ?? null;
+  let sinaisCache: SinaisObservacao | null = null;
   if (cache) {
-    let sinais: SinaisObservacao | null = null;
     const leitura = await correrComTimeout<SinaisObservacao | null>(
       () => cache.ler(entrada, contexto),
       timeoutCacheMs,
@@ -1600,38 +1614,71 @@ export async function conferirGuia(
       // propriedade escapar.
       try {
         const validacaoCache = validarExtracao(leitura.valor, entrada.observacao_recepcao);
-        sinais = validacaoCache.ok ? validacaoCache.sinais : null;
+        sinaisCache = validacaoCache.ok ? validacaoCache.sinais : null;
       } catch {
-        sinais = null;
+        sinaisCache = null;
       }
     } else {
-      sinais = null;
       emitir(registrador, "cache_leitura_falhou", {
         estado: "incompleta",
         codigo: "cache_indisponivel",
         cache_prefixo: montarChaveCacheSemantica(entrada, contexto).prefixo,
       });
     }
-    if (sinais) {
-      notificarObservador(observador, (o) => o.registrarCacheHit());
-      return concluir(
-        {
-          estado: "completa",
-          sinais,
-          modelo: contexto.modelo,
-          prompt_versao: contexto.promptVersao,
-        },
-        { estado: "completa" },
-      );
-    }
   }
 
-  // 6. Configuração ausente: sem tentativa e sem identidade de inferência.
-  const interpretador = opcoes.interpretador ?? null;
-  if (!interpretador) {
+  // 6. Configuração ausente OU MALFORMADA: sem tentativa e sem identidade de
+  // inferência. Valida a CAPACIDADE do interpretador EFETIVO ANTES do ACEITE do
+  // hit (§3.6): a leitura do cache é permitida, mas um hit VÁLIDO não pode ser
+  // aceito como decisão enquanto a configuração que sustenta a inferência não
+  // estiver presente e utilizável — senão um cache pré-existente liberaria uma
+  // observação não interpretada. A presença por truthiness não basta: um valor
+  // truthy mas runtime-inválido (`{}`, `{ extrair: 1 }`, `true`, `1`,
+  // `"invalid"`) passaria pela checagem antiga e, com um hit válido, devolveria
+  // `completa` sem NUNCA acessar `extrair`. Por isso a CAPACIDADE é capturada
+  // sob acesso guardado: exige objeto/função não nulo cujo `extrair` seja
+  // CALLABLE, com a leitura da propriedade dentro de `try/catch` — um getter
+  // hostil ou um `Proxy` que lance também fecham fechada. A capacidade NÃO
+  // CONFIÁVEL nunca é consultada por `bind`: a invocação é feita por um wrapper
+  // LOCALMENTE POSSUÍDO com `Reflect.apply`, então um callable/`Proxy` com
+  // `bind` próprio devolvendo `{}`/`undefined` não forja presença nem libera um
+  // hit de cache sem a inferência real. A MESMA função capturada aqui é reusada
+  // nas tentativas (sem reler `extrair`/`bind`, sem vão de validação/uso) e o
+  // resultado precisa ser uma FUNÇÃO antes de aceitar qualquer hit.
+  // Configuração malformada segue EXATAMENTE o mesmo caminho da
+  // ausente/`null`: `incompleta`, `inferencia_textual` nula, motivos
+  // determinísticos preservados e nenhuma gravação/alteração de cache.
+  const candidato = opcoes.interpretador ?? null;
+  let extrair: ExtrairObservacao | null = null;
+  if (candidato !== null && (typeof candidato === "object" || typeof candidato === "function")) {
+    try {
+      const metodo: unknown = (candidato as { readonly extrair?: unknown }).extrair;
+      if (typeof metodo === "function") {
+        const alvo = metodo as ExtrairObservacao;
+        extrair = (entrada: EntradaObservacao) => Reflect.apply(alvo, candidato, [entrada]);
+      }
+    } catch {
+      extrair = null;
+    }
+  }
+  if (typeof extrair !== "function") {
     return concluir(
       { estado: "incompleta", sinais: null, modelo: null, prompt_versao: null },
       { estado: "incompleta" },
+    );
+  }
+
+  // 7. Hit válido do cache: entrega `completa` sem modelo nem quota.
+  if (sinaisCache) {
+    notificarObservador(observador, (o) => o.registrarCacheHit());
+    return concluir(
+      {
+        estado: "completa",
+        sinais: sinaisCache,
+        modelo: contexto.modelo,
+        prompt_versao: contexto.promptVersao,
+      },
+      { estado: "completa" },
     );
   }
 
@@ -1641,7 +1688,7 @@ export async function conferirGuia(
   // do isolate (nunca uma nova instância por chamada).
   const quota = opcoes.quota ?? QUOTA_PADRAO;
 
-  // 7. Tentativas estritamente sequenciais, com no máximo uma retentativa.
+  // 8. Tentativas estritamente sequenciais, com no máximo uma retentativa.
   for (;;) {
     // Quota consultada sob guarda: um `consumir()` que lance (por exemplo, um
     // observador hostil injetado na quota) é tratado como recusa fechada e cai
@@ -1701,7 +1748,7 @@ export async function conferirGuia(
     tentativas += 1;
     emitir(registrador, "extracao_iniciada", { tentativas });
 
-    const tentativa = await tentarExtracao(interpretador, entrada, timeoutMs);
+    const tentativa = await tentarExtracao(extrair, entrada, timeoutMs);
 
     if (tentativa.tipo === "ok") {
       // Envelope NÃO CONFIÁVEL: snapshot guardado ANTES de qualquer acesso a

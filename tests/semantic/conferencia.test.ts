@@ -11,7 +11,10 @@
 //                                             evidência/quota/limite → PENDENTE/
 //                                             `incompleta` com achados preservados
 //                                             e `inferencia_textual` coerente
-//                                             (#ac-12, #ac-17, #ac-18, #ac-22, §3.6);
+//                                             (#ac-12, #ac-17, #ac-18, #ac-22, §3.6).
+//                                             A configuração ausente fecha
+//                                             fechada mesmo diante de um hit de
+//                                             cache válido (item 22);
 //   lt-retentativa-timeout-e-limites        — 429/5xx retenta UMA vez de forma
 //                                             sequencial (duas tentativas, duas
 //                                             quotas); timeout local, configuração,
@@ -311,6 +314,20 @@
 //     foram realinhados para guias COERENTES e um novo `describe` cobre as
 //     variantes divergente/ausente/acessor para as três células (zero cache,
 //     zero quota e zero chamadas, resultado limitado).
+// 22. Configuração ausente fecha INDEPENDENTE de hit de cache válido
+//     (regressão adversarial HIGH): a orquestração consultava o cache ANTES de
+//     validar a presença do interpretador, então um hit pré-existente e válido
+//     com `interpretador` ausente/`null` devolvia `completa` — e podia até
+//     decidir `OK` — em vez de falhar fechado. O contrato (§3.6 e
+//     "configuração, erro desconhecido, schema/evidência/limite e quota falham
+//     fechados") exige `PENDENTE`/`incompleta` quando a configuração está
+//     ausente, mesmo com um cache válido. A correção aprovada valida o
+//     interpretador efetivo ANTES de ACEITAR o hit: a leitura é permitida (o
+//     valor é lido e o hit recusado), mas não há chamada, quota, gravação nem
+//     alteração do valor em cache; a precedência do vazio (§3.6) é preservada
+//     (observação vazia após `trim` segue `nao_aplicavel` com zero
+//     cache/quota/modelo mesmo sem configuração) e o caminho de hit válido COM
+//     interpretador presente permanece `completa` sem chamar o modelo.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import regrasRaw from "../../docs/fontes/regras_convenio.json?raw";
@@ -978,6 +995,52 @@ describe("lt-conferencia-vazio-cache-e-falhas", () => {
     expect(observador.chamadas).toBe(0);
     expect(observador.cacheHits).toBe(1);
     expect(quota.consumidas).toBe(0);
+  });
+
+  it("hit de cache válido sem interpretador configurado falha fechada sem chamar o classificador", async () => {
+    // Regressão item 22: a configuração AUSENTE falha fechada
+    // INDEPENDENTEMENTE de um hit de cache válido. O valor pré-existente é
+    // lido (a leitura é permitida), mas o hit NÃO pode ser aceito como decisão
+    // enquanto a presença do interpretador não for validada — senão um cache
+    // pré-existente liberaria uma observação não interpretada.
+    const api = exigirSemantica();
+
+    const guia = guiaSintetica({ observacao_recepcao: TEXTO_PARTICULAR });
+    const catalogo = catalogoValido();
+    const entrada = entradaDe(guia);
+    const valorPre = JSON.stringify(SINAIS_PARTICULAR);
+    const kv = criarKvFake({ [chaveDe(api, entrada)]: valorPre });
+    const quota = criarQuotaFake();
+    const observador = criarObservadorFake();
+    // O fake NÃO é injetado (configuração ausente): qualquer chamada registrada
+    // aqui seria uma violação direta do contrato.
+    const interpretador = criarInterpretadorFake([]);
+
+    const resultado = await api.conferirGuia(guia, catalogo, {
+      interpretador: null,
+      cache: api.criarAdaptadorCacheSemantico(kv.kv),
+      quota: quota.quota,
+      observador: observador.observador,
+    });
+
+    expect(resultado.decisao).toBe("PENDENTE");
+    expect(resultado.checagem_textual).toBe("incompleta");
+    expect(codigos(resultado)).toContain("checagem_textual_incompleta");
+    expect(resultado.limitacoes).toContain("checagem_textual_incompleta");
+    expect(resultado.inferencia_textual).toBeNull();
+
+    // Zero efeitos faturáveis: a leitura é permitida (o hit foi lido e
+    // recusado), mas nenhuma gravação, tentativa de gravação, chamada ao
+    // classificador ou consumo de quota.
+    expect(interpretador.chamadas).toHaveLength(0);
+    expect(kv.leituras).toBe(1);
+    expect(kv.gravacoes).toBe(0);
+    expect(kv.tentativasGravacao).toBe(0);
+    expect(observador.chamadas).toBe(0);
+    expect(quota.consumidas).toBe(0);
+    // O valor pré-existente permanece BYTE-IDÊNTICO: o hit recusado nunca
+    // altera o cache.
+    expect(kv.armazem.get(chaveDe(api, entrada))).toBe(valorPre);
   });
 
   it("miss válido faz uma chamada, grava os sinais validados e produz completa", async () => {
