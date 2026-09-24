@@ -561,6 +561,36 @@ function envolverDbContandoMutacoes(db: D1Database, contador: ContadorPreparos):
 }
 
 // ---------------------------------------------------------------------------
+// Contagem TOTAL de `db.prepare` (SELECT inclusive): a rejeição de fronteira
+// deve anteceder a leitura, não só a mutação. `SELECT` também prepara.
+// ---------------------------------------------------------------------------
+
+interface ContadorPreparosTotais {
+  preparos: number;
+}
+
+function envolverDbContandoPreparos(
+  db: D1Database,
+  contador: ContadorPreparosTotais,
+): D1Database {
+  const alvo = db as unknown as object;
+  return new Proxy(alvo, {
+    get(target, prop, receiver) {
+      if (prop === "prepare") {
+        return (sql: string) => {
+          contador.preparos += 1;
+          return (target as D1Database).prepare(sql);
+        };
+      }
+      const valor = Reflect.get(target, prop, receiver);
+      return typeof valor === "function"
+        ? (valor as (...args: unknown[]) => unknown).bind(target)
+        : valor;
+    },
+  }) as unknown as D1Database;
+}
+
+// ---------------------------------------------------------------------------
 // Casos
 // ---------------------------------------------------------------------------
 
@@ -997,51 +1027,135 @@ describe("regressões da revisão final: centavos, hash injetivo e importId", ()
     expect(await contar(db, "semantic_extractions")).toBe(2);
   });
 
-  it("id interno da guia é injetivo: surrogate isolado não colide com U+FFFD (#ac-3)", async () => {
+  it("surrogate isolado em id_guia é rejeitado na fronteira (#ac-3)", async () => {
     const api = exigirApi();
     const db = await criarBanco();
     const regras = carregarRegras();
     await semearImport(db, "imp-1", "chave-imp");
     await semearRuleset(db, "rs-1", hashCatalogo(CATALOGO_JSON));
 
-    const salvoA = await api.registrarGuia(db, {
-      guia: normalizar({ id_guia: "\uD800" }),
+    // 1. Guia bem-formada EXISTENTE com `id_guia` U+FFFD.
+    const salvo = await api.registrarGuia(db, {
+      guia: normalizar({ id_guia: "\uFFFD" }),
       conferencia: conferenciaA(regras),
       importId: "imp-1",
       regras,
       agora: AGORA,
     });
-    expect(salvoA.tipo).toBe("criada");
+    expect(salvo.tipo).toBe("criada");
+    const idExistente = await idInternoDaGuia(db, "\uFFFD");
+    expect(idExistente).not.toBeNull();
+    const revisoesAntes = await revisoesDaGuia(db, idExistente!);
+    expect(revisoesAntes).toHaveLength(1);
+    expect(revisoesAntes[0].vigente).toBe(1);
 
-    // O adapter node:sqlite normaliza surrogate isolado para U+FFFD ao gravar
-    // `id_guia`, então o id interno de A é lido por U+FFFD.
-    const H = await idInternoDaGuia(db, "\uFFFD");
-    expect(H).not.toBeNull();
+    // 2. Tentativa malformada com o MESMO id lógico após a normalização do
+    // adapter node:sqlite (`\uD800` → U+FFFD): ela colidiria com a guia já
+    // existente. A política fail-closed rejeita o surrogate isolado ANTES de
+    // qualquer busca/escrita: NENHUMA chamada a `db.prepare` (SELECT incluso)
+    // pode ocorrer na tentativa malformada.
+    const contador: ContadorPreparosTotais = { preparos: 0 };
+    const dbEnvolvido = envolverDbContandoPreparos(db, contador);
+    let erro: unknown = null;
+    try {
+      await api.registrarGuia(dbEnvolvido, {
+        guia: normalizar({ id_guia: "\uD800" }),
+        conferencia: conferenciaA(regras),
+        importId: "imp-1",
+        regras,
+        agora: DEPOIS,
+      });
+    } catch (capturado) {
+      erro = capturado;
+    }
+    expect(erro).toBeInstanceOf(TypeError);
+    expect(contador.preparos).toBe(0);
 
-    // Renomeia a coluna `id_guia` de A (normalização do adapter) para isolar a
-    // colisão do HASH do id interno: sem nenhuma guia com id_guia U+FFFD,
-    // `lerGuia("\uFFFD")` devolve null e a única causa de B reusar o id H é o
-    // digest ambíguo de `guia\u0000id`.
-    await db
-      .prepare("UPDATE guides SET id_guia = ? WHERE id = ?")
-      .bind("G-2608-8100", H)
-      .run();
-    expect(await idInternoDaGuia(db, "\uFFFD")).toBeNull();
+    // 3. A guia existente permanece intacta: mesmo id interno, exatamente uma
+    // revisão vigente e nenhuma escrita de revisão nova (não foi reutilizada
+    // nem alterada pela tentativa malformada).
+    expect(await contar(db, "guides")).toBe(1);
+    expect(await idInternoDaGuia(db, "\uFFFD")).toBe(idExistente);
+    const revisoesDepois = await revisoesDaGuia(db, idExistente!);
+    expect(revisoesDepois).toHaveLength(1);
+    expect(revisoesDepois[0].vigente).toBe(1);
+    expect(await contar(db, "guide_revisions")).toBe(1);
+  });
 
-    const salvoB = await api.registrarGuia(db, {
-      guia: normalizar({ id_guia: "\uFFFD" }),
-      conferencia: conferenciaA(regras),
-      importId: "imp-1",
-      regras,
-      agora: DEPOIS,
-    });
-    expect(salvoB.tipo).toBe("criada");
+  it("surrogate isolado na chave de extração é rejeitado sem reutilizar extração (#ac-4)", async () => {
+    const api = exigirApi();
+    const regras = carregarRegras();
+    const hash = hashCatalogo(CATALOGO_JSON);
 
-    // B é conteúdo distinto: cria guia NOVA com id interno diferente de H,
-    // nunca anexa a revisão à guia A.
-    expect(await contar(db, "guides")).toBe(2);
-    const idB = await idInternoDaGuia(db, "\uFFFD");
-    expect(idB).not.toBeNull();
-    expect(idB).not.toBe(H);
+    // Os TRÊS componentes da chave semântica, um por iteração. A tripla
+    // bem-formada usa U+FFFD no componente alvo; a malformada troca SÓ esse
+    // componente por um surrogate isolado que o adapter normalizaria para
+    // U+FFFD. Se a fronteira aceitasse, a busca pela tripla reutilizaria
+    // silenciosamente a extração já persistida e/ou criaria guia nova.
+    const triplas: Array<{
+      componente: string;
+      bemFormada: Pick<
+        ExtracaoSemanticaPersistivel,
+        "observacaoHash" | "modelo" | "promptVersao"
+      >;
+      malformada: Pick<
+        ExtracaoSemanticaPersistivel,
+        "observacaoHash" | "modelo" | "promptVersao"
+      >;
+    }> = [
+      {
+        componente: "observacaoHash",
+        bemFormada: { observacaoHash: "\uFFFD", modelo: "p", promptVersao: "p" },
+        malformada: { observacaoHash: "\uD800", modelo: "p", promptVersao: "p" },
+      },
+      {
+        componente: "modelo",
+        bemFormada: { observacaoHash: "H", modelo: "\uFFFD", promptVersao: "p" },
+        malformada: { observacaoHash: "H", modelo: "\uD800", promptVersao: "p" },
+      },
+      {
+        componente: "promptVersao",
+        bemFormada: { observacaoHash: "H", modelo: "p", promptVersao: "\uFFFD" },
+        malformada: { observacaoHash: "H", modelo: "p", promptVersao: "\uD800" },
+      },
+    ];
+
+    for (const { componente, bemFormada, malformada } of triplas) {
+      const db = await criarBanco();
+      await semearImport(db, "imp-1", "chave-imp");
+      await semearRuleset(db, "rs-1", hash);
+
+      // X grava com o componente bem-formado U+FFFD e os demais bem-formados.
+      const resultadoX = await api.registrarGuia(db, {
+        guia: normalizar({ id_guia: `G-2608-73-${componente}` }),
+        conferencia: conferenciaCom(regras, bemFormada),
+        idempotencyKey: `K-SUR-BEM-${componente}`,
+        importId: "imp-1",
+        regras,
+        agora: AGORA,
+      });
+      expect(resultadoX.tipo).toBe("criada");
+      expect(await contar(db, "semantic_extractions")).toBe(1);
+      expect(await contar(db, "guides")).toBe(1);
+
+      // Y usa o surrogate isolado nesse mesmo componente: a fronteira rejeita
+      // sem reutilizar a extração de X nem criar guia nova.
+      let erroY: unknown = null;
+      try {
+        await api.registrarGuia(db, {
+          guia: normalizar({ id_guia: `G-2608-74-${componente}` }),
+          conferencia: conferenciaCom(regras, malformada),
+          idempotencyKey: `K-SUR-MAL-${componente}`,
+          importId: "imp-1",
+          regras,
+          agora: DEPOIS,
+        });
+      } catch (capturado) {
+        erroY = capturado;
+      }
+      expect(erroY).toBeInstanceOf(TypeError);
+      expect(await contar(db, "semantic_extractions")).toBe(1);
+      expect(await contar(db, "guides")).toBe(1);
+    }
   });
 });
