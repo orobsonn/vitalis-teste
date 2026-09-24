@@ -229,6 +229,34 @@ function conferenciaB(regras: Catalogo): ConferenciaPersistivel {
   };
 }
 
+// Conferência neutra (decisão OK, sem motivos) com uma extração cujo id
+// determinístico é justamente o alvo das regressões de digest ambíguo.
+function conferenciaCom(
+  regras: Catalogo,
+  extracao: Pick<ExtracaoSemanticaPersistivel, "observacaoHash" | "modelo" | "promptVersao">,
+): ConferenciaPersistivel {
+  return {
+    resultado: {
+      decisao: "OK",
+      motivos: [],
+      orientacoes: [],
+      limitacoes: [],
+      checagem_textual: "nao_aplicavel",
+      referencia_temporal: null,
+      regras_versao: regras.regrasVersao,
+      inferencia_textual: null,
+    },
+    extracao: {
+      observacaoHash: extracao.observacaoHash,
+      modelo: extracao.modelo,
+      promptVersao: extracao.promptVersao,
+      sinais: [],
+      situacao: {},
+      ambiguidades: [],
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Semeadura de D1 e leituras diretas (a SUT só é exercitada pelas portas)
 // ---------------------------------------------------------------------------
@@ -521,6 +549,36 @@ function envolverDbContandoMutacoes(db: D1Database, contador: ContadorPreparos):
           if (ehEscrita(sql)) {
             contador.preparosDeMutacao += 1;
           }
+          return (target as D1Database).prepare(sql);
+        };
+      }
+      const valor = Reflect.get(target, prop, receiver);
+      return typeof valor === "function"
+        ? (valor as (...args: unknown[]) => unknown).bind(target)
+        : valor;
+    },
+  }) as unknown as D1Database;
+}
+
+// ---------------------------------------------------------------------------
+// Contagem TOTAL de `db.prepare` (SELECT inclusive): a rejeição de fronteira
+// deve anteceder a leitura, não só a mutação. `SELECT` também prepara.
+// ---------------------------------------------------------------------------
+
+interface ContadorPreparosTotais {
+  preparos: number;
+}
+
+function envolverDbContandoPreparos(
+  db: D1Database,
+  contador: ContadorPreparosTotais,
+): D1Database {
+  const alvo = db as unknown as object;
+  return new Proxy(alvo, {
+    get(target, prop, receiver) {
+      if (prop === "prepare") {
+        return (sql: string) => {
+          contador.preparos += 1;
           return (target as D1Database).prepare(sql);
         };
       }
@@ -914,5 +972,190 @@ describe("regressões da revisão final: centavos, hash injetivo e importId", ()
     expect(contador.preparosDeMutacao).toBe(0);
     expect(await contar(db, "guides")).toBe(0);
     expect(await contar(db, "guide_revisions")).toBe(0);
+  });
+
+  it("id de extração é injetivo: modelo/prompt com NUL não colidem entre triplas distintas (#ac-4)", async () => {
+    const api = exigirApi();
+    const db = await criarBanco();
+    const regras = carregarRegras();
+    await semearImport(db, "imp-1", "chave-imp");
+    await semearRuleset(db, "rs-1", hashCatalogo(CATALOGO_JSON));
+
+    // Duas triplas semânticas DISTINTAS cujo id determinístico concatena os
+    // mesmos pedaços: "H\u0000m\u0000x\u0000p" nos dois casos. A UNIQUE
+    // (observacao_hash, modelo, prompt_versao) as distingue, então o id do
+    // conteúdo precisa ser injetivo sobre os três campos.
+    const conferenciaX = conferenciaCom(regras, {
+      observacaoHash: "H",
+      modelo: "m\u0000x",
+      promptVersao: "p",
+    });
+    const conferenciaY = conferenciaCom(regras, {
+      observacaoHash: "H",
+      modelo: "m",
+      promptVersao: "x\u0000p",
+    });
+
+    const resultadoX = await api.registrarGuia(db, {
+      guia: normalizar({ id_guia: "G-2608-7101" }),
+      conferencia: conferenciaX,
+      idempotencyKey: "K-EXT-X",
+      importId: "imp-1",
+      regras,
+      agora: AGORA,
+    });
+    expect(resultadoX.tipo).toBe("criada");
+
+    // Captura a falha para que o RED seja de asserção: a segunda gravação
+    // precisa ser "criada", nunca rejeitada por colisão de PK da extração.
+    let erroY: unknown = null;
+    let resultadoY: ResultadoPersistencia | null = null;
+    try {
+      resultadoY = await api.registrarGuia(db, {
+        guia: normalizar({ id_guia: "G-2608-7102" }),
+        conferencia: conferenciaY,
+        idempotencyKey: "K-EXT-Y",
+        importId: "imp-1",
+        regras,
+        agora: DEPOIS,
+      });
+    } catch (capturado) {
+      erroY = capturado;
+    }
+    expect(erroY).toBeNull();
+    expect(resultadoY?.tipo).toBe("criada");
+    expect(await contar(db, "semantic_extractions")).toBe(2);
+  });
+
+  it("surrogate isolado em id_guia é rejeitado na fronteira (#ac-3)", async () => {
+    const api = exigirApi();
+    const db = await criarBanco();
+    const regras = carregarRegras();
+    await semearImport(db, "imp-1", "chave-imp");
+    await semearRuleset(db, "rs-1", hashCatalogo(CATALOGO_JSON));
+
+    // 1. Guia bem-formada EXISTENTE com `id_guia` U+FFFD.
+    const salvo = await api.registrarGuia(db, {
+      guia: normalizar({ id_guia: "\uFFFD" }),
+      conferencia: conferenciaA(regras),
+      importId: "imp-1",
+      regras,
+      agora: AGORA,
+    });
+    expect(salvo.tipo).toBe("criada");
+    const idExistente = await idInternoDaGuia(db, "\uFFFD");
+    expect(idExistente).not.toBeNull();
+    const revisoesAntes = await revisoesDaGuia(db, idExistente!);
+    expect(revisoesAntes).toHaveLength(1);
+    expect(revisoesAntes[0].vigente).toBe(1);
+
+    // 2. Tentativa malformada com o MESMO id lógico após a normalização do
+    // adapter node:sqlite (`\uD800` → U+FFFD): ela colidiria com a guia já
+    // existente. A política fail-closed rejeita o surrogate isolado ANTES de
+    // qualquer busca/escrita: NENHUMA chamada a `db.prepare` (SELECT incluso)
+    // pode ocorrer na tentativa malformada.
+    const contador: ContadorPreparosTotais = { preparos: 0 };
+    const dbEnvolvido = envolverDbContandoPreparos(db, contador);
+    let erro: unknown = null;
+    try {
+      await api.registrarGuia(dbEnvolvido, {
+        guia: normalizar({ id_guia: "\uD800" }),
+        conferencia: conferenciaA(regras),
+        importId: "imp-1",
+        regras,
+        agora: DEPOIS,
+      });
+    } catch (capturado) {
+      erro = capturado;
+    }
+    expect(erro).toBeInstanceOf(TypeError);
+    expect(contador.preparos).toBe(0);
+
+    // 3. A guia existente permanece intacta: mesmo id interno, exatamente uma
+    // revisão vigente e nenhuma escrita de revisão nova (não foi reutilizada
+    // nem alterada pela tentativa malformada).
+    expect(await contar(db, "guides")).toBe(1);
+    expect(await idInternoDaGuia(db, "\uFFFD")).toBe(idExistente);
+    const revisoesDepois = await revisoesDaGuia(db, idExistente!);
+    expect(revisoesDepois).toHaveLength(1);
+    expect(revisoesDepois[0].vigente).toBe(1);
+    expect(await contar(db, "guide_revisions")).toBe(1);
+  });
+
+  it("surrogate isolado na chave de extração é rejeitado sem reutilizar extração (#ac-4)", async () => {
+    const api = exigirApi();
+    const regras = carregarRegras();
+    const hash = hashCatalogo(CATALOGO_JSON);
+
+    // Os TRÊS componentes da chave semântica, um por iteração. A tripla
+    // bem-formada usa U+FFFD no componente alvo; a malformada troca SÓ esse
+    // componente por um surrogate isolado que o adapter normalizaria para
+    // U+FFFD. Se a fronteira aceitasse, a busca pela tripla reutilizaria
+    // silenciosamente a extração já persistida e/ou criaria guia nova.
+    const triplas: Array<{
+      componente: string;
+      bemFormada: Pick<
+        ExtracaoSemanticaPersistivel,
+        "observacaoHash" | "modelo" | "promptVersao"
+      >;
+      malformada: Pick<
+        ExtracaoSemanticaPersistivel,
+        "observacaoHash" | "modelo" | "promptVersao"
+      >;
+    }> = [
+      {
+        componente: "observacaoHash",
+        bemFormada: { observacaoHash: "\uFFFD", modelo: "p", promptVersao: "p" },
+        malformada: { observacaoHash: "\uD800", modelo: "p", promptVersao: "p" },
+      },
+      {
+        componente: "modelo",
+        bemFormada: { observacaoHash: "H", modelo: "\uFFFD", promptVersao: "p" },
+        malformada: { observacaoHash: "H", modelo: "\uD800", promptVersao: "p" },
+      },
+      {
+        componente: "promptVersao",
+        bemFormada: { observacaoHash: "H", modelo: "p", promptVersao: "\uFFFD" },
+        malformada: { observacaoHash: "H", modelo: "p", promptVersao: "\uD800" },
+      },
+    ];
+
+    for (const { componente, bemFormada, malformada } of triplas) {
+      const db = await criarBanco();
+      await semearImport(db, "imp-1", "chave-imp");
+      await semearRuleset(db, "rs-1", hash);
+
+      // X grava com o componente bem-formado U+FFFD e os demais bem-formados.
+      const resultadoX = await api.registrarGuia(db, {
+        guia: normalizar({ id_guia: `G-2608-73-${componente}` }),
+        conferencia: conferenciaCom(regras, bemFormada),
+        idempotencyKey: `K-SUR-BEM-${componente}`,
+        importId: "imp-1",
+        regras,
+        agora: AGORA,
+      });
+      expect(resultadoX.tipo).toBe("criada");
+      expect(await contar(db, "semantic_extractions")).toBe(1);
+      expect(await contar(db, "guides")).toBe(1);
+
+      // Y usa o surrogate isolado nesse mesmo componente: a fronteira rejeita
+      // sem reutilizar a extração de X nem criar guia nova.
+      let erroY: unknown = null;
+      try {
+        await api.registrarGuia(db, {
+          guia: normalizar({ id_guia: `G-2608-74-${componente}` }),
+          conferencia: conferenciaCom(regras, malformada),
+          idempotencyKey: `K-SUR-MAL-${componente}`,
+          importId: "imp-1",
+          regras,
+          agora: DEPOIS,
+        });
+      } catch (capturado) {
+        erroY = capturado;
+      }
+      expect(erroY).toBeInstanceOf(TypeError);
+      expect(await contar(db, "semantic_extractions")).toBe(1);
+      expect(await contar(db, "guides")).toBe(1);
+    }
   });
 });

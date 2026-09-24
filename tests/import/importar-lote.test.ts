@@ -1257,3 +1257,249 @@ describe("lt-idempotencia-reimportacao-corpus: corpus oficial, idempotência e A
     120000,
   );
 });
+
+// ---------------------------------------------------------------------------
+// Red: digest injetivo e rejeição de surrogate UTF-16 isolado
+//
+// O adapter D1/`node:sqlite` normaliza um surrogate isolado para U+FFFD ao
+// vincular/gravar TEXT, e `codificarUtf8` faz o mesmo dentro de `sha256Hex`.
+// Sem uma barreira explícita, `\uD800` e `\uFFFD` casam a mesma chave de
+// idempotência por um digest que os conflaciona. A fronteira de importação deve
+// (1) digerir o CSV por `JSON.stringify` (injetivo sobre strings JS) e (2)
+// rejeitar com TypeError/surrogate toda identidade/texto com surrogate não
+// pareado ANTES de qualquer `db.prepare`/escrita, preservando pares válidos.
+// ---------------------------------------------------------------------------
+
+/**
+ * Monta um CSV com UMA linha de dados cuja `observacao_recepcao` (17ª coluna,
+ * índice 16) é `observacao`. As demais 17 colunas seguem válidas, de modo que
+ * dois CSVs só difiram pelo texto da observação.
+ */
+function csvComObservacao(observacao: string, indice = 1): string {
+  const campos = linhaSintetica(indice).split(",");
+  campos[16] = observacao;
+  return `${[CABECALHO, campos.join(",")].join("\n")}\n`;
+}
+
+const TABELAS_CONTADAS = [
+  "imports",
+  "import_lines",
+  "rulesets",
+  "guides",
+  "guide_revisions",
+  "validations",
+  "findings",
+  "semantic_extractions",
+] as const;
+
+function contagensZeradas(): Record<string, number> {
+  return Object.fromEntries(TABELAS_CONTADAS.map((tabela) => [tabela, 0]));
+}
+
+/**
+ * Espião de acesso ao banco: um `Proxy` sobre o `D1Database` que registra cada
+ * chamada de `prepare`/`batch`/`exec` e delega para o objeto original com o
+ * `this` correto (`prepare(...).bind(...)` real continua funcionando). Usado
+ * para provar que a recusa de identidade malformada acontece ANTES de qualquer
+ * acesso ao banco, e não apenas antes da escrita.
+ */
+function espiaoDeAcesso(db: D1Database): { db: D1Database; chamadas: string[] } {
+  const chamadas: string[] = [];
+  const espiao = new Proxy(db, {
+    get(alvo, prop, receptor) {
+      if (prop === "prepare" || prop === "batch" || prop === "exec") {
+        return (...args: unknown[]) => {
+          chamadas.push(String(prop));
+          const metodo = Reflect.get(alvo, prop, receptor) as (...a: unknown[]) => unknown;
+          return metodo.apply(alvo, args);
+        };
+      }
+      return Reflect.get(alvo, prop, receptor);
+    },
+  });
+  return { db: espiao, chamadas };
+}
+
+/** Rejeição tipada cujo motivo nomeia o surrogate UTF-16 isolado. */
+async function exigirRejeicaoSurrogate(promessa: Promise<unknown>): Promise<void> {
+  await expect(promessa).rejects.toThrow(TypeError);
+  await expect(promessa).rejects.toThrow(/surrogate/i);
+}
+
+describe("digest injetivo e rejeicao de identidade malformada", () => {
+  it("arquivoHash é o digest do CSV JSON-serializado, não do texto cru", async () => {
+    const api = exigirApi();
+    const db = await criarBanco();
+    const regras = carregarRegrasSinteticas();
+    const texto = `${[CABECALHO, linhaSintetica(1)].join("\n")}\n`;
+
+    const lote = await api.iniciarImportacao(db, {
+      csv: texto,
+      arquivoNome: "digest.csv",
+      idempotencyKey: "K-digest",
+      regras,
+      conferir: portaSintetica(regras),
+      agora: AGORA,
+    });
+
+    expect(lote.arquivoHash).toBe(sha256Hex(JSON.stringify(texto)));
+  });
+
+  it("rejeita CSV com surrogate isolado na observação e não escreve nada", async () => {
+    const api = exigirApi();
+    const db = await criarBanco();
+    const regras = carregarRegrasSinteticas();
+    const texto = csvComObservacao("observacao\uD800malformada");
+    const { db: espiao, chamadas } = espiaoDeAcesso(db);
+
+    await exigirRejeicaoSurrogate(
+      api.iniciarImportacao(espiao, {
+        csv: texto,
+        arquivoNome: "surrogate.csv",
+        idempotencyKey: "K-csv-surrogate",
+        regras,
+        conferir: portaSintetica(regras),
+        agora: AGORA,
+      }),
+    );
+
+    // A recusa precede qualquer `prepare`/`batch`/`exec`: o banco não é tocado.
+    expect(chamadas).toHaveLength(0);
+    expect(await contagens(db)).toEqual(contagensZeradas());
+  });
+
+  it("rejeita idempotencyKey com surrogate isolado e não escreve nada", async () => {
+    const api = exigirApi();
+    const db = await criarBanco();
+    const regras = carregarRegrasSinteticas();
+    const texto = `${[CABECALHO, linhaSintetica(1)].join("\n")}\n`;
+    const { db: espiao, chamadas } = espiaoDeAcesso(db);
+
+    await exigirRejeicaoSurrogate(
+      api.iniciarImportacao(espiao, {
+        csv: texto,
+        arquivoNome: "ok.csv",
+        idempotencyKey: "K-\uD800-key",
+        regras,
+        conferir: portaSintetica(regras),
+        agora: AGORA,
+      }),
+    );
+
+    // A recusa precede qualquer `prepare`/`batch`/`exec`: o banco não é tocado.
+    expect(chamadas).toHaveLength(0);
+    expect(await contagens(db)).toEqual(contagensZeradas());
+  });
+
+  it("rejeita arquivoNome com surrogate isolado e não escreve nada", async () => {
+    const api = exigirApi();
+    const db = await criarBanco();
+    const regras = carregarRegrasSinteticas();
+    const texto = `${[CABECALHO, linhaSintetica(1)].join("\n")}\n`;
+    const { db: espiao, chamadas } = espiaoDeAcesso(db);
+
+    await exigirRejeicaoSurrogate(
+      api.iniciarImportacao(espiao, {
+        csv: texto,
+        arquivoNome: "guias-\uD800.csv",
+        idempotencyKey: "K-arquivo-surrogate",
+        regras,
+        conferir: portaSintetica(regras),
+        agora: AGORA,
+      }),
+    );
+
+    // A recusa precede qualquer `prepare`/`batch`/`exec`: o banco não é tocado.
+    expect(chamadas).toHaveLength(0);
+    expect(await contagens(db)).toEqual(contagensZeradas());
+  });
+
+  it("rejeita dono com surrogate isolado sem reservar nenhuma linha", async () => {
+    const api = exigirApi();
+    const db = await criarBanco();
+    const regras = carregarRegrasSinteticas();
+    const lote = await api.iniciarImportacao(db, {
+      csv: `${[CABECALHO, linhaSintetica(1), linhaSintetica(2)].join("\n")}\n`,
+      arquivoNome: "duas-linhas.csv",
+      idempotencyKey: "K-dono-surrogate",
+      regras,
+      conferir: portaSintetica(regras),
+      agora: AGORA,
+    });
+
+    const antes = await linhasDoLote(db, lote.id);
+    expect(antes).toHaveLength(2);
+    expect(antes.every((linha) => linha.estado === "PENDENTE" && linha.dono === null)).toBe(true);
+
+    const { db: espiao, chamadas } = espiaoDeAcesso(db);
+    await exigirRejeicaoSurrogate(
+      api.processarProximoChunk(espiao, {
+        loteId: lote.id,
+        dono: "worker\uD800",
+        conferir: portaSintetica(regras),
+        agora: AGORA,
+      }),
+    );
+
+    // O dono malformado é recusado antes de qualquer `prepare`/`batch`/`exec`.
+    expect(chamadas).toHaveLength(0);
+    const depois = await linhasDoLote(db, lote.id);
+    expect(depois.every((linha) => linha.estado === "PENDENTE" && linha.dono === null)).toBe(true);
+    expect(await contar(db, "import_chunks")).toBe(0);
+  });
+
+  it("colisão de digest não vira replay da mesma chave de idempotência", async () => {
+    const api = exigirApi();
+    const db = await criarBanco();
+    const regras = carregarRegrasSinteticas();
+    const csvRef = csvComObservacao("obs\uFFFDfim");
+    const csvLone = csvComObservacao("obs\uD800fim");
+
+    await api.iniciarImportacao(db, {
+      csv: csvRef,
+      arquivoNome: "colisao.csv",
+      idempotencyKey: "K-colisao",
+      regras,
+      conferir: portaSintetica(regras),
+      agora: AGORA,
+    });
+    const depoisDoPrimeiro = await contagens(db);
+    expect(depoisDoPrimeiro.imports).toBe(1);
+
+    const { db: espiao, chamadas } = espiaoDeAcesso(db);
+    await exigirRejeicaoSurrogate(
+      api.iniciarImportacao(espiao, {
+        csv: csvLone,
+        arquivoNome: "colisao.csv",
+        idempotencyKey: "K-colisao",
+        regras,
+        conferir: portaSintetica(regras),
+        agora: AGORA,
+      }),
+    );
+
+    // A segunda chamada malformada é recusada sem tocar o banco.
+    expect(chamadas).toHaveLength(0);
+    expect(await contagens(db)).toEqual(depoisDoPrimeiro);
+  });
+
+  it("preserva par surrogate válido (emoji) na observação persistida", async () => {
+    const api = exigirApi();
+    const db = await criarBanco();
+    const regras = carregarRegrasSinteticas();
+    const texto = csvComObservacao("emoji \u{1F600} ok");
+
+    const lote = await api.iniciarImportacao(db, {
+      csv: texto,
+      arquivoNome: "emoji.csv",
+      idempotencyKey: "K-emoji",
+      regras,
+      conferir: portaSintetica(regras),
+      agora: AGORA,
+    });
+
+    const linhas = await linhasDoLote(db, lote.id);
+    expect(linhas).toHaveLength(1);
+    expect(linhas[0]!.linha_original).toContain("\u{1F600}");
+  });
+});
