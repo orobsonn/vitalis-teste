@@ -43,6 +43,14 @@ absent or has any other value, reply `BLOCKED` and do not write the plan.
 Before decomposing, read the sealed design/spec completely; inspect the real
 implementation entry points, call sites, existing tests, root AGENTS.md or
 CLAUDE.md guidance, and MEMORY.md when present. Preserve existing user changes.
+Before choosing test paths, inspect project test files, runner configuration and
+project instructions. If they establish a test layout, follow it for new tests;
+do not move existing tests or change the layout just to match this default. If
+the project has no established test layout, put all new test files under one
+root `tests/` directory, grouped by domain or feature, with fixtures there too.
+Include any runner configuration needed to discover that directory in the first
+task that introduces tests. An empty repository alone does not override an
+explicit project convention or runner configuration.
 The sealed spec is the complete delivery authority for this ceremony: do not
 ask for the original issue body, a PRD copy, or external `#uj`/`#ac` references
 when its outcome, acceptance evidence, and constraints are present there. Map
@@ -210,17 +218,17 @@ Keep low/medium work cohesive. Scorer absence/error does not prevent planning.
 ```json
 {
   "hand_tiers": {
-    "low": "openai-codex/gpt-5.6-luna",
-    "medium": "openai-codex/gpt-5.6-terra",
-    "high": "openai-codex/gpt-5.6-terra"
+    "low": "openai-codex/gpt-6-luna",
+    "medium": "openai-codex/gpt-6-sol",
+    "high": "openai-codex/gpt-6-sol"
   },
-  "planner": "openai-codex/gpt-5.6-sol",
+  "planner": "openai-codex/gpt-6-sol",
   "plan-reviewer": "openai-codex/gpt-6-astra",
-  "compliance": "openai-codex/gpt-5.6-terra",
-  "adversary": "openai-codex/gpt-5.6-sol",
-  "security": "openai-codex/gpt-5.6-sol",
-  "harvester": "openai-codex/gpt-5.6-luna",
-  "shipper": "openai-codex/gpt-5.6-luna"
+  "compliance": "openai-codex/gpt-6-sol",
+  "adversary": "openai-codex/gpt-6-sol",
+  "security": "openai-codex/gpt-6-sol",
+  "harvester": "openai-codex/gpt-6-luna",
+  "shipper": "openai-codex/gpt-6-luna"
 }
 ```
 
