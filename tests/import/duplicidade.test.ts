@@ -756,4 +756,39 @@ describe("duplicidade: assinatura de nove campos, overlay e convergência", () =
     expect(resultado).toEqual({ alteracoes: 0 });
     expect(espiao.escritas).toBe(0);
   });
+
+  it("assinatura de nove campos é injetiva: NUL entre paciente e carteirinha não agrupa atendimentos distintos (#ac-7)", async () => {
+    const api = exigirApi();
+    const db = await criarBanco();
+    const regras = await semearBase(db);
+
+    // X e Y têm conteúdo cru DIFERENTE nos nove campos, mas o join interno com
+    // "\u0000" produz a MESMA string: fronteira paciente="PA\u0000B" +
+    // carteirinha="C" versus paciente="PA" + carteirinha="B\u0000C".
+    const X = normalizar({
+      id_guia: "G-2608-9101",
+      data_atendimento: "2026-08-26",
+      paciente: "PA\u0000B",
+      carteirinha: "C",
+    });
+    const Y = normalizar({
+      id_guia: "G-2608-9102",
+      data_atendimento: "2026-08-26",
+      paciente: "PA",
+      carteirinha: "B\u0000C",
+    });
+    expect(X.paciente).not.toBe(Y.paciente);
+    expect(X.carteirinha).not.toBe(Y.carteirinha);
+
+    await registrarTodas(db, regras, [X, Y], conferenciaOk(regras));
+
+    // As duas assinaturas são DIFERENTES: nenhuma guia pode ser agrupada como
+    // duplicidade candidata.
+    const estadoX = await estadoDaGuia(db, "G-2608-9101");
+    const estadoY = await estadoDaGuia(db, "G-2608-9102");
+    expect(estadoX.overlay).toBeNull();
+    expect(estadoY.overlay).toBeNull();
+    expect(estadoX.codigos).not.toContain("duplicidade_grupo_candidato");
+    expect(estadoY.codigos).not.toContain("duplicidade_grupo_candidato");
+  });
 });
