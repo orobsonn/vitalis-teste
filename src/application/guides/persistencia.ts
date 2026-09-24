@@ -356,6 +356,18 @@ export async function prepararPersistenciaConferencia(
   if (typeof opcoes.guia.id === "string" && temSurrogateIsolado(opcoes.guia.id)) {
     throw new TypeError("id_guia não pode conter surrogate isolado");
   }
+  if (typeof opcoes.idempotencyKey === "string" && temSurrogateIsolado(opcoes.idempotencyKey)) {
+    throw new TypeError("idempotencyKey não pode conter surrogate isolado");
+  }
+  if (typeof opcoes.importId === "string" && temSurrogateIsolado(opcoes.importId)) {
+    throw new TypeError("importId não pode conter surrogate isolado");
+  }
+  if (
+    opcoes.guarda !== undefined &&
+    (temSurrogateIsolado(opcoes.guarda.linhaId) || temSurrogateIsolado(opcoes.guarda.token))
+  ) {
+    throw new TypeError("guarda não pode conter surrogate isolado");
+  }
   const conteudoHash = conteudoHashDaGuia(opcoes.guia);
 
   if (typeof opcoes.idempotencyKey === "string") {
