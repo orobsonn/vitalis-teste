@@ -9,7 +9,12 @@
  */
 
 import type { Catalogo } from "../../domain";
-import { lerGuia, mapearRevisao, traduzirConflitoUnicidade } from "../../storage";
+import {
+  exigirCentavosNormalizados,
+  lerGuia,
+  mapearRevisao,
+  traduzirConflitoUnicidade,
+} from "../../storage";
 import type { RevisaoPersistida, ValidacaoPersistida } from "../../storage";
 import { sha256Hex } from "../../shared/sha256";
 import { assinaturaDuplicidadeDaGuia, conteudoDaValidacao, conteudoHashDaGuia } from "./conferencia";
@@ -35,6 +40,31 @@ import {
 const COLUNAS_REVISAO =
   "id, guide_id, numero, vigente, entrada_original_json, entrada_normalizada_json, " +
   "conteudo_hash, assinatura_duplicidade, import_id, idempotency_key, criado_em";
+
+/**
+ * Detecta code units surrogate UTF-16 isolados. O adapter D1/`node:sqlite`
+ * normaliza um surrogate isolado para U+FFFD ao vincular/gravar TEXT, o que
+ * conflaciona identidades distintas (uma guia `\uD800` casaria a guia
+ * existente `\uFFFD`). A fronteira rejeita a identidade malformada antes de
+ * qualquer consulta/escrita; pares válidos (emoji) são preservados.
+ */
+function temSurrogateIsolado(valor: string): boolean {
+  for (let i = 0; i < valor.length; i += 1) {
+    const codigo = valor.charCodeAt(i);
+    if (codigo >= 0xd800 && codigo <= 0xdbff) {
+      const proximo = valor.charCodeAt(i + 1);
+      if (!(proximo >= 0xdc00 && proximo <= 0xdfff)) {
+        return true;
+      }
+      i += 1;
+      continue;
+    }
+    if (codigo >= 0xdc00 && codigo <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
 
 function bindsDaGuarda(guarda: GuardaPosse | undefined): unknown[] {
   return guarda ? [guarda.linhaId, guarda.token] : [];
@@ -89,6 +119,13 @@ async function prepararExtracao(
   if (extracao === null) {
     return null;
   }
+  if (
+    temSurrogateIsolado(extracao.observacaoHash) ||
+    temSurrogateIsolado(extracao.modelo) ||
+    temSurrogateIsolado(extracao.promptVersao)
+  ) {
+    throw new TypeError("chave de extração não pode conter surrogate isolado");
+  }
   const existente = await db
     .prepare(
       "SELECT id FROM semantic_extractions WHERE observacao_hash = ? AND modelo = ? AND prompt_versao = ?",
@@ -98,8 +135,10 @@ async function prepararExtracao(
   if (existente !== null && existente !== undefined) {
     return String(existente.id);
   }
+  // Array JSON canônico: injetivo sobre a tripla (concatenar com "\u0000"
+  // colidiria "H\u0000m"+"x"+"p" com "H"+"m"+"x\u0000p").
   const id = sha256Hex(
-    `${extracao.observacaoHash}\u0000${extracao.modelo}\u0000${extracao.promptVersao}`,
+    JSON.stringify([extracao.observacaoHash, extracao.modelo, extracao.promptVersao]),
   );
   statements.push(
     db
@@ -130,9 +169,24 @@ async function construirCriacao(
   if (typeof opcoes.guia.id !== "string" || opcoes.guia.id.trim() === "") {
     throw new TypeError("id_guia deve ser uma string não vazia");
   }
+  // Fronteira de escrita: centavos `NaN`/`Infinity` virariam `null` no JSON e
+  // inteiros não-seguros/fracionários entrariam inexatos. Valida antes de
+  // preparar qualquer statement de mutação.
+  exigirCentavosNormalizados(opcoes.guia);
   const guarda = opcoes.guarda;
   const guiaPersistida = await lerGuia(db, opcoes.guia.id);
-  const guiaId = guiaPersistida?.id ?? sha256Hex(`guia\u0000${opcoes.guia.id}`);
+  // `guides.import_id_inicial` é NOT NULL: criar uma guia nova sem `importId`
+  // válido falha aqui, antes de montar/executar o batch. Uma guia existente
+  // (correção) continua aceitando `importId` ausente.
+  if (
+    guiaPersistida === null &&
+    (typeof opcoes.importId !== "string" || opcoes.importId.trim() === "")
+  ) {
+    throw new TypeError("importId deve ser uma string não vazia ao criar uma guia nova");
+  }
+  // Array JSON canônico: injetivo sobre o prefixo e o `id_guia`, preservando
+  // surrogates isolados que um join textual tornaria ambíguo.
+  const guiaId = guiaPersistida?.id ?? sha256Hex(JSON.stringify(["guia", opcoes.guia.id]));
   const statements: D1PreparedStatement[] = [];
 
   if (!guiaPersistida) {
@@ -299,6 +353,21 @@ export async function prepararPersistenciaConferencia(
   db: D1Database,
   opcoes: OpcoesPersistencia,
 ): Promise<ResultadoPreparo> {
+  if (typeof opcoes.guia.id === "string" && temSurrogateIsolado(opcoes.guia.id)) {
+    throw new TypeError("id_guia não pode conter surrogate isolado");
+  }
+  if (typeof opcoes.idempotencyKey === "string" && temSurrogateIsolado(opcoes.idempotencyKey)) {
+    throw new TypeError("idempotencyKey não pode conter surrogate isolado");
+  }
+  if (typeof opcoes.importId === "string" && temSurrogateIsolado(opcoes.importId)) {
+    throw new TypeError("importId não pode conter surrogate isolado");
+  }
+  if (
+    opcoes.guarda !== undefined &&
+    (temSurrogateIsolado(opcoes.guarda.linhaId) || temSurrogateIsolado(opcoes.guarda.token))
+  ) {
+    throw new TypeError("guarda não pode conter surrogate isolado");
+  }
   const conteudoHash = conteudoHashDaGuia(opcoes.guia);
 
   if (typeof opcoes.idempotencyKey === "string") {
