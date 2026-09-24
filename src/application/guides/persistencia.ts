@@ -41,6 +41,31 @@ const COLUNAS_REVISAO =
   "id, guide_id, numero, vigente, entrada_original_json, entrada_normalizada_json, " +
   "conteudo_hash, assinatura_duplicidade, import_id, idempotency_key, criado_em";
 
+/**
+ * Detecta code units surrogate UTF-16 isolados. O adapter D1/`node:sqlite`
+ * normaliza um surrogate isolado para U+FFFD ao vincular/gravar TEXT, o que
+ * conflaciona identidades distintas (uma guia `\uD800` casaria a guia
+ * existente `\uFFFD`). A fronteira rejeita a identidade malformada antes de
+ * qualquer consulta/escrita; pares válidos (emoji) são preservados.
+ */
+function temSurrogateIsolado(valor: string): boolean {
+  for (let i = 0; i < valor.length; i += 1) {
+    const codigo = valor.charCodeAt(i);
+    if (codigo >= 0xd800 && codigo <= 0xdbff) {
+      const proximo = valor.charCodeAt(i + 1);
+      if (!(proximo >= 0xdc00 && proximo <= 0xdfff)) {
+        return true;
+      }
+      i += 1;
+      continue;
+    }
+    if (codigo >= 0xdc00 && codigo <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function bindsDaGuarda(guarda: GuardaPosse | undefined): unknown[] {
   return guarda ? [guarda.linhaId, guarda.token] : [];
 }
@@ -93,6 +118,13 @@ async function prepararExtracao(
 ): Promise<string | null> {
   if (extracao === null) {
     return null;
+  }
+  if (
+    temSurrogateIsolado(extracao.observacaoHash) ||
+    temSurrogateIsolado(extracao.modelo) ||
+    temSurrogateIsolado(extracao.promptVersao)
+  ) {
+    throw new TypeError("chave de extração não pode conter surrogate isolado");
   }
   const existente = await db
     .prepare(
@@ -321,6 +353,9 @@ export async function prepararPersistenciaConferencia(
   db: D1Database,
   opcoes: OpcoesPersistencia,
 ): Promise<ResultadoPreparo> {
+  if (typeof opcoes.guia.id === "string" && temSurrogateIsolado(opcoes.guia.id)) {
+    throw new TypeError("id_guia não pode conter surrogate isolado");
+  }
   const conteudoHash = conteudoHashDaGuia(opcoes.guia);
 
   if (typeof opcoes.idempotencyKey === "string") {
