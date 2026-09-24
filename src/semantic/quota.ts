@@ -1,0 +1,135 @@
+/**
+ * Quota best-effort de chamadas por isolate, em memória, por janela fixa (§3.9).
+ *
+ * Responsabilidade única: decidir, antes de qualquer chamada ao modelo, se uma
+ * **tentativa** ainda cabe na janela corrente. Não é quota global de custo nem
+ * de tokens: o contador vive no isolate e se reinicia quando a janela avança.
+ *
+ * Garantias do contrato (§3.9, #ac-17):
+ * - Relógio injetável (`agora`), sem timers reais; padrão `Date.now`.
+ * - Padrões `LIMITE_PADRAO_CHAMADAS` (60) e `JANELA_PADRAO_MS` (60000 ms),
+ *   ambos configuráveis por opção.
+ * - Configuração inválida **não desativa a quota**: `limite` só é aceito como
+ *   `number` finito, inteiro e `>= 1`; `janelaMs` só como `number` finito e
+ *   `> 0`; `agora` só como função. Valores inválidos (`NaN`, `Infinity`, `0`,
+ *   negativo, fracionário) caem nos padrões seguros em vez de liberar chamadas
+ *   (`janelaMs: 0` reiniciaria a janela a cada tentativa) ou nunca recusar.
+ * - Cada `consumir()` representa uma tentativa efetiva; quando o saldo acaba a
+ *   recusa é devolvida (`false`) **antes** de o chamador acionar o modelo, e o
+ *   observador injetável é notificado a cada recusa (cumulativo, não flag).
+ * - Passada a janela (`>= janelaMs` desde o início corrente), uma nova janela
+ *   abre e volta a aceitar; o histórico de recusas não é apagado.
+ * - A quota não chama o modelo, não conhece cache e não emite logging; apenas
+ *   reporta a recusa ao observador para que a orquestração conte as métricas.
+ */
+
+/** Observador injetável dos contadores de operação (§3.9). */
+export interface ObservadorContadores {
+  /** Conta uma tentativa efetiva encaminhada ao modelo. */
+  registrarChamada(): void;
+  /** Conta um acerto de cache semântico. */
+  registrarCacheHit(): void;
+  /** Conta uma tentativa recusada pela quota, somando recusas. */
+  registrarRecusaQuota(): void;
+}
+
+/** Quota consultável pela orquestração antes de chamar o modelo. */
+export interface QuotaDeChamadas {
+  /** Consome uma tentativa da janela corrente; `false` quando esgotada. */
+  consumir(): boolean;
+  /**
+   * `true` exatamente quando `criarQuotaDeChamadas` recebeu um observador e,
+   * portanto, já auto-notifica `registrarRecusaQuota()` em `consumir() === false`.
+   * Ausente quando nenhum observador foi fornecido. Quem orquestra consulta o
+   * marcador para não contabilizar a mesma recusa duas vezes (evita double-count).
+   */
+  notificaRecusaNoObservador?: boolean;
+}
+
+/** Opções de configuração da quota por isolate. */
+export interface OpcoesQuotaDeChamadas {
+  /** Máximo de tentativas aceitas por janela; padrão `LIMITE_PADRAO_CHAMADAS`. */
+  limite?: number;
+  /** Duração da janela em ms; padrão `JANELA_PADRAO_MS`. */
+  janelaMs?: number;
+  /** Relógio injetável (monotônico esperado); padrão `Date.now`. */
+  agora?: () => number;
+  /** Observador injetável de contadores; opcional. */
+  observador?: ObservadorContadores;
+}
+
+/** Limite padrão de tentativas por janela e por isolate (§3.9). */
+export const LIMITE_PADRAO_CHAMADAS = 60;
+
+/** Duração padrão da janela de quota em milissegundos (§3.9). */
+export const JANELA_PADRAO_MS = 60000;
+
+/**
+ * Aceita `limite` somente como inteiro finito `>= 1`; qualquer outra forma
+ * (`NaN`, `Infinity`, `0`, negativo, fracionário) devolve o padrão seguro.
+ */
+function normalizarLimite(valor: unknown): number {
+  return typeof valor === "number" &&
+    Number.isFinite(valor) &&
+    Number.isInteger(valor) &&
+    valor >= 1
+    ? valor
+    : LIMITE_PADRAO_CHAMADAS;
+}
+
+/**
+ * Aceita `janelaMs` somente como número finito `> 0`; qualquer outra forma
+ * (`NaN`, `Infinity`, `0`, negativo) devolve o padrão seguro.
+ */
+function normalizarJanelaMs(valor: unknown): number {
+  return typeof valor === "number" && Number.isFinite(valor) && valor > 0
+    ? valor
+    : JANELA_PADRAO_MS;
+}
+
+/**
+ * Cria uma quota em memória com relógio e observador injetáveis. O estado fica
+ * confinado à instância devolvida, o que corresponde a "por isolate" no runtime.
+ *
+ * Configuração inválida é substituída por padrões seguros em vez de lançar
+ * exceção: a quota nunca é desativada por `limite`/`janelaMs` inutilizáveis.
+ */
+export function criarQuotaDeChamadas(
+  opcoes: OpcoesQuotaDeChamadas = {},
+): QuotaDeChamadas {
+  const limite = normalizarLimite(opcoes.limite);
+  const janelaMs = normalizarJanelaMs(opcoes.janelaMs);
+  const agora = typeof opcoes.agora === "function" ? opcoes.agora : Date.now;
+  // Referência capturada uma única vez: marcador e notificação usam a mesma
+  // fonte, então mutar `opcoes` depois não diverge o marcador do comportamento.
+  const observador = opcoes.observador;
+
+  let inicioJanela: number | undefined;
+  let consumidas = 0;
+
+  // Capacidade explícita: só existe quando há observador para auto-notificar a
+  // recusa. Sem observador a chave fica ausente (não `undefined` explícito), o
+  // que permite à orquestração distinguir "a quota já conta" de "conte você".
+  const marcadorObservador =
+    observador !== undefined ? { notificaRecusaNoObservador: true } : {};
+
+  return {
+    ...marcadorObservador,
+    consumir(): boolean {
+      const instante = agora();
+
+      if (inicioJanela === undefined || instante - inicioJanela >= janelaMs) {
+        inicioJanela = instante;
+        consumidas = 0;
+      }
+
+      if (consumidas >= limite) {
+        observador?.registrarRecusaQuota();
+        return false;
+      }
+
+      consumidas += 1;
+      return true;
+    },
+  };
+}

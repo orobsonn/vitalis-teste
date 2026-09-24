@@ -31,7 +31,10 @@ export { inteiroDaGuia, normalizarGuia } from "./normalizacao";
 export type { CodigoProblema, GuiaNormalizada, ProblemaNormalizacao } from "./normalizacao";
 
 export { verificarGuia } from "./motor";
-export type { Motivo, ResultadoVerificacao, SeveridadeMotivo } from "./motor";
+export type { InferenciaTextual, Motivo, ResultadoVerificacao, SeveridadeMotivo } from "./motor";
+
+export { aplicarPoliticasTextuais } from "./policies";
+export type { PoliticasTextuais, TextualValidado } from "./policies";
 
 export { agregarVerificacoes } from "./agregacao";
 export type { AgregacaoCorpus } from "./agregacao";
