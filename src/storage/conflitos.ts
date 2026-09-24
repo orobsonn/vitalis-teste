@@ -15,6 +15,10 @@ const PREFIXO_UNICIDADE = "UNIQUE constraint failed: ";
 // indica mensagem composta (ex.: FK seguida de UNIQUE) e não um conflito puro.
 const OUTRA_FALHA_DE_CONSTRAINT = "constraint failed";
 
+// Cada item da lista canônica deve ser exatamente `tabela.coluna`, sem texto
+// extra, `;`, espaços internos, parênteses, colchetes ou palavras-chave.
+const IDENTIFICADOR_COLUNA = /^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$/;
+
 function mensagemDe(erro: unknown): string | null {
   if (erro instanceof Error) {
     return erro.message;
@@ -59,6 +63,12 @@ export function traduzirConflitoUnicidade(erro: unknown): ResultadoTraducaoUnici
     .filter((parte) => parte.length > 0);
   if (partes.length === 0) {
     return { tipo: "outro" };
+  }
+
+  for (const parte of partes) {
+    if (!IDENTIFICADOR_COLUNA.test(parte)) {
+      return { tipo: "outro" };
+    }
   }
 
   const tabela = partes[0]!.slice(0, partes[0]!.lastIndexOf("."));
