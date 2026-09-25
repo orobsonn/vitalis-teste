@@ -44,9 +44,11 @@ Execução em 25/09/2026, no Google Chrome, com controle real da interface pelo 
 | Lista de procedimentos própria | Desktop e 390 px: lista branca ancorada ao campo, sem datalist; busca por nome sem acento; mouse e ArrowDown/Enter selecionam código sem avançar; Tab preserva código desconhecido; limpeza e Escape preservam vazio; descrição permanece intacta; última opção selecionável e nenhum overflow horizontal. |
 | Tela móvel | Formulário, navegação e detalhe de duplicidade conferidos em 390 × 844; menu abriu, navegou e fechou. Abas e versão longa das regras quebraram linha sem ultrapassar o painel. |
 
-## Verificações em andamento
+## Retestes finais
 
 - Retomada após navegar para outra tela aprovada: lote de 12 guias apareceu sem reload, retomou e concluiu 12 reaproveitadas/zero falhas; nenhum lock residual. A conexão do trecho em andamento agora conclui ao sair da tela.
-- Reimportação das 80 guias aprovada: 80 reaproveitadas, zero falhas; inspeção final em andamento.
+- Reimportação das 80 guias aprovada: 80 reaproveitadas, zero falhas; inspeção final concluída na versão `42b2313c-f818-4b53-85da-834ccc35b189`.
+
+- Limpeza seletiva: removidas somente as três guias E2E; hashes dos dez conjuntos protegidos intactos. Chrome e HTTP reconfirmaram 80 guias, 44 OK, 36 pendentes e R$ 2.692 de exposição.
 
 Os testes HTTP, MCP e da Skill têm evidências próprias e não são apresentados como testes de navegador. Credenciais, cookies, tokens e transcrições privadas ficam fora do repositório.

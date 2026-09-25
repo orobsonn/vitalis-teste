@@ -108,10 +108,10 @@ Esta matriz cobre o escopo do MVP e riscos identificados; não promete todas as 
 | Suíte completa da versão candidata | PASS | 513 testes Vitest + 11 de fundação |
 | Typecheck, build e dry-run do Worker | PASS | `npm run check` |
 | Deploy e health JSON | PASS | Versão `42b2313c-f818-4b53-85da-834ccc35b189` |
-| Arquivos privados ignorados e busca de segredos reais no código/assets | PASS candidato; repetir antes do commit | Sem valores secretos expostos |
-| Instalação e CI a partir do repositório enviado | PENDENTE | GitHub Actions |
-| Revisão, commit, PR, integração e issues concluídas | PENDENTE | GitHub |
-| README, MCP, Skill, roteiro e respostas dos campos da prova | PENDENTE consolidação final | Vídeo será gravado por Robson |
-| Demonstração final apenas com as 80 guias originais | PENDENTE após testes de gravação | Limpeza dos dados fictícios autorizada no escopo de teste |
+| Arquivos privados ignorados e busca de segredos reais no código/assets | PASS | Scanner de candidatos, histórico e artefatos publicáveis; zero segredos encontrados |
+| Instalação e CI a partir do repositório enviado | PASS | [CI do PR #23](https://github.com/orobsonn/vitalis-teste/actions/runs/36168079767) |
+| Revisão, commit e PR da entrega | PASS | [PR #23](https://github.com/orobsonn/vitalis-teste/pull/23); integração e fechamento rastreados pelo GitHub |
+| README, MCP, Skill, roteiro e respostas dos campos da prova | PASS | Documentação versionada e respostas preparadas privadamente; vídeo será gravado por Robson |
+| Demonstração final apenas com as 80 guias originais | PASS | Três guias E2E removidas; 80 originais e histórico preservados por hashes; HTTP e Chrome reconfirmados |
 
 Detalhes por superfície: [navegador](evidencias-e2e.md), [MCP e OAuth](evidencias-mcp.md), [roteiro](demonstracao.md). Credenciais e transcrições privadas não são publicadas.

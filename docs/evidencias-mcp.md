@@ -1,6 +1,6 @@
 # Evidências nominais do MCP
 
-Este registro separa execuções reais, falhas encontradas e retestes pendentes. A matriz é finita e contém sobreposições; não representa todos os cenários possíveis. Tokens, cookies, credenciais e conteúdo das tabelas não são publicados.
+Este registro separa execuções reais, falhas encontradas e retestes realizados. A matriz é finita e contém sobreposições; não representa todos os cenários possíveis. Tokens, cookies, credenciais e conteúdo das tabelas não são publicados.
 
 ## Transporte, OAuth e Code Mode
 

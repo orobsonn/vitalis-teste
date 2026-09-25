@@ -19,7 +19,7 @@ Aplicação demonstrativa para importar guias, apontar pendências antes do fatu
 
 O estado é global para a única conta `demo`: pessoas conectadas enxergam as mesmas guias. **Reiniciar demonstração** apaga o estado operacional e preserva regras e acesso; a operação é recusada enquanto existe importação em processamento. Os dados da fonte são fictícios.
 
-Baseline das 80 guias originais, confirmada na aplicação publicada em 25/09/2026 após a reconferência: **44 OK e 36 pendentes**, **R$ 5.694,00 registrados** e **R$ 2.692,00 em guias pendentes**. As 36 observações preenchidas tiveram checagem completa; as 44 vazias não exigiram interpretação. Duplicidade candidata envolve quatro guias, R$ 320,00 sob revisão e R$ 160,00 de possível excesso, sem excluir registros automaticamente. Guias fictícias criadas em testes posteriores devem ser distinguidas desse lote. Veja as [evidências E2E](docs/evidencias-e2e.md).
+Baseline das 80 guias originais, confirmada na aplicação publicada em 25/09/2026 após a reconferência: **44 OK e 36 pendentes**, **R$ 5.694,00 registrados** e **R$ 2.692,00 em guias pendentes**. As 36 observações preenchidas tiveram checagem completa; as 44 vazias não exigiram interpretação. Duplicidade candidata envolve quatro guias, R$ 320,00 sob revisão e R$ 160,00 de possível excesso, sem excluir registros automaticamente. As três guias sintéticas criadas nos testes foram removidas seletivamente ao final, preservando as 80 guias e seu histórico. Veja as [evidências E2E](docs/evidencias-e2e.md).
 
 ## Rodar a partir de um clone
 
@@ -146,8 +146,8 @@ Ficaram fora do MVP: agenda/recepção por WhatsApp, conciliação de pagamentos
 
 O [roteiro de vídeo](docs/demonstracao.md) cabe em até cinco minutos. O MCP publicado já foi exercitado pelo cliente SDK real; a Skill também foi executada no Codex CLI: seis casos estritos de leitura, um caso de texto livre e três ações autorizadas de registro, repetição e correção, com entradas preservadas e paridade dos resultados. O vídeo ainda precisa ser gravado/anexado. O smoke pode ser repetido com `node scripts/smoke-mcp.mjs` usando o arquivo privado de credenciais; por padrão ele não grava guias. `--write` habilita o registro E2E idempotente e altera a demonstração.
 
-A [matriz de evidências E2E](docs/evidencias-e2e.md) registra os fluxos publicados já exercitados e os itens ainda pendentes.
+A [matriz de evidências E2E](docs/evidencias-e2e.md) registra os fluxos publicados já exercitados e os retestes finais.
 
-A [matriz nominal de MCP e OAuth](docs/evidencias-mcp.md) publica os casos executados, os hashes de não persistência e os retestes pendentes, sem segredos.
+A [matriz nominal de MCP e OAuth](docs/evidencias-mcp.md) publica os casos executados, os hashes de não persistência e os retestes realizados, sem segredos.
 
 O [plano de validação final](docs/plano-validacao-final.md) reúne o checklist geral e o histórico de correções. As matrizes são finitas, contêm sobreposições e não representam garantia para toda entrada possível.

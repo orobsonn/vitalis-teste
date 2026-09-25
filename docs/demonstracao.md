@@ -79,7 +79,7 @@ A prova de OAuth nativo usa o nome e a URL do servidor `vitalis` já configurado
 
 Consulte também a [matriz consolidada de evidências E2E](evidencias-e2e.md), com os fluxos de interface e as pendências atuais.
 
-A [matriz nominal de MCP e OAuth](evidencias-mcp.md) publica os casos executados, os hashes de não persistência e os retestes pendentes, sem segredos.
+A [matriz nominal de MCP e OAuth](evidencias-mcp.md) publica os casos executados, os hashes de não persistência e os retestes realizados, sem segredos.
 
 O extrator publicado é Scout, com prompt `observacao-v3-scout` + hash. Uma rodada exploratória anterior obteve 16/16 frases corretas, mas casos inéditos posteriores encontraram problemas. A [evidência nominal](evidencias-mcp.md) preserva essa sequência e identifica a versão final; a rodada exploratória não é usada para aprovar o prompt final.
 
