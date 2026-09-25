@@ -15,6 +15,7 @@ As alterações relevantes deste projeto são registradas aqui, seguindo Keep a 
 
 ### Changed
 
+- Seletores padronizados na interface; no cadastro, sugestões de procedimentos seguem a cobertura do convênio, preservando a entrada livre para sinalizar exceções.
 - Extração textual com Llama 4 Scout, prompt com critérios explícitos por sinal e saída limitada pelo schema JSON do domínio.
 
 ### Fixed

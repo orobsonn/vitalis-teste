@@ -15,12 +15,14 @@ export function filtrarProcedimentos(procedimentos: readonly Procedimento[], que
 }
 
 export function ProcedureCombobox({ value, procedimentos, onValueChange, ...inputProps }: Props) {
-  const [open, setOpen] = useState(false), [active, setActive] = useState(-1), [showAll, setShowAll] = useState(false);
+  const [open, setOpen] = useState(false), [active, setActive] = useState(-1), [showAll, setShowAll] = useState(false), [above, setAbove] = useState(false);
   const root = useRef<HTMLDivElement>(null), input = useRef<HTMLInputElement>(null), list = useRef<HTMLUListElement>(null);
   const matches = filtrarProcedimentos(procedimentos, showAll ? "" : value);
   const visible = open && !inputProps.disabled;
   const listId = `${inputProps.id}-options`;
   const activeId = visible && matches[active] ? `${listId}-${active}` : undefined;
+
+  useEffect(() => { setActive(-1); setShowAll(false); setOpen(false); }, [procedimentos.map(item => item.codigo).join("\u0000")]);
 
   useEffect(() => {
     if (visible && active >= 0) list.current?.children[active]?.scrollIntoView({ block: "nearest" });
@@ -37,6 +39,11 @@ export function ProcedureCombobox({ value, procedimentos, onValueChange, ...inpu
     return () => document.removeEventListener("pointerdown", outside);
   }, [visible]);
 
+  function show() {
+    const rect = root.current?.getBoundingClientRect();
+    setAbove(Boolean(rect && window.innerHeight - rect.bottom < 250 && rect.top > window.innerHeight - rect.bottom));
+    setOpen(true);
+  }
   function close() { setOpen(false); setActive(-1); }
   function choose(codigo: string) {
     onValueChange(codigo);
@@ -55,14 +62,14 @@ export function ProcedureCombobox({ value, procedimentos, onValueChange, ...inpu
         role="combobox" aria-autocomplete="list" aria-haspopup="listbox"
         aria-expanded={visible} aria-controls={visible ? listId : undefined} aria-activedescendant={activeId}
         placeholder="Buscar código ou procedimento"
-        onFocus={() => { setShowAll(false); setActive(-1); setOpen(true); }}
-        onChange={event => { onValueChange(event.target.value); setShowAll(false); setActive(-1); setOpen(true); }}
+        onFocus={() => { setShowAll(false); setActive(-1); show(); }}
+        onChange={event => { onValueChange(event.target.value); setShowAll(false); setActive(-1); show(); }}
         onKeyDown={event => {
           if (event.nativeEvent.isComposing) return;
           if (event.key === "ArrowDown" || event.key === "ArrowUp") {
             event.preventDefault();
             const count = visible ? matches.length : procedimentos.length;
-            if (!visible) { setShowAll(true); setOpen(true); }
+            if (!visible) { setShowAll(true); show(); }
             setActive(previous => count === 0 ? -1 : event.key === "ArrowDown"
               ? (previous + 1) % count : previous <= 0 ? count - 1 : previous - 1);
           } else if (event.key === "Enter" && visible && matches[active]) {
@@ -78,10 +85,10 @@ export function ProcedureCombobox({ value, procedimentos, onValueChange, ...inpu
           const wasOpen = visible;
           input.current?.focus();
           if (wasOpen) close();
-          else { setShowAll(true); setActive(-1); setOpen(true); }
+          else { setShowAll(true); setActive(-1); show(); }
         }}><Icon name="chevron" size={15} /></button>
     </div>
-    {visible && <div className="procedure-popup">
+    {visible && <div className={`procedure-popup ${above ? "above" : ""}`}>
       <ul ref={list} id={listId} className="procedure-options" role="listbox" aria-label="Procedimentos do catálogo">
         {matches.map((item, index) => <li key={item.codigo} role="presentation">
           <button type="button" id={`${listId}-${index}`} role="option" aria-selected={index === active}
