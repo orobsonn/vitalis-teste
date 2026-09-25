@@ -147,7 +147,7 @@ const sha = Object.values(modulosSha)[0] as unknown as ApiSha | undefined;
 
 const PREFIXO_NAMESPACE = "semantico:v1:";
 const TTL_PADRAO_SEGUNDOS = 86400;
-const MODELO_BASE = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+const MODELO_BASE = "@cf/meta/llama-4-scout-17b-16e-instruct";
 const MODELO_ALTERNATIVO = "@cf/meta/llama-3.1-8b-instruct";
 const VERSAO_BASE = "observacao-v1";
 const VERSAO_ALTERNATIVA = "observacao-v2";

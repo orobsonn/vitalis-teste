@@ -40,6 +40,7 @@ import type {
   ResultadoImportacaoLote,
 } from "./contratos";
 import { serializar } from "./serializacao";
+import { PublicError } from "../errors";
 import {
   SQL_FINALIZAR_IMPORT,
   SQL_INCREMENTAR_GERACAO,
@@ -209,8 +210,8 @@ async function responderReplay(
     importacao.regrasHash !== o.regras.hash ||
     importacao.tamanhoChunk !== tamanhoChunk
   ) {
-    throw new Error(
-      `idempotency_key ${o.idempotencyKey} reutilizada com payload divergente (arquivo/regras/tamanho_chunk)`,
+    throw new PublicError(
+      409, "Esta chave de importação já foi usada com outro conteúdo. Selecione o arquivo novamente para iniciar outro lote.",
     );
   }
   const progresso = await contarLinhasPorEstado(db, importacao.id);
@@ -258,6 +259,17 @@ async function iniciarImportacaoInterna(
   // serializado como escape ASCII, mas já foi rejeitado acima, de modo que dois
   // CSVs distintos nunca casam o mesmo digest.
   const arquivoHash = sha256Hex(JSON.stringify(o.csv));
+  // Um replay conhecido é somente leitura: não remonta nem tenta inserir
+  // todas as linhas para depender de uma violação de unicidade. A inserção
+  // atômica e o catch abaixo continuam protegendo a corrida entre instâncias.
+  const existente = await serializar(() => db
+    .prepare("SELECT id FROM imports WHERE idempotency_key = ?")
+    .bind(o.idempotencyKey)
+    .first<{ id: string }>());
+  if (existente !== null && existente !== undefined) {
+    const lote = await serializar(() => responderReplay(db, o, arquivoHash, tamanhoChunk));
+    return { lote, replay: true };
+  }
   const regrasHash = o.regras.hash;
   const loteId = sha256Hex(`lote\u0000${o.idempotencyKey}`);
   const linhas = montarLinhasIniciais(loteId, parseGuiasCsv(o.csv));

@@ -1,5 +1,8 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
+import { createAuthRoutes, requireSession, requireCsrf } from "../auth";
+import { createApiRoutes } from "../http/api";
+import { PublicError } from "../application/errors";
 
 /** Nome do servico devolvido pelo probe de health. */
 const SERVICO = "vitalis-conferencia-preventiva-guias";
@@ -200,21 +203,32 @@ function notFoundJson(c: Context<{ Bindings: Env }>): Response {
  */
 export function createApp(env: Env): Hono<{ Bindings: Env }> {
   const app = new Hono<{ Bindings: Env }>();
-
-  // Guard global de metodo registrado antes de qualquer rota: o Hono converte
-  // HEAD em dispatch GET, entao `app.get("/health")` seria selecionado por
-  // `HEAD /health`. Aqui o metodo original e inspecionado antes do roteamento.
   app.use("*", async (c, next) => {
-    if (c.req.method !== "GET") {
-      return notFoundJson(c);
-    }
+    if (c.req.method === "HEAD") return notFoundJson(c);
+    c.header("X-Content-Type-Options", "nosniff");
+    c.header("Referrer-Policy", "same-origin");
+    c.header("X-Frame-Options", "DENY");
+    c.header("Cache-Control", "no-store");
     await next();
   });
-
   app.get("/health", (c) =>
     c.json({ status: "ok", service: SERVICO }, 200),
   );
-
+  app.route("/", createAuthRoutes(env));
+  app.use("/api/*", async (c, next) => {
+    const session = await requireSession(c.req.raw, env);
+    if (!session) return c.json({ error: "Sua sessão expirou. Entre novamente." }, 401);
+    if (c.req.method !== "GET" && !await requireCsrf(c.req.raw, session)) {
+      return c.json({ error: "A sessão desta página mudou. Atualize e tente novamente." }, 403);
+    }
+    await next();
+  });
+  app.get("/api/session", async c => {
+    const session = await requireSession(c.req.raw, env);
+    if (!session) return c.json({ error: "unauthorized" }, 401);
+    return c.json({ user: { email: session.email }, csrfToken: session.csrfToken });
+  });
+  app.route("/api", createApiRoutes(env));
   app.all("*", async (c) => {
     if (c.req.method !== "GET" || pathnameNavegavel(c.req.url) === undefined) {
       return notFoundJson(c);
@@ -223,7 +237,9 @@ export function createApp(env: Env): Hono<{ Bindings: Env }> {
     if (pedeJson(c)) {
       return notFoundJson(c);
     }
-
+    const session = await requireSession(c.req.raw, env);
+    if (!session) return c.redirect("/login", 302);
+    if (c.req.path === "/configuracoes/mcp") return c.redirect("/#conectar", 302);
     const assets = env.ASSETS;
     if (!assets) {
       return c.json({ error: "assets_unavailable" }, 503);
@@ -231,6 +247,11 @@ export function createApp(env: Env): Hono<{ Bindings: Env }> {
 
     return assets.fetch(c.req.raw);
   });
-
+  app.onError((error, c) => {
+    if (error instanceof PublicError) return c.json({ error: error.message }, error.status);
+    if (error instanceof SyntaxError) return c.json({ error: "Conteúdo inválido. Confira os dados e tente novamente." }, 400);
+    console.error(JSON.stringify({ event: "http_failure", path: c.req.path, kind: error.name }));
+    return c.json({ error: "Não foi possível concluir agora. Tente novamente." }, 503);
+  });
   return app;
 }

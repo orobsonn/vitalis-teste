@@ -1,3 +1,4 @@
+import { ESQUEMA_JSON_EXTRACAO } from "../../src/semantic/validacao";
 // Testes travados da task-2-adaptador-workers-ai (feature
 // semantic-observation-interpretation):
 //   lt-requisicao-workers-ai-exata       — o adaptador de PRODUÇÃO, instanciado
@@ -7,8 +8,8 @@
 //                                          configurável, system com o prompt
 //                                          versionado, user com JSON dos 3
 //                                          campos e `max_tokens: 512`, sem
-//                                          tools/function calling/stream/opções
-//                                          extras e sem identificadores
+//                                          tools/function calling/stream; JSON mode
+//                                          e temperatura fixos, sem identificadores
 //                                          (#ac-10, #ac-15, #ac-18);
 //   lt-metadados-efetivos-da-inferencia   — a resposta bruta devolve o texto
 //                                          serializado, o modelo efetivamente
@@ -63,7 +64,7 @@ interface ChamadaAi {
   entrada: Record<string, unknown>;
 }
 
-const MODELO_PADRAO = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+const MODELO_PADRAO = "@cf/meta/llama-4-scout-17b-16e-instruct";
 const MODELO_CONFIGURADO = "@cf/meta/llama-3.1-8b-instruct";
 
 // Campos estruturados identificadores que nunca podem viajar ao provedor (§3.1).
@@ -166,10 +167,12 @@ describe("lt-requisicao-workers-ai-exata", () => {
         { role: "user", content: JSON.stringify(entrada) },
       ],
       max_tokens: 512,
+      response_format: { type: "json_schema", json_schema: ESQUEMA_JSON_EXTRACAO },
+      temperature: 0,
     });
 
-    // Nenhuma opção além de `messages` e `max_tokens`.
-    expect(Object.keys(chamada.entrada).sort()).toEqual(["max_tokens", "messages"]);
+    // Somente opções fixas de geração; nenhuma ferramenta ou streaming.
+    expect(Object.keys(chamada.entrada).sort()).toEqual(["max_tokens", "messages", "response_format", "temperature"]);
     expect(chamada.entrada).not.toHaveProperty("tools");
     expect(chamada.entrada).not.toHaveProperty("functions");
     expect(chamada.entrada).not.toHaveProperty("stream");
@@ -320,7 +323,7 @@ describe("lt-metadados-efetivos-da-inferencia", () => {
     // Versão efetiva combina a constante literal com o sha256 do prompt.
     expect(api?.PROMPT_HASH).toMatch(/^[0-9a-f]{64}$/);
     expect(resposta.promptVersao).toBe(api?.versaoEfetivaDoPrompt());
-    expect(resposta.promptVersao).toBe(`observacao-v1+sha256:${api?.PROMPT_HASH}`);
+    expect(resposta.promptVersao).toBe(`observacao-v3-scout+sha256:${api?.PROMPT_HASH}`);
 
     // Sem metadados sensíveis adicionais: apenas os três campos do contrato.
     expect(Object.keys(resposta).sort()).toEqual(["modelo", "promptVersao", "texto"]);

@@ -11,7 +11,8 @@ import textoPrompt from "../../prompts/observacao/v1.md?raw";
 import { sha256Hex } from "../shared/sha256";
 
 /** Constante de versão literal do prompt de extração. */
-export const VERSAO_PROMPT = "observacao-v1";
+// Inclui a estratégia de geração: a adoção de JSON mode invalida o cache anterior.
+export const VERSAO_PROMPT = "observacao-v3-scout";
 
 /** Conteúdo cru do artefato canônico `prompts/observacao/v1.md`. */
 export const TEXTO_PROMPT: string = textoPrompt;

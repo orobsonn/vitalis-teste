@@ -78,6 +78,12 @@ export class StatementD1Sqlite {
     const linha = this.banco.prepare(this.sql).get(...this.valores);
     return linha ?? null;
   }
+
+  async batchResult(): Promise<ResultadoD1Like> {
+    // D1 batch returns rows for SELECT and RETURNING, unlike sqlite.run().
+    return /^\s*SELECT\b/i.test(this.sql) || /\bRETURNING\b/i.test(this.sql)
+      ? this.all() : this.run();
+  }
 }
 
 export class BancoD1Sqlite {
@@ -105,7 +111,7 @@ export class BancoD1Sqlite {
         if (!(statement instanceof StatementD1Sqlite)) {
           throw new TypeError("statement nao pertence ao adaptador D1 de teste");
         }
-        resultados.push(await statement.run());
+        resultados.push(await statement.batchResult());
       }
       this.banco.exec("COMMIT");
       return resultados;

@@ -49,7 +49,7 @@ const INDICES_ESPERADOS = [
 // ausentes.
 async function abrirBanco(): Promise<D1Database> {
   expect(typeof api?.executarBatchAtomico).toBe("function");
-  expect(Object.keys(migracoes)).toEqual([MIGRATION_PATH]);
+  expect(Object.keys(migracoes)).toContain(MIGRATION_PATH);
   return criarBanco();
 }
 

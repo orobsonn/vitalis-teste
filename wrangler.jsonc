@@ -1,6 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "vitalis",
+  "account_id": "ab9f6d8988145943bf8bbab313e45e6e",
   "main": "src/worker/index.ts",
   "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],
@@ -14,17 +15,17 @@
     {
       "binding": "DB",
       "database_name": "vitalis",
-      "database_id": "00000000-0000-0000-0000-000000000000"
+      "database_id": "32839f2a-c054-475e-848e-5383aaf832ff"
     }
   ],
   "kv_namespaces": [
     {
       "binding": "OAUTH_KV",
-      "id": "00000000000000000000000000000000"
+      "id": "bf9e7b7414be48bbb10ef5c8acbdc9e9"
     },
     {
       "binding": "CACHE_SEMANTICO",
-      "id": "00000000000000000000000000000000"
+      "id": "379b5ac079b74172897634abcf43b55f"
     }
   ],
   "worker_loaders": [
@@ -36,6 +37,7 @@
     "binding": "AI"
   },
   "observability": {
-    "enabled": true
+    "enabled": true,
+    "traces": { "enabled": true }
   }
 }

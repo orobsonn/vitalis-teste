@@ -7,8 +7,8 @@
  * timeout, cache ou logging aqui — essas políticas pertencem à orquestração.
  *
  * A requisição é fechada: system com o prompt versionado e user com o JSON dos
- * três campos, `max_tokens` como único teto. Nenhuma opção extra (`tools`,
- * functions, `stream`, …) e nenhum identificador estruturado é enviado. O modelo
+ * três campos, `max_tokens` como teto e JSON mode explícito com temperatura 0.
+ * Nenhuma tool, function, stream ou identificador estruturado é enviado. O modelo
  * vem de `MODELO_OBSERVACAO` ou da configuração injetada; jamais do texto da
  * observação, que é dado não confiável. A configuração é normalizada: só uma
  * string não vazia (após `trim`), preservada literalmente, é aceita como
@@ -51,9 +51,11 @@ import type {
 } from "./contratos";
 import { LIMITE_TEXTO_BRUTO_BYTES, campoTemTamanhoDeAbuso } from "./contratos";
 import { TEXTO_PROMPT, versaoEfetivaDoPrompt } from "./prompt";
+import { criarSnapshotJson } from "../shared/json-canonico";
+import { ESQUEMA_JSON_EXTRACAO } from "./validacao";
 
 /** Modelo padrão fixo do contrato; sobreponível apenas por configuração. */
-export const MODELO_OBSERVACAO = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+export const MODELO_OBSERVACAO = "@cf/meta/llama-4-scout-17b-16e-instruct";
 
 /** Teto nativo de geração da resposta (spec §3.9). */
 const MAX_TOKENS_RESPOSTA = 512;
@@ -134,8 +136,16 @@ function garantirEntradaDentroDoTetoDeAbuso(entradaObservacao: EntradaObservacao
  * fake de `InterpretadorObservacao` não substituiria a chamada real.
  */
 export interface BindingAi {
-  run(modelo: string, entrada: Record<string, unknown>): Promise<unknown>;
+  run(modelo: string, entrada: RequisicaoWorkersAi): Promise<unknown>;
 }
+
+/** Payload fechado de chat, também checado pelos tipos nativos do binding Scout. */
+export type RequisicaoWorkersAi = {
+  messages: { role: string; content: string }[];
+  max_tokens: number;
+  response_format: { type: "json_schema"; json_schema: typeof ESQUEMA_JSON_EXTRACAO };
+  temperature: number;
+};
 
 /** Opções de configuração do adaptador de produção. */
 export interface OpcoesInterpretadorWorkersAi {
@@ -168,10 +178,7 @@ function normalizarModelo(valor: unknown): string {
  * vazem ao provedor: apenas `observacao_recepcao`, `convenio` e
  * `procedimento_codigo` são serializados.
  */
-function montarRequisicao(entradaObservacao: EntradaObservacao): {
-  messages: { role: string; content: string }[];
-  max_tokens: number;
-} {
+function montarRequisicao(entradaObservacao: EntradaObservacao): RequisicaoWorkersAi {
   const payloadUsuario = JSON.stringify({
     observacao_recepcao: entradaObservacao.observacao_recepcao,
     convenio: entradaObservacao.convenio,
@@ -184,19 +191,30 @@ function montarRequisicao(entradaObservacao: EntradaObservacao): {
       { role: "user", content: payloadUsuario },
     ],
     max_tokens: MAX_TOKENS_RESPOSTA,
+    response_format: { type: "json_schema", json_schema: ESQUEMA_JSON_EXTRACAO },
+    temperature: 0,
   };
 }
 
-/** Lê o texto serializado do campo `response` devolvido pelo binding. */
+/**
+ * JSON mode do Workers AI devolve `response` como objeto. Converte apenas
+ * dados JSON puros para o contrato textual existente; não retira cercas,
+ * completa campos ou flexibiliza o validador de schema/evidência.
+ * https://developers.cloudflare.com/workers-ai/features/json-mode/
+ */
 function textoDaResposta(resultado: unknown): string {
   if (typeof resultado === "object" && resultado !== null) {
-    const resposta = (resultado as { response?: unknown }).response;
+    const descriptor = Object.getOwnPropertyDescriptor(resultado, "response");
+    const resposta: unknown = descriptor && "value" in descriptor ? descriptor.value : undefined;
     if (typeof resposta === "string") {
       return resposta;
     }
+    if (typeof resposta === "object" && resposta !== null && !Array.isArray(resposta)) {
+      return JSON.stringify(criarSnapshotJson(resposta));
+    }
   }
 
-  throw new Error("Resposta do provedor sem campo `response` textual.");
+  throw new Error("Resposta do provedor sem campo `response` textual ou objeto JSON.");
 }
 
 /**

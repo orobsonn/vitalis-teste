@@ -192,16 +192,20 @@ export function somarCentavos(acumulado: number, parcela: number): number {
 }
 
 /**
- * Lê as revisões vigentes com validação vigente e aplica o recorte temporal por
- * `data_lancamento` civil, inclusivo nas duas pontas. Sem filtro (`de`/`ate`
- * nulos), devolve o estoque inteiro.
+ * Lê todas as projeções do relatório na mesma transação. Uma correção entre
+ * queries não pode separar a validação contada dos seus motivos/exposição.
  */
-export async function carregarLinhas(
+export async function carregarSnapshotRelatorio(
   db: D1Database,
   recorte: RecorteTemporal,
-): Promise<LinhaRecorte[]> {
-  const resultado = await db
-    .prepare(
+): Promise<{ linhas: LinhaRecorte[]; findings: FindingRecorte[]; falhasProcessamento: number; lotesProcessando: number }> {
+  const falhas = recorte.de !== null && recorte.ate !== null
+    ? db.prepare(`SELECT COUNT(*) AS total FROM import_lines l JOIN imports i ON i.id=l.import_id
+        WHERE l.estado=? AND substr(i.iniciado_em,1,10)>=? AND substr(i.iniciado_em,1,10)<=?`)
+      .bind("FALHOU", recorte.de, recorte.ate)
+    : db.prepare("SELECT COUNT(*) AS total FROM import_lines WHERE estado=?").bind("FALHOU");
+  const [rows, reasons, failures, processing] = await db.batch<Record<string, unknown>>([
+    db.prepare(
       `SELECT r.entrada_normalizada_json AS normalizada,
               r.assinatura_duplicidade AS assinatura,
               v.id AS validacao_id,
@@ -210,11 +214,26 @@ export async function carregarLinhas(
          FROM guide_revisions r
          JOIN validations v ON v.revision_id = r.id AND v.vigente = 1
         WHERE r.vigente = 1`,
-    )
-    .all<Record<string, unknown>>();
+    ),
+    db.prepare(`SELECT f.validation_id AS validacao_id, f.codigo AS codigo, f.severidade AS severidade
+      FROM findings f JOIN validations v ON v.id=f.validation_id
+      JOIN guide_revisions r ON r.id=v.revision_id WHERE r.vigente=1 AND v.vigente=1`),
+    falhas,
+    db.prepare("SELECT COUNT(*) AS total FROM imports WHERE status=?").bind("PROCESSANDO"),
+  ]);
+  return {
+    linhas: projetarLinhas(rows.results, recorte),
+    findings: reasons.results.map(bruta => ({ validacaoId: exigirId(bruta.validacao_id),
+      codigo: exigirId(bruta.codigo), severidade: bruta.severidade === "alerta" ? "alerta" : "pendencia" })),
+    falhasProcessamento: Number(failures.results[0]?.total ?? 0),
+    lotesProcessando: Number(processing.results[0]?.total ?? 0),
+  };
+}
 
+/** Recorta por data civil de lançamento, inclusiva, sem usar o instante da leitura. */
+function projetarLinhas(rows: Record<string, unknown>[], recorte: RecorteTemporal): LinhaRecorte[] {
   const linhas: LinhaRecorte[] = [];
-  for (const bruta of resultado.results) {
+  for (const bruta of rows) {
     const projetada = projetarNormalizada(lerTexto(bruta.normalizada));
     if (recorte.de !== null && recorte.ate !== null) {
       if (projetada.dataLancamento === null) {
@@ -236,25 +255,6 @@ export async function carregarLinhas(
     });
   }
   return linhas;
-}
-
-/** Findings das validações vigentes de revisões vigentes (a serem recortados). */
-export async function carregarFindings(db: D1Database): Promise<FindingRecorte[]> {
-  const resultado = await db
-    .prepare(
-      `SELECT f.validation_id AS validacao_id, f.codigo AS codigo, f.severidade AS severidade
-         FROM findings f
-         JOIN validations v ON v.id = f.validation_id
-         JOIN guide_revisions r ON r.id = v.revision_id
-        WHERE r.vigente = 1 AND v.vigente = 1`,
-    )
-    .all<Record<string, unknown>>();
-
-  return resultado.results.map((bruta) => ({
-    validacaoId: exigirId(bruta.validacao_id),
-    codigo: exigirId(bruta.codigo),
-    severidade: bruta.severidade === "alerta" ? "alerta" : "pendencia",
-  }));
 }
 
 /**

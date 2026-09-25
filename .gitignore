@@ -5,6 +5,7 @@ node_modules/
 dist/
 coverage/
 .wrangler/
+*.tsbuildinfo
 *.log
 .DS_Store
 
@@ -13,3 +14,4 @@ coverage/
 .env*
 !.env.example
 *.local.*
+.local/
