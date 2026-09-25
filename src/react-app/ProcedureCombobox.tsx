@@ -22,6 +22,8 @@ export function ProcedureCombobox({ value, procedimentos, onValueChange, ...inpu
   const listId = `${inputProps.id}-options`;
   const activeId = visible && matches[active] ? `${listId}-${active}` : undefined;
 
+  useEffect(() => { setActive(-1); setShowAll(false); setOpen(false); }, [procedimentos.map(item => item.codigo).join("\u0000")]);
+
   useEffect(() => {
     if (visible && active >= 0) list.current?.children[active]?.scrollIntoView({ block: "nearest" });
   }, [active, visible]);
