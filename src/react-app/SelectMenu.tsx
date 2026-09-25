@@ -27,6 +27,7 @@ export function SelectMenu({ id, label, value, options, onChange, disabled, inva
   const list = useRef<HTMLUListElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
+  const [above, setAbove] = useState(false);
   const [active, setActive] = useState(-1);
   const selected = options.find(option => option.value === value);
   const shown = selected?.label ?? (value || options[0]?.label || label);
@@ -48,6 +49,11 @@ export function SelectMenu({ id, label, value, options, onChange, disabled, inva
     setOpen(false);
   }, [options.map(option => option.value).join("\u0000")]);
 
+  function show() {
+    const rect = root.current?.getBoundingClientRect();
+    setAbove(Boolean(rect && window.innerHeight - rect.bottom < 250 && rect.top > window.innerHeight - rect.bottom));
+    setOpen(true);
+  }
   function close() { setOpen(false); setActive(-1); }
   function choose(next: string) { onChange(next); close(); trigger.current?.focus(); }
   function initial() { return Math.max(0, options.findIndex(option => option.value === value)); }
@@ -59,26 +65,26 @@ export function SelectMenu({ id, label, value, options, onChange, disabled, inva
       aria-haspopup="listbox" aria-expanded={visible} aria-controls={visible ? listId : undefined}
       aria-activedescendant={visible && active >= 0 ? `${listId}-${active}` : undefined}
       aria-invalid={invalid || undefined} aria-describedby={describedBy} disabled={disabled}
-      className="control select-trigger" onClick={() => { if (visible) close(); else { setActive(initial()); setOpen(true); } }}
+      className="control select-trigger" onClick={() => { if (visible) close(); else { setActive(initial()); show(); } }}
       onKeyDown={event => {
         if (event.nativeEvent.isComposing) return;
         if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End") {
           event.preventDefault();
           const count = options.length;
           if (!count) return;
-          if (!visible) { setActive(initial()); setOpen(true); return; }
+          if (!visible) { setActive(initial()); show(); return; }
           setActive(previous => event.key === "Home" ? 0 : event.key === "End" ? count - 1
             : event.key === "ArrowDown" ? (previous + 1) % count : (previous - 1 + count) % count);
         } else if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           if (visible && active >= 0 && options[active]) choose(options[active].value);
-          else if (!visible) { setActive(initial()); setOpen(true); }
+          else if (!visible) { setActive(initial()); show(); }
         } else if (event.key === "Escape" && visible) { event.preventDefault(); event.stopPropagation(); close(); }
         else if (event.key === "Tab") close();
       }}>
       <span className={value ? undefined : "select-placeholder"}>{shown}</span><Icon name="chevron" size={15} />
     </button>
-    {visible && <div className="procedure-popup select-popup"><ul ref={list} id={listId} className="procedure-options" role="listbox" aria-label={label}>
+    {visible && <div className={`procedure-popup select-popup ${above ? "above" : ""}`}><ul ref={list} id={listId} className="procedure-options" role="listbox" aria-label={label}>
       {options.map((option, index) => <li key={`${option.value}-${index}`} role="presentation"><button type="button"
         id={`${listId}-${index}`} role="option" aria-selected={index === active} tabIndex={-1}
         className="procedure-option" onClick={() => choose(option.value)} onMouseDown={event => event.preventDefault()}

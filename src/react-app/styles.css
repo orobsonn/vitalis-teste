@@ -37,3 +37,5 @@ label{display:block;margin-bottom:6px;color:#334155;font-size:11px;font-weight:6
 @media print{.procedure-popup,.procedure-toggle{display:none!important}}
 .select-menu{position:relative;min-width:0}.select-trigger{display:flex;align-items:center;justify-content:space-between;gap:10px;text-align:left}.select-trigger span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.select-trigger svg{transform:rotate(90deg);color:var(--muted-fg)}.select-placeholder{color:#94a3b8}.select-trigger[aria-invalid=true]{border-color:var(--danger)}.select-trigger:focus-visible{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px #0f766e20}.select-popup{z-index:30}.toolbar .select-menu{flex:0 1 175px}.toolbar .select-menu .control{width:100%;max-width:none}.card-head .actions .select-menu{min-width:145px}.card-head .actions .select-menu .control{width:100%;max-width:none}@media(max-width:640px){.toolbar .select-menu{flex:1 1 130px}.card-head .actions .select-menu{flex:1 1 130px}}
 .card:has(.select-menu){overflow:visible}
+
+.procedure-popup.above{top:auto;bottom:calc(100% + 5px)}
