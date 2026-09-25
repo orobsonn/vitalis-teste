@@ -72,41 +72,30 @@ function textoOuNulo(valor: unknown): string | null {
 }
 
 async function lerEstadoCorrente(db: D1Database): Promise<RevisaoCorrente[]> {
-  const revisoes = await db
-    .prepare(
+  // Read one consistent snapshot in three queries; avoid two round trips per guide.
+  const [revisoes, validacoes, findings] = await db.batch<Record<string, unknown>>([
+    db.prepare(
       "SELECT id, guide_id, assinatura_duplicidade FROM guide_revisions WHERE vigente = 1 ORDER BY guide_id ASC, id ASC",
-    )
-    .all<{ id: string; guide_id: string; assinatura_duplicidade: string | null }>();
+    ),
+    db.prepare("SELECT v.* FROM validations v JOIN guide_revisions r ON r.id=v.revision_id WHERE v.vigente=1 AND r.vigente=1"),
+    db.prepare("SELECT f.* FROM findings f JOIN validations v ON v.id=f.validation_id JOIN guide_revisions r ON r.id=v.revision_id WHERE v.vigente=1 AND r.vigente=1 ORDER BY f.ordem"),
+  ]);
+  const validacoesPorRevisao = new Map(validacoes.results.map(v => [texto(v.revision_id), v]));
+  const findingsPorValidacao = new Map<string, Record<string, unknown>[]>();
+  for (const finding of findings.results) {
+    const id = texto(finding.validation_id);
+    const itens = findingsPorValidacao.get(id) ?? [];
+    itens.push(finding);
+    findingsPorValidacao.set(id, itens);
+  }
 
   const resultado: RevisaoCorrente[] = [];
   for (const revisao of revisoes.results) {
-    const validacaoLinha = await db
-      .prepare(
-        "SELECT id, sequencia, decisao, checagem_textual, referencia_temporal, regras_versao, " +
-          "regras_hash, ruleset_id, inferencia_modelo, inferencia_prompt_versao, " +
-          "orientacoes_json, limitacoes_json, extracao_id " +
-          "FROM validations WHERE revision_id = ? AND vigente = 1",
-      )
-      .bind(revisao.id)
-      .first<Record<string, unknown>>();
+    const validacaoLinha = validacoesPorRevisao.get(texto(revisao.id));
 
     let validacao: ValidacaoCorrente | null = null;
     if (validacaoLinha !== null && validacaoLinha !== undefined) {
-      const findingsLinha = await db
-        .prepare(
-          "SELECT ordem, codigo, severidade, campos_json, regra, evidencia, orientacao " +
-            "FROM findings WHERE validation_id = ? ORDER BY ordem ASC",
-        )
-        .bind(texto(validacaoLinha["id"]))
-        .all<{
-          ordem: number;
-          codigo: string;
-          severidade: string;
-          campos_json: string;
-          regra: string;
-          evidencia: string;
-          orientacao: string;
-        }>();
+      const findingsLinha = findingsPorValidacao.get(texto(validacaoLinha.id)) ?? [];
       validacao = {
         id: texto(validacaoLinha["id"]),
         sequencia: Number(validacaoLinha["sequencia"]),
@@ -121,7 +110,7 @@ async function lerEstadoCorrente(db: D1Database): Promise<RevisaoCorrente[]> {
         orientacoes: JSON.parse(texto(validacaoLinha["orientacoes_json"])),
         limitacoes: JSON.parse(texto(validacaoLinha["limitacoes_json"])),
         extracaoId: textoOuNulo(validacaoLinha["extracao_id"]),
-        findings: findingsLinha.results.map((finding) => ({
+        findings: findingsLinha.map((finding) => ({
           ordem: Number(finding.ordem),
           codigo: texto(finding.codigo),
           severidade: texto(finding.severidade) as SeveridadeMotivo,
@@ -136,7 +125,7 @@ async function lerEstadoCorrente(db: D1Database): Promise<RevisaoCorrente[]> {
     resultado.push({
       id: texto(revisao.id),
       guideId: texto(revisao.guide_id),
-      assinatura: revisao.assinatura_duplicidade ?? null,
+      assinatura: textoOuNulo(revisao.assinatura_duplicidade),
       validacao,
     });
   }

@@ -1,12 +1,35 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api, configurarSessao, mensagemErro, type Catalogo, type DashboardResposta, type GuiaResumo, type Importacao, type Sessao } from "./api";
+import { Dashboard } from "./Dashboard";
+import { GuideDetail, GuidesPage, GuideWizard } from "./GuidePages";
+import { ImportsPage } from "./ImportsPage";
+import { ConnectionPage, RulesPage } from "./RulesPage";
+import { CsvFormat, Icon, Modal, Notice } from "./ui";
+
+type Page = "inicio" | "guias" | "nova" | "importacoes" | "regras" | "conectar";
+const navigation: { id: Page; icon: string; label: string }[] = [{ id: "inicio", icon: "overview", label: "Visão geral" }, { id: "guias", icon: "guides", label: "Guias" }, { id: "nova", icon: "plus", label: "Nova guia" }, { id: "importacoes", icon: "upload", label: "Importações" }, { id: "regras", icon: "rules", label: "Regras" }, { id: "conectar", icon: "connection", label: "Conectar ao Claude" }];
+function currentPage(): Page { const value = window.location.hash.slice(1); return navigation.some((item) => item.id === value) ? value as Page : "inicio"; }
 export default function App() {
-  return (
-    <main className="mx-auto flex min-h-screen max-w-2xl flex-col items-center justify-center gap-4 p-8 text-center">
-      <h1 className="text-2xl font-semibold">
-        Vitalis — conferência preventiva de guias
-      </h1>
-      <p className="text-sm text-gray-600">
-        As telas finais desta aplicação chegam nas próximas issues.
-      </p>
-    </main>
-  );
+  const [session, setSession] = useState<Sessao | null>(null); const [catalogo, setCatalogo] = useState<Catalogo | null>(null); const [dashboard, setDashboard] = useState<DashboardResposta | null>(null); const [guias, setGuias] = useState<GuiaResumo[]>([]); const [importacoes, setImportacoes] = useState<Importacao[]>([]);
+  const [page, setPage] = useState<Page>(currentPage); const [error, setError] = useState(""); const [loading, setLoading] = useState(true); const [refreshing, setRefreshing] = useState(false); const [detailId, setDetailId] = useState<string | null>(null); const [editing, setEditing] = useState<GuiaResumo | null>(null); const [wizardKey, setWizardKey] = useState(0); const [format, setFormat] = useState(false); const [reset, setReset] = useState(false); const [confirmation, setConfirmation] = useState(""); const [resetBusy, setResetBusy] = useState(false); const [resetError, setResetError] = useState(""); const [menu, setMenu] = useState(false);
+  const content = useRef<HTMLElement>(null);
+  const refresh = useCallback(async () => {
+    const [report, guides, imports] = await Promise.all([api<DashboardResposta>("/api/dashboard"), api<{ guias: GuiaResumo[] }>("/api/guias"), api<{ importacoes: Importacao[] }>("/api/importacoes")]);
+    setDashboard(report); setGuias(guides.guias); setImportacoes(imports.importacoes);
+  }, []);
+  const initialize = useCallback(async () => {
+    setError(""); setLoading(true);
+    try { const auth = await api<Sessao>("/api/session"); configurarSessao(auth); setSession(auth); const [rules] = await Promise.all([api<Catalogo>("/api/catalogo"), refresh()]); setCatalogo(rules); }
+    catch (e) { setError(mensagemErro(e)); } finally { setLoading(false); }
+  }, [refresh]);
+  useEffect(() => { void initialize(); }, [initialize]);
+  useEffect(() => { function onHash() { setPage(currentPage()); setMenu(false); } window.addEventListener("hashchange", onHash); return () => window.removeEventListener("hashchange", onHash); }, []);
+  useEffect(() => { document.title = `${navigation.find((item) => item.id === page)?.label ?? "Vitalis"} · Vitalis`; content.current?.focus({ preventScroll: true }); }, [page]);
+  function navigate(next: Page) { if (next === "nova") { setEditing(null); setWizardKey((value) => value + 1); } setPage(next); window.location.hash = next; setMenu(false); }
+  function edit(guia: GuiaResumo) { setEditing(guia); setWizardKey((value) => value + 1); setDetailId(null); setPage("nova"); window.location.hash = "nova"; }
+  async function saved(id?: string) { await refresh(); if (id) { navigate("guias"); setDetailId(id); } }
+  async function refreshVisible() { setRefreshing(true); setError(""); try { await refresh(); } catch (e) { setError(mensagemErro(e)); } finally { setRefreshing(false); } }
+  async function doReset() { if (confirmation !== "REINICIAR") return; setResetBusy(true); setResetError(""); try { await api("/api/reset", { confirmacao: "REINICIAR" }); await refresh(); setEditing(null); setDetailId(null); setReset(false); setConfirmation(""); navigate("inicio"); } catch (e) { setResetError(mensagemErro(e)); } finally { setResetBusy(false); } }
+  async function logout() { setError(""); try { await api("/logout", {}); window.location.assign("/login"); } catch (e) { setError(mensagemErro(e)); } }
+  return <div className="app"><a className="skip-link" href="#conteudo" onClick={event => { event.preventDefault(); content.current?.focus({ preventScroll: true }); content.current?.scrollIntoView({ block: "start" }); }}>Ir para o conteúdo</a><header className="appbar"><div className="logo"><span className="logo-mark">V</span><span>Conferência de guias</span></div><div className="appbar-actions"><span className="env">Ambiente demonstrativo</span><span className="user" title={session?.user.email}>{session?.user.email.slice(0, 2).toUpperCase() ?? "OP"}</span><button className="btn ghost small" onClick={() => void logout()} disabled={!session}>Sair</button><button className="mobile-menu btn small" aria-label="Abrir navegação" aria-expanded={menu} onClick={() => setMenu(!menu)}><Icon name="overview" /></button></div></header><div className="layout"><aside className={`sidebar ${menu ? "mobile-open" : ""}`}><div className="nav-label">Operação</div><nav aria-label="Navegação principal">{navigation.map((item) => <a href={`#${item.id}`} className={`nav-item ${page === item.id ? "active" : ""}`} aria-current={page === item.id ? "page" : undefined} key={item.id} onClick={(e) => { e.preventDefault(); navigate(item.id); }} title={item.label}><Icon name={item.icon} /><span>{item.label}</span></a>)}</nav><div className="side-foot">A conferência preventiva não garante pagamento pelo convênio.</div><div className="sidebar-bottom"><button className="nav-item" onClick={() => { setReset(true); setConfirmation(""); setResetError(""); }} disabled={!session}><Icon name="refresh" /><span>Reiniciar demonstração</span></button><span className="sidebar-brand">Vitalis <span>Conferência preventiva</span></span></div></aside><main className="content" id="conteudo" tabIndex={-1} ref={content}>{loading ? <div className="loading"><span className="spinner" />Preparando sua operação…</div> : <>{error && <Notice error>{error} <button className="text-button" onClick={() => void (catalogo ? refreshVisible() : initialize())}>Tentar novamente</button></Notice>}{catalogo && dashboard && <><div className="page-utility"><button className="text-button" disabled={refreshing} onClick={() => void refreshVisible()}><Icon name="refresh" size={13} />{refreshing ? "Atualizando…" : "Atualizar dados"}</button></div>{page === "inicio" && <Dashboard dashboard={dashboard} guias={guias} onImport={() => navigate("importacoes")} onNew={() => navigate("nova")} onGuides={() => navigate("guias")} onOpen={setDetailId} onFormat={() => setFormat(true)} />}{page === "guias" && <GuidesPage guias={guias} importacoes={importacoes} catalogo={catalogo} onOpen={setDetailId} onNew={() => navigate("nova")} onImport={() => navigate("importacoes")} />}{page === "nova" && <GuideWizard key={wizardKey} catalogo={catalogo} editing={editing} onSaved={saved} onCancel={() => navigate("guias")} />}{page === "importacoes" && <ImportsPage importacoes={importacoes} onRefresh={refresh} onOpen={setDetailId} onFormat={() => setFormat(true)} />}{page === "regras" && <RulesPage catalogo={catalogo} />}{page === "conectar" && <ConnectionPage />}</>}</>}</main></div>{detailId && <GuideDetail key={detailId} id={detailId} onClose={() => setDetailId(null)} onEdit={edit} onUpdated={refresh} />}{format && <CsvFormat onClose={() => setFormat(false)} />}{reset && <Modal title="Reiniciar demonstração" onClose={() => { if (!resetBusy) setReset(false); }}><p>Esta ação apaga todas as guias, importações, revisões e conferências da demonstração.</p><p>As regras, a conta de acesso e as conexões OAuth são preservadas.</p>{resetError && <Notice error>{resetError}</Notice>}<label htmlFor="reset-confirmation">Digite REINICIAR para confirmar</label><input id="reset-confirmation" className="control" value={confirmation} onChange={(e) => setConfirmation(e.target.value)} disabled={resetBusy} autoComplete="off" /><div className="modal-footer"><button className="btn" disabled={resetBusy} onClick={() => setReset(false)}>Cancelar</button><button className="btn danger" disabled={confirmation !== "REINICIAR" || resetBusy} onClick={() => void doReset()}>{resetBusy ? "Reiniciando…" : "Apagar dados e reiniciar"}</button></div></Modal>}</div>;
 }

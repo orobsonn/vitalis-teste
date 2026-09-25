@@ -17,6 +17,8 @@ import {
 } from "../../storage";
 import type { RevisaoPersistida, ValidacaoPersistida } from "../../storage";
 import { sha256Hex } from "../../shared/sha256";
+import { textoCanonico } from "../../shared/json-canonico";
+import { PublicError } from "../errors";
 import { assinaturaDuplicidadeDaGuia, conteudoDaValidacao, conteudoHashDaGuia } from "./conferencia";
 import type {
   ConferenciaPersistivel,
@@ -128,11 +130,15 @@ async function prepararExtracao(
   }
   const existente = await db
     .prepare(
-      "SELECT id FROM semantic_extractions WHERE observacao_hash = ? AND modelo = ? AND prompt_versao = ?",
+      "SELECT id,sinais_json,situacao_json,ambiguidades_json FROM semantic_extractions WHERE observacao_hash = ? AND modelo = ? AND prompt_versao = ?",
     )
     .bind(extracao.observacaoHash, extracao.modelo, extracao.promptVersao)
-    .first<{ id: string }>();
+    .first<{ id: string; sinais_json: string; situacao_json: string; ambiguidades_json: string }>();
   if (existente !== null && existente !== undefined) {
+    if (textoCanonico([JSON.parse(existente.sinais_json), JSON.parse(existente.situacao_json), JSON.parse(existente.ambiguidades_json)]) !==
+      textoCanonico([extracao.sinais, extracao.situacao, extracao.ambiguidades])) {
+      throw new PublicError(503, "A interpretação retornou informação divergente da extração registrada. O resultado anterior foi preservado.");
+    }
     return String(existente.id);
   }
   // Array JSON canônico: injetivo sobre a tripla (concatenar com "\u0000"

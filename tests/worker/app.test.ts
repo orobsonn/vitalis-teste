@@ -7,15 +7,24 @@
 // GET, e que a delegacao a ASSETS ocorre no maximo uma vez e apenas apos o
 // roteamento.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import { Hono } from "hono";
 import { createApp } from "../../src/worker/app";
+
+// These tests exercise routing after authentication; real authentication is
+// exercised independently in tests/auth and in the published browser flow.
+vi.mock("../../src/auth", () => ({
+  createAuthRoutes: () => new Hono(),
+  requireSession: async () => ({ userId: "demo", role: "demo", email: "demo@example.test", csrfToken: "test" }),
+  requireCsrf: async () => true,
+}));
 
 const SERVICO = "vitalis-conferencia-preventiva-guias";
 
 // Namespaces reservados: nunca navegacao, nunca delegados a ASSETS.
 const NAMESPACES_RESERVADOS = [
   "/api/x",
-  "/api/guias/2024",
+  "/api/rota-inexistente/2024",
   "/mcp",
   "/authorize",
   "/token",

@@ -282,11 +282,11 @@ const ASSETS_ESPERADO = {
 const DB_ESPERADO = {
   binding: "DB",
   database_name: "vitalis",
-  database_id: "00000000-0000-0000-0000-000000000000",
+  database_id: "32839f2a-c054-475e-848e-5383aaf832ff",
 };
 const KV_ESPERADO = {
   binding: "OAUTH_KV",
-  id: "00000000000000000000000000000000",
+  id: "bf9e7b7414be48bbb10ef5c8acbdc9e9",
 };
 const LOADER_ESPERADO = { binding: "LOADER" };
 const AI_ESPERADO = { binding: "AI" };
@@ -514,16 +514,16 @@ test("contrato 7: worker-configuration.d.ts expõe Env com ASSETS/DB/OAUTH_KV/LO
 });
 
 // ---------------------------------------------------------------------------
-// Contrato 12: cache KV semântico dedicado (id placeholder) exposto como
+// Contrato 12: cache KV semântico dedicado exposto como
 // KVNamespace na cadeia de Env
 // ---------------------------------------------------------------------------
 
 const KV_SEMANTICO_ESPERADO = {
   binding: "CACHE_SEMANTICO",
-  id: "00000000000000000000000000000000",
+  id: "379b5ac079b74172897634abcf43b55f",
 };
 
-test("contrato 12: wrangler.jsonc declara exatamente um KV CACHE_SEMANTICO com id placeholder e Env expõe KVNamespace", () => {
+test("contrato 12: wrangler.jsonc declara exatamente um KV CACHE_SEMANTICO dedicado e Env expõe KVNamespace", () => {
   const cfg = readJsonc("wrangler.jsonc");
   assert.notEqual(cfg, null, "wrangler.jsonc ausente ou ilegível");
 

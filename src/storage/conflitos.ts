@@ -52,7 +52,11 @@ export function traduzirConflitoUnicidade(erro: unknown): ResultadoTraducaoUnici
     return { tipo: "outro" };
   }
 
-  const lista = mensagem.slice(inicio + PREFIXO_UNICIDADE.length).trim();
+  // O D1/Workerd acrescenta estes códigos à mensagem canônica do SQLite.
+  // O sufixo estendido UNIQUE foi observado no D1 remoto; outros códigos
+  // estendidos e texto adicional continuam rejeitados.
+  const lista = mensagem.slice(inicio + PREFIXO_UNICIDADE.length).trim()
+    .replace(/: SQLITE_CONSTRAINT(?: \(extended: SQLITE_CONSTRAINT_UNIQUE\))?$/, "");
   if (lista.length === 0) {
     return { tipo: "outro" };
   }

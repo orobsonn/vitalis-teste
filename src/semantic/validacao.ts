@@ -63,6 +63,9 @@ const EXTRACAO_SCHEMA = z.strictObject({
   ambiguidades: z.array(AMBIGUIDADE_SCHEMA),
 });
 
+/** Mesmo contrato fechado enviado ao provedor; evidência e coerência ainda são validadas localmente. */
+export const ESQUEMA_JSON_EXTRACAO = z.toJSONSchema(EXTRACAO_SCHEMA);
+
 /**
  * Normaliza um texto de evidência: colapsa `\s+` em um único espaço e aplica
  * `trim`, preservando a caixa (tolerância apenas de espaço em branco).

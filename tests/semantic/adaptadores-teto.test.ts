@@ -1,3 +1,4 @@
+import { ESQUEMA_JSON_EXTRACAO } from "../../src/semantic/validacao";
 // Teste travado da task-4-cache-semantico (feature
 // semantic-observation-interpretation):
 //   lt-adaptadores-teto-de-abuso — o teto de abuso por campo cru (§3.9) vale
@@ -137,7 +138,7 @@ function bytesUtf8(texto: string): number {
 // fixos e determinísticos; o que importa aqui é que o teto de abuso não dependa
 // deles.
 const CONTEXTO: ContextoCache = {
-  modelo: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+  modelo: "@cf/meta/llama-4-scout-17b-16e-instruct",
   promptVersao: "observacao-v1",
   promptHash: api?.PROMPT_HASH ?? "0".repeat(64),
 };
@@ -390,8 +391,10 @@ describe("lt-adaptadores-teto-de-abuso", () => {
           { role: "user", content: JSON.stringify(entrada) },
         ],
         max_tokens: 512,
+        response_format: { type: "json_schema", json_schema: ESQUEMA_JSON_EXTRACAO },
+        temperature: 0,
       });
-      expect(Object.keys(chamadas[0].entrada).sort()).toEqual(["max_tokens", "messages"]);
+      expect(Object.keys(chamadas[0].entrada).sort()).toEqual(["max_tokens", "messages", "response_format", "temperature"]);
 
       const mensagens = chamadas[0].entrada.messages as { role: string; content: string }[];
       const payload = JSON.parse(mensagens[1].content) as Record<string, unknown>;

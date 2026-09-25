@@ -340,13 +340,13 @@ describe("lt-schema-e-evidencia-fechados > par surrogate dividido e não pareado
 
 describe("lt-prompt-acoplado-e-anti-injecao", () => {
   it("usa a versão canônica e o hash do conteúdo do prompt", () => {
-    expect(api?.VERSAO_PROMPT).toBe("observacao-v1");
+    expect(api?.VERSAO_PROMPT).toBe("observacao-v3-scout");
     expect(typeof sha?.sha256Hex).toBe("function");
     expect(api?.hashDoPrompt("observacao")).toBe(sha?.sha256Hex("observacao"));
     expect(api?.hashDoPrompt("conteudo A")).not.toBe(api?.hashDoPrompt("conteudo B"));
     expect(api?.PROMPT_HASH).toMatch(/^[0-9a-f]{64}$/);
     expect(api?.PROMPT_HASH).toBe(api?.hashDoPrompt(api?.TEXTO_PROMPT ?? ""));
-    expect(api?.versaoEfetivaDoPrompt()).toBe(`observacao-v1+sha256:${api?.PROMPT_HASH}`);
+    expect(api?.versaoEfetivaDoPrompt()).toBe(`observacao-v3-scout+sha256:${api?.PROMPT_HASH}`);
   });
 
   it("acopla o texto canônico ao arquivo de prompt versionado", () => {
