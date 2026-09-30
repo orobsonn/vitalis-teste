@@ -8,10 +8,18 @@ O MCP usa Streamable HTTP stateless: requisições JSON por POST, sem sessão pe
 
 | Ferramenta | Entrada | Efeito |
 | --- | --- | --- |
+| `listar_convenios` | `offset`, `limite` opcionais | Nomes dos convênios, quantidade de procedimentos conhecidos/cobertos e versão do catálogo. |
+| `listar_procedimentos` | `convenio`, `cobertura`, `offset`, `limite` | Código, descrição, cobertura e valor em centavos. Apenas convênio é obrigatório. |
+| `buscar_procedimentos` | Mesma entrada + `termo` obrigatório | Busca descrição/código ignorando acentos/maiúsculas; exige todas as palavras. |
+| `obter_convenio` | Mesma entrada da listagem de procedimentos | Regras comuns, limites, campos exigidos, observação literal, definições e procedimentos paginados. |
 | `consultar_regra` | `convenio`, `procedimento_codigo` | Consulta o catálogo vigente; devolve cobertura, procedimento, valor em centavos, campos obrigatórios, prazos, observação literal, limitações e versão. |
 | `verificar_guia` | `guia`, `referencia_temporal` opcional | Confere com o núcleo compartilhado, sem persistir guia/revisão/validação nem alterar os indicadores operacionais. |
 | `registrar_guia` | Mesma entrada e `idempotency_key` | Registra ou revisa via o caso de uso compartilhado. Reenvios idênticos reaproveitam o registro; conflito da chave retorna erro explícito. |
-| `code` | `code` como função JavaScript assíncrona | Combina somente `codemode.consultar_regra` e `codemode.verificar_guia`. |
+| `code` | `code` como função JavaScript assíncrona | Combina as seis ferramentas de leitura, incluindo descoberta do catálogo. |
+
+As ferramentas de descoberta leem somente o catálogo validado, sem acessar guias, IA ou storage. Paginação: `offset` padrão 0 e `limite` padrão 50 (1–100). `total` conta os resultados filtrados; continue com `proximo_offset` até `null`, mantendo os filtros. A listagem inclui cobertos e não cobertos; use `cobertura: "coberto"` para listar o que o plano cobre. Os nomes retornados são aceitos em `consultar_regra`. Convênio desconhecido retorna 404; busca sem correspondências retorna lista vazia. Não são inventados IDs ou vigências ausentes da fonte. A versão do catálogo não equivale a uma data de vigência. Valor de referência não garante preço nem pagamento.
+
+Fluxo: `listar_convenios({})` → `obter_convenio({convenio:"Vitalcard"})` → `buscar_procedimentos({convenio:"Vitalcard",termo:"fisioterapia musculoesqueletica"})` → `consultar_regra({convenio:"Vitalcard",procedimento_codigo:"50000470"})`.
 
 `guia` aceita as 18 colunas do [dicionário](fontes/dicionario_dados.md), como texto, nulo ou ausência. Não transforma dados ausentes em valores inventados. A observação é enviada integralmente ao caso de uso. Datas conhecidas usam `AAAA-MM-DD`; sem referência explícita, vale a política temporal do núcleo, sem assumir automaticamente o dia atual.
 
@@ -41,7 +49,7 @@ Uma entrada incompleta é conferida como fornecida. A decisão, os motivos e as 
 - Rate limit: 60 requisições por minuto por usuário/IP, aplicado pelo callback obrigatório antes de processar o corpo. Bloqueio retorna HTTP 429 e `Retry-After`.
 - `code`: timeout de 5 segundos no `DynamicWorkerExecutor` e no host, até 20 chamadas internas e 128 KiB cumulativos de resultados de ferramentas.
 - Após o prazo ou término do `code`, o host recusa novas chamadas. O timeout do pacote é cooperativo; CPU síncrona continua sujeita aos limites do runtime Workers.
-- O sandbox recebe apenas dois dispatchers de leitura. `LOADER` é usado pelo host; D1, AI, KV, secrets, escrita e módulos adicionais não são bindings do sandbox. `globalOutbound` permanece no padrão `null`, que bloqueia `fetch` e `connect`.
+- O sandbox recebe apenas seis dispatchers de leitura. `LOADER` é usado pelo host; D1, AI, KV, secrets, escrita e módulos adicionais não são bindings do sandbox. `globalOutbound` permanece no padrão `null`, que bloqueia `fetch` e `connect`.
 - Erros internos têm resposta genérica. Erros públicos do caso de uso preservam mensagem segura e status. Logs de sandbox não são devolvidos ou registrados pelo adaptador.
 
 O wrapper `codeMcpServer` do pacote também pode abreviar saídas extensas; prefira retornar apenas os resultados necessários. A Skill deve usar a ferramenta direta para uma conferência individual completa.
@@ -56,7 +64,7 @@ No cliente com a Skill carregada, peça para conferir a guia e forneça seus dad
 
 ## Verificação
 
-`tests/mcp` verifica o protocolo real em memória, os schemas, paridade com o núcleo, exposição de somente duas leituras ao executor, idempotency key encaminhada sem alteração, limites e sanitização. O transporte HTTP é testado com adaptador Workers substituído; os testes unitários não comprovam bloqueio de rede no WorkerLoader implantado.
+`tests/mcp` verifica o protocolo real em memória, os schemas, paridade com o núcleo, exposição de somente seis leituras ao executor, idempotency key encaminhada sem alteração, limites e sanitização. O transporte HTTP é testado com adaptador Workers substituído; os testes unitários não comprovam bloqueio de rede no WorkerLoader implantado.
 
 O smoke publicado `scripts/smoke-mcp.mjs` completou OAuth DCR/PKCE/refresh com o cliente SDK real, listou as quatro ferramentas, consultou/verificou e provou bloqueios de rede/escrita e timeout do Code Mode. A execução inicial não gravou guias. Histórico/idempotência são exercitados nos testes de aplicação/storage; `--write` habilita também a prova remota de registro E2E: concorrência com a mesma chave, retentativa, conflito 409, correção e A→B→A histórico, verificando duas revisões e uma vigente. A Skill também foi executada no Codex CLI real: 6 casos, inputs intactos, nenhuma escrita e respostas coerentes com os retornos do servidor. O método de autenticação do teste e as limitações estão em [demonstração](demonstracao.md).
 

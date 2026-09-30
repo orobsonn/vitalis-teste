@@ -4,6 +4,15 @@ As alterações relevantes deste projeto são registradas aqui, seguindo Keep a 
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-30
+
+### Added
+
+- Descoberta de convênios, listagem e busca de procedimentos por descrição/código e visão consolidada de regras pelo MCP.
+- Paginação, filtro por cobertura, valores de referência em centavos e identificação da versão do catálogo nas novas leituras.
+- Busca sem distinção de acentos/maiúsculas e composição das novas ferramentas no Code Mode, preservando bloqueio de escrita.
+- Testes integrados do fluxo de descoberta e smoke publicado com cliente MCP real.
+
 ## [0.0.1] - 2026-09-30
 
 Marco zero: aplicação e MCP existentes antes da expansão de descoberta do catálogo.

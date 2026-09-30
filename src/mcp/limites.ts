@@ -5,7 +5,7 @@ export const MAX_RESPONSE_BYTES = 128 * 1024;
 export const CODE_TIMEOUT_MS = 5_000;
 export const MAX_CODE_TOOL_CALLS = 20;
 const encoder = new TextEncoder();
-const READ_TOOLS = new Set(["consultar_regra", "verificar_guia"]);
+const READ_TOOLS = new Set(["consultar_regra", "verificar_guia", "listar_convenios", "listar_procedimentos", "buscar_procedimentos", "obter_convenio"]);
 
 export function jsonDentroDoLimite(valor: unknown, limite = MAX_RESPONSE_BYTES): string {
   const texto = JSON.stringify(valor);
