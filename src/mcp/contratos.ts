@@ -1,4 +1,5 @@
 import type { ConsultaRegra, ColunaGuia } from "../domain";
+import type { createCatalogHandlers } from "../application/catalogo";
 
 export interface McpActor {
   userId: "demo";
@@ -21,7 +22,7 @@ export interface RegistrarGuiaInput extends VerificarGuiaInput {
 }
 
 /** A composição de domínio/IA/storage é compartilhada com a API da aplicação. */
-export interface VitalisHandlers {
+export interface VitalisHandlers extends ReturnType<typeof createCatalogHandlers> {
   consultarRegra(input: ConsultarRegraInput): ConsultaRegra | Promise<ConsultaRegra>;
   verificarGuia(input: VerificarGuiaInput): unknown | Promise<unknown>;
   registrarGuia(input: RegistrarGuiaInput): unknown | Promise<unknown>;

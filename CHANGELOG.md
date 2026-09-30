@@ -4,6 +4,19 @@ As alterações relevantes deste projeto são registradas aqui, seguindo Keep a 
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-30
+
+### Added
+
+- Descoberta de convênios, listagem e busca de procedimentos por descrição/código e visão consolidada de regras pelo MCP.
+- Paginação, filtro por cobertura, valores de referência em centavos e identificação da versão do catálogo nas novas leituras.
+- Busca sem distinção de acentos/maiúsculas e composição das novas ferramentas no Code Mode, preservando bloqueio de escrita.
+- Testes integrados do fluxo de descoberta e smoke publicado com cliente MCP real.
+
+## [0.0.1] - 2026-09-30
+
+Marco zero: aplicação e MCP existentes antes da expansão de descoberta do catálogo.
+
 ### Added
 
 - Acesso autenticado à demonstração, sessão protegida e OAuth com PKCE para clientes MCP.
@@ -35,5 +48,3 @@ As alterações relevantes deste projeto são registradas aqui, seguindo Keep a 
 - Validação da origem e de mensagens JSON-RPC individuais no endpoint MCP.
 - Normalização de datas brasileiras nos filtros do relatório.
 - Reutilização validada das extrações persistidas após expiração do cache, com recusa de divergências entre resultado e evidência histórica.
-
-Não há release formal ou tag deste marco; a versão do pacote permanece `0.0.0` até a definição da baseline.

@@ -13,6 +13,7 @@ import { PublicError } from "./errors";
 import { guideDetail } from "./views";
 import { withOperationalLock } from "./lock";
 import { allowRateLimit } from "../auth/limits";
+import { createCatalogHandlers } from "./catalogo";
 
 const loadedCatalog = carregarCatalogo(rawCatalog);
 if (!loadedCatalog.ok) throw new Error("Catálogo inválido na compilação.");
@@ -138,6 +139,7 @@ async function ensureManualImport(db: D1Database, now: string): Promise<string> 
 export function createVitalisHandlers({ env, actor }: { env: Env; actor: { userId: string } }) {
   const conferir = createConference(env, actor.userId);
   return {
+    ...createCatalogHandlers(catalogo),
     consultarRegra: (input: { convenio: string; procedimento_codigo: string }) => consultarRegra(input, catalogo),
     verificarGuia: async (input: GuideInput) => {
       const guia = normalizarGuia({ numero: 1, original: originalFromInput(input.guia), linhaOriginal: "" });

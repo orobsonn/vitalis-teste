@@ -112,9 +112,23 @@ try {
   client = new Client({ name: "vitalis-smoke-real", version: "1.0.0" });
   const transport = new StreamableHTTPClientTransport(new URL(origin + "/mcp"), { requestInit: { headers: { Authorization: `Bearer ${tokens.access_token}` } } });
   await client.connect(transport); success(stage);
-  stage = "tools/list quatro ferramentas";
+  stage = "tools/list oito ferramentas";
   const listed = await client.listTools();
-  assert.deepEqual(listed.tools.map(t => t.name).sort(), ["code", "consultar_regra", "registrar_guia", "verificar_guia"]); success(stage);
+  assert.deepEqual(listed.tools.map(t => t.name).sort(), ["buscar_procedimentos", "code", "consultar_regra", "listar_convenios", "listar_procedimentos", "obter_convenio", "registrar_guia", "verificar_guia"]); success(stage);
+  stage = "descoberta do catálogo e navegação até regra";
+  const catalog = value(await client.callTool({ name: "listar_convenios", arguments: {} }));
+  assert(catalog.convenios.some(c => c.nome === "Vitalcard"));
+  const overview = value(await client.callTool({ name: "obter_convenio", arguments: { convenio: "VitalCard" } }));
+  assert.equal(overview.limite_sessoes, 10);
+  const page = value(await client.callTool({ name: "listar_procedimentos", arguments: { convenio: "Vitalcard", limite: 2 } }));
+  assert.equal(page.total, 5); assert.equal(page.proximo_offset, 2);
+  const search = value(await client.callTool({ name: "buscar_procedimentos", arguments: { convenio: "Plano Bem", termo: "musculoesqueletica" } }));
+  assert.equal(search.total, 1); assert.equal(search.procedimentos[0].codigo, "50000470");
+  const detail = value(await client.callTool({ name: "consultar_regra", arguments: { convenio: search.convenio, procedimento_codigo: search.procedimentos[0].codigo } }));
+  assert.equal(detail.cobertura, search.procedimentos[0].cobertura); success(stage);
+  stage = "Code Mode explora catálogo sem escrita";
+  const explored = value(await client.callTool({ name: "code", arguments: { code: "async () => ({ convenios: await codemode.listar_convenios({}), busca: await codemode.buscar_procedimentos({convenio:'Plano Bem',termo:'musculoesqueletica'}) })" } }));
+  assert.deepEqual(explored.convenios, catalog); assert.deepEqual(explored.busca, search); success(stage);
   const authorizedHeaders = { Authorization: `Bearer ${tokens.access_token}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream" };
   for (const [name, init, status] of [
     ["GET stateless rejeitado", { method: "GET" }, 405],

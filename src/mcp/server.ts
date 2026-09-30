@@ -5,7 +5,8 @@ import type { Executor } from "@cloudflare/codemode";
 import type { ConsultaRegra } from "../domain";
 import { PublicError } from "../application/errors";
 import type { VitalisHandlers } from "./contratos";
-import { consultarRegraSchema, verificarGuiaSchema, registrarGuiaSchema } from "./schemas";
+import { consultarRegraSchema, verificarGuiaSchema, registrarGuiaSchema,
+  listarConveniosSchema, listarProcedimentosSchema, buscarProcedimentosSchema } from "./schemas";
 import { jsonDentroDoLimite, limitarExecutor } from "./limites";
 
 const READ_ANNOTATIONS = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
@@ -54,6 +55,22 @@ async function responder(acao: () => unknown | Promise<unknown>): Promise<CallTo
 }
 
 function registrarLeituras(server: McpServer, handlers: VitalisHandlers): void {
+  server.registerTool("listar_convenios", {
+    title: "Listar convênios", description: "Descobre os convênios cadastrados, nomes para consultas seguintes, quantidades de procedimentos e cobertura e versão do catálogo. Resultado paginado; continue por proximo_offset até null. Não registra guias.",
+    inputSchema: listarConveniosSchema, annotations: READ_ANNOTATIONS,
+  }, input => responder(() => handlers.listarConvenios(input)));
+  server.registerTool("listar_procedimentos", {
+    title: "Listar procedimentos do convênio", description: "Lista procedimentos conhecidos com código, descrição, cobertura explícita e valor de referência em centavos. Por padrão inclui não cobertos; para listar os cobertos use cobertura=coberto. Continue por proximo_offset até null. Use consultar_regra para detalhes de um código.",
+    inputSchema: listarProcedimentosSchema, annotations: READ_ANNOTATIONS,
+  }, input => responder(() => handlers.listarProcedimentos(input)));
+  server.registerTool("buscar_procedimentos", {
+    title: "Buscar procedimentos por nome ou código", description: "Busca palavras da descrição ou código dentro de um convênio, ignorando acentos e maiúsculas. Exige todas as palavras; resultados vazios não significam convênio inexistente. Retorna cobertura e valores; continue por proximo_offset até null.",
+    inputSchema: buscarProcedimentosSchema, annotations: READ_ANNOTATIONS,
+  }, input => responder(() => handlers.buscarProcedimentos(input)));
+  server.registerTool("obter_convenio", {
+    title: "Obter visão completa do convênio", description: "Retorna regras comuns, campos obrigatórios, limites, prazos, observação literal, definições, limitações e versão, com procedimentos e cobertura paginados. Continue por proximo_offset até null para recuperar todos. Valor é referência, sem garantia de pagamento. Não registra guias.",
+    inputSchema: listarProcedimentosSchema, annotations: READ_ANNOTATIONS,
+  }, input => responder(() => handlers.obterConvenio(input)));
   server.registerTool("consultar_regra", {
     title: "Consultar regra do convênio",
     description: "Consulta o catálogo versionado do Vitalis por convênio e procedimento. Retorna cobertura, campos exigidos, limites, observação literal e limitações. Não registra guias.",

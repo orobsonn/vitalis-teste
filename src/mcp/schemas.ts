@@ -10,6 +10,20 @@ export const consultarRegraSchema = z.strictObject({
   procedimento_codigo: z.string().max(128).describe("Código informado do procedimento."),
 });
 
+const paginacao = {
+  offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional().describe("Posição inicial; use proximo_offset para continuar."),
+  limite: z.number().int().min(1).max(100).optional().describe("Itens por página, padrão 50, máximo 100."),
+};
+export const listarConveniosSchema = z.strictObject(paginacao);
+export const listarProcedimentosSchema = z.strictObject({
+  ...paginacao,
+  convenio: z.string().min(1).max(512).refine(v => v.trim().length > 0).describe("Nome do convênio retornado por listar_convenios."),
+  cobertura: z.enum(["coberto", "nao_coberto"]).optional().describe("Se omitido, inclui cobertos e não cobertos; para listar o que cobre, use coberto."),
+});
+export const buscarProcedimentosSchema = listarProcedimentosSchema.extend({
+  termo: z.string().min(1).max(512).refine(v => v.trim().length > 0).describe("Palavras da descrição ou código; ignora acentos/maiúsculas e exige todas as palavras."),
+});
+
 export const verificarGuiaSchema = z.strictObject({
   guia: z.strictObject(colunas).describe(
     "Campos originais da guia. Preserve observacao_recepcao integralmente. Ausentes ficam omitidos, nulos ou vazios; nunca invente valores.",

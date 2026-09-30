@@ -7,6 +7,7 @@ import type { VitalisHandlers } from "../../src/mcp/contratos";
 import { COLUNAS_GUIA, carregarCatalogo, consultarRegra, normalizarGuia, verificarGuia, type GuiaOriginal } from "../../src/domain";
 import { PublicError } from "../../src/application/errors";
 import regrasJson from "../../docs/fontes/regras_convenio.json";
+import { createCatalogHandlers } from "../../src/application/catalogo";
 
 const recursos: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const fechar of recursos.splice(0)) await fechar(); });
@@ -21,6 +22,7 @@ function normalizar(guia: Record<string, string | null | undefined>) {
 
 function handlersPadrao(): VitalisHandlers {
   return {
+    ...createCatalogHandlers(regras),
     consultarRegra: vi.fn((input) => consultarRegra(input, regras)),
     verificarGuia: vi.fn((input) => verificarGuia(normalizar(input.guia), regras)),
     registrarGuia: vi.fn(async () => ({ tipo: "criada", revisaoId: "revisao-ficticia" })),
@@ -44,10 +46,10 @@ function conteudo(result: Awaited<ReturnType<Client["callTool"]>>) {
 }
 
 describe("MCP Vitalis com transporte real em memória", () => {
-  it("descobre exatamente quatro ferramentas e sinaliza leitura/gravação", async () => {
+  it("descobre exatamente oito ferramentas e sinaliza leitura/gravação", async () => {
     const { client } = await conectar();
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(["code", "consultar_regra", "registrar_guia", "verificar_guia"]);
+    expect(tools.map((t) => t.name).sort()).toEqual(["buscar_procedimentos", "code", "consultar_regra", "listar_convenios", "listar_procedimentos", "obter_convenio", "registrar_guia", "verificar_guia"]);
     expect(tools.find((t) => t.name === "verificar_guia")?.annotations?.readOnlyHint).toBe(true);
     expect(tools.find((t) => t.name === "registrar_guia")?.annotations?.readOnlyHint).toBe(false);
   });
@@ -95,12 +97,16 @@ describe("MCP Vitalis com transporte real em memória", () => {
     expect(handlers.registrarGuia).toHaveBeenCalledTimes(2);
   });
 
-  it("code enxerga somente as duas leituras e compartilha o mesmo handler", async () => {
+  it("code enxerga somente as seis leituras e compartilha o mesmo handler", async () => {
     const vistos: string[][] = [];
     const executor: Executor = {
       async execute(_code, providers) {
         const provider = (providers as ResolvedProvider[])[0];
         vistos.push(Object.keys(provider.fns));
+        const convenios = await provider.fns.listar_convenios({});
+        const busca = await provider.fns.buscar_procedimentos({ convenio: "Vitalcard", termo: "musculoesqueletica" });
+        expect(convenios).toMatchObject({ convenios: [{ nome: "Vitalcard" }, { nome: "Saúde Interior" }, { nome: "Plano Bem" }] });
+        expect(busca).toMatchObject({ total: 1, procedimentos: [{ codigo: "50000470" }] });
         const result = await provider.fns.verificar_guia({ guia: { id_guia: "EXEMPLO-CODE" } });
         return { result };
       },
@@ -108,7 +114,7 @@ describe("MCP Vitalis com transporte real em memória", () => {
     const { client, handlers } = await conectar(handlersPadrao(), executor);
     const result = await client.callTool({ name: "code", arguments: { code: "async () => await codemode.verificar_guia({guia:{id_guia:'EXEMPLO-CODE'}})" } });
     expect(result.isError).not.toBe(true);
-    expect(vistos).toEqual([["consultar_regra", "verificar_guia"]]);
+    expect(vistos).toEqual([["listar_convenios", "listar_procedimentos", "buscar_procedimentos", "obter_convenio", "consultar_regra", "verificar_guia"]]);
     expect(handlers.verificarGuia).toHaveBeenCalledWith({ guia: { id_guia: "EXEMPLO-CODE" } });
     expect(handlers.registrarGuia).not.toHaveBeenCalled();
   });
